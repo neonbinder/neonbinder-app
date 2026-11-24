@@ -28,8 +28,11 @@
 //   4. Commit 1989 Pro Set Base's four cards. Each City Designation is the card's team cell as
 //      printed: "Miami" links the Marlins by itself; "Cincinnati" (three clubs) and "Los Angeles
 //      N" (none) are pink on the Tidy Up walk's Team tile, and the operator links the Reds and
-//      the Dodgers (no alias remembered). With no name left waiting, its four parallels build;
-//      Card titles opens on the three copies whose title left a team out.
+//      the Dodgers (no alias remembered; Apply to all takes the Dodgers to #89B-3). No club is in
+//      its player's career, so each card is blue (a live career gap) and is Skipped, writing
+//      nothing to the catalogue players; the end screen counts four still to check. With no name
+//      left waiting, its four parallels build; Card titles opens on the three copies whose title
+//      left a team out.
 //   5. The built cards carry their runs: every Prismatic Blue card /5; Silver Circles
 //      RWB RWB's #89B-1 /1 and #89B-3 /3. The Minis' cards keep their own 89M-n numbers.
 //   6. The collection Checklists drill reads the parallel's run beside its name: "/5"
@@ -58,13 +61,14 @@ import { editCardButton, escapeRe } from "../../support/cards";
 import { matchCardsDialog, savedLine, setChecklistPanel } from "../../support/published-checklist";
 import { collectorCascade } from "../../support/collection";
 import {
+  applyNameToAll,
   expectCardsLeft,
+  expectTidyEndScreen,
   finishTidyWalk,
-  keepOpenCareerGaps,
   needsYouPill,
   pinkTile,
-  saveAndNext,
   settleWalkAfterCommit,
+  skipCard,
   tidyTile,
   tidyWalk,
 } from "../../support/tidy-walk";
@@ -254,13 +258,27 @@ test(
     await expect(saved).toContainText("Teams from your checklist: 4 of 4 cards.");
     await expect(matchCardsDialog(page)).toHaveCount(0);
     // A City Designation is a place, not a club's name. "Miami" is one club (the card links to the
-    // Marlins; the player's career lacks them, a blue Career check). "Cincinnati" is three of NB's
-    // clubs and "Los Angeles N" is none, so those two are pink on the Team tile for the operator
-    // (invariant 8: the file names a team, so nothing guesses one): 4 cards need a person, 3 to fix.
+    // Marlins). "Cincinnati" is three of NB's clubs and "Los Angeles N" is none, so those two are
+    // pink on the Team tile for the operator (invariant 8: the file names a team, so nothing guesses
+    // one): 4 cards need a person, 3 to fix.
     await expect(needsYouPill(page)).toHaveAccessibleName("4 need you, 3 to fix");
     expect(await settleWalkAfterCommit(page, saved), "two City Designations are unsettled, so the walk opened").toBe(true);
     await expectCardsLeft(page, 4);
     const teamTile = tidyTile(page, "Team");
+    const careerTile = tidyTile(page, "Career");
+
+    /**
+     * The open card's club is linked and nothing is pink, but the club is not in the player's
+     * career: a live career gap (NEO-656 B22), so the card is blue. Skip moves on and writes
+     * nothing (Save & next would add the set's year to a catalogue player's career, J6); the card
+     * stays blue (B20: nothing records that anyone looked).
+     */
+    async function skipBlueCareerGap(team: string) {
+      await expect(teamTile.getByRole("button", { name: `Edit ${team}`, exact: true })).toBeVisible();
+      await expect(pinkTile(page, "Team")).toHaveCount(0);
+      await expect(careerTile, `${team} is not in the player's career, so the card is blue`).toHaveAccessibleDescription("To check");
+      await skipCard(page);
+    }
 
     // #89B-1: "Which team: Cincinnati", the place's clubs listed with their eras. The operator links
     // today's Reds; the remember-box is left unticked (a place names many clubs), so no alias is saved.
@@ -273,16 +291,16 @@ test(
     await expect(cincinnati.getByRole("checkbox", { name: "Remember “Cincinnati” as a name for this team" })).not.toBeChecked();
     await expectAccessible(page, { within: tidyWalk(page), label: "Tidy up asks which club a City Designation names" });
     await clubs.getByRole("button", { name: /^Link to Cincinnati Reds · 1890–present · MLB$/ }).click();
-    await expect(teamTile.getByRole("button", { name: "Edit Cincinnati Reds", exact: true })).toBeVisible();
-    await expect(pinkTile(page, "Team")).toHaveCount(0);
-    await keepOpenCareerGaps(page);
-    await saveAndNext(page);
+    // Pink to blue: the card is still one of the four the walk counts.
+    await expect(careerTile).toHaveAccessibleDescription("To check");
+    await expectCardsLeft(page, 4);
+    await skipBlueCareerGap("Cincinnati Reds");
 
     // #89B-2: "Los Angeles N" is no club's name, so the row offers the search. The operator unticks
     // the remember-box (the settled one: the held box is ticked by default once the near matches
-    // land) and links the Dodgers from "Search all teams". The answer reaches #89B-3 too, which
-    // prints the same designation.
+    // land) and links the Dodgers from "Search all teams".
     await expect(cardFace(page, CARDS[1])).toBeVisible();
+    await expectCardsLeft(page, 3);
     await expect(pinkTile(page, "Team")).toHaveCount(1);
     const losAngeles = teamTile.getByRole("group", { name: "Team Los Angeles N", exact: true });
     await expect(losAngeles.getByText("“Los Angeles N” isn't linked to a team yet.", { exact: true })).toBeVisible();
@@ -298,30 +316,34 @@ test(
     await losAngeles.getByRole("combobox", { name: "Search all teams" }).fill("Los Angeles Dodgers");
     await page.getByRole("option", { name: /^Los Angeles Dodgers\b.*MLB/ }).click();
     await expect(teamTile.getByRole("button", { name: "Edit Los Angeles Dodgers", exact: true })).toBeVisible();
-    await expect(pinkTile(page, "Team")).toHaveCount(0);
-    // The walk counts live attention. This card now asks nothing, and the answer reaches #89B-3,
-    // which prints the same designation and asks nothing else, so both leave the count: 1 card
-    // left (#89B-4). Save & next then goes straight to #89B-4. Waited on before the save: the
-    // walk picks the next card from the count as it stands, so a save pressed before #89B-3's
-    // link lands opens #89B-3 and keeps it, cleared, on screen.
-    await expectCardsLeft(page, 1);
-    await keepOpenCareerGaps(page);
-    await saveAndNext(page);
+    await expect(careerTile).toHaveAccessibleDescription("To check");
+    // The answer linked this card only (B1): #89B-2 is blue, #89B-3 still waits on the name, #89B-4
+    // is blue, so 3 cards left. "Apply to all" gives #89B-3 the Dodgers too; that card is then blue
+    // (the Dodgers are not in its player's career either), so the count holds at 3.
+    await expectCardsLeft(page, 3);
+    expect(await applyNameToAll(page, "Team", "Los Angeles N")).toBe("Linked 1 more card.");
+    await expectCardsLeft(page, 3);
+    await skipBlueCareerGap("Los Angeles Dodgers");
 
-    // #89B-4: "Miami" linked the Marlins by itself; only its blue Career check stopped the card,
-    // kept as is (nothing is written to the catalogue player).
+    // #89B-3: the Dodgers came by Apply to all; only its blue career gap stops the card.
+    await expect(cardFace(page, CARDS[2])).toBeVisible();
+    await expectCardsLeft(page, 2);
+    await skipBlueCareerGap("Los Angeles Dodgers");
+
+    // #89B-4: "Miami" linked the Marlins by itself; only its blue career gap stopped the card.
     await expect(cardFace(page, CARDS[3])).toBeVisible();
-    await expect(teamTile.getByRole("button", { name: "Edit Miami Marlins", exact: true })).toBeVisible();
-    await expect(pinkTile(page, "Team")).toHaveCount(0);
-    expect(await keepOpenCareerGaps(page), "the Marlins are not in the player's career").toBe(1);
-    await saveAndNext(page);
-    await expectCardsLeft(page, 0);
+    await expectCardsLeft(page, 1);
+    await skipBlueCareerGap("Miami Marlins");
+
+    // The end screen counts each walked card by its live level (B20): none pink, all four blue.
+    await expectTidyEndScreen(page, { fixed: 0, stillToCheck: CARDS.length });
     await finishTidyWalk(page);
 
     // Each card carries the club its City Designation named.
     for (const { number } of CARDS) await expect(editCardButton(page, number)).toBeVisible();
     for (const { number, team } of CARDS) await expect(rowSays(page, number, team)).toBeVisible();
-    await expect(needsYouPill(page)).toHaveCount(0);
+    // Skipped, each card is still blue (the gap is read from the data), and nothing is pink.
+    await expect(needsYouPill(page)).toHaveAccessibleName(`${CARDS.length} need you`);
 
     // The save builds the subset's four parallels from its cards. The two BSC lists are each
     // a BSC card read, under the screen's "Waiting on BuySportsCards" line: the marketplace rule.

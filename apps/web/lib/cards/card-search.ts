@@ -66,6 +66,7 @@
 import {
   deriveCardAttention,
   type AttentionCardRow,
+  type LiveAttention,
 } from "../../convex/features/cardAttention";
 import { foldNameForCompare } from "../entities/normalize-name";
 
@@ -266,6 +267,8 @@ const ATTENTION_KEYWORD = "attention";
 export function cardSearchHaystack(
   card: SearchableCard,
   lookups: CardSearchLookups = EMPTY_CARD_SEARCH_LOOKUPS,
+  /** NEO-656: the career gaps read live for this card; none without them. */
+  live?: LiveAttention,
 ): CardSearchHaystack {
   const fields = cardSearchFields(card, lookups);
   return {
@@ -280,7 +283,7 @@ export function cardSearchHaystack(
     ),
     platforms: fields.platforms.map(foldSearchText),
     // NEO-645: pink (to fix) or blue (to check), the pill's own rule.
-    attention: deriveCardAttention(card).level !== "none",
+    attention: deriveCardAttention(card, live).level !== "none",
   };
 }
 
@@ -306,9 +309,10 @@ export function cardMatchesSearch(
   card: SearchableCard,
   query: string,
   lookups: CardSearchLookups = EMPTY_CARD_SEARCH_LOOKUPS,
+  live?: LiveAttention,
 ): boolean {
   return haystackMatches(
-    cardSearchHaystack(card, lookups),
+    cardSearchHaystack(card, lookups, live),
     parseCardSearchTerms(query),
   );
 }

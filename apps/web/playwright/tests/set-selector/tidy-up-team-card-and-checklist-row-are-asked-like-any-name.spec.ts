@@ -1,8 +1,9 @@
 // ONE FEATURE (R1, NEO-645 D3, main's behaviour): a card that names no player is asked like any
 // other card, and keeps the name it printed. NB answers nothing for the operator: a team card's own
-// name is a pink Player row offering "Not a player (checklist, team card, stadium)", with no note,
-// and the operator's "Not a player" settles it on every card that prints it (the fan-out), with no
-// "Ruled out for you" note; Edit brings it back. A "Checklist" row (its subject is read as no
+// name is a pink Player row offering "Not a player (checklist, team card, stadium)", with no note.
+// The operator's "Not a player" settles it on the open card, with no "Ruled out for you" note, and
+// Edit brings it back; "Apply to all cards printing" carries the answer to the other cards still
+// waiting on the name (NEO-656 B1: an answer reaches other cards only through Apply to all). A "Checklist" row (its subject is read as no
 // person when the file is read, `parse-published-checklist.ts`) names no player but keeps
 // "Checklist" as its card name, in its header and its listing title (Jason, 2026-11-23: "A name
 // for the card should be required, even if not a player"); it gets no automatic No team: its Team
@@ -13,14 +14,17 @@
 // The operator meets it like this:
 //   1. The walk opens on #1, the team card, with all five cards left: its own name is a pink
 //      Player row printed on #1 and #5 (Not a player offered, no note) beside its new team name.
-//      "Not a player" answers it; Edit <name> brings the question back; "Not a player" again.
-//      Creating the team leaves nothing pink, and #5, the second team card, leaves the walk with
-//      #1: both answers reached it (three cards left). The Team tile offers "+ Another team" and no
-//      "Apply to …": #1 has no player, so it is on no line to apply to (Jason, 2026-11-23: "not a
-//      good button"), though #3 is a second teamless card with no player that main's button would
-//      have offered it to. Its title says the club once: the card's name is the team's, so the team
-//      is not added again. Save & next.
-//   2. Counter-fixture #2 (a person under the same team) still asks; its team arrived from #1. Skip.
+//      "Not a player" answers it, on #1 only (five cards are still left: #5 waits on both names);
+//      Edit <name> brings the question back; "Not a player" again. Creating the team leaves
+//      nothing pink. Each answer has its own "Apply to all cards printing “<club>”": the Player
+//      tile's clears #5's name, the Team tile's links the club on #5 and #2. #5, the second team
+//      card, leaves the walk with #1 (three cards left). The Team tile offers "+ Another team" and
+//      no line "Apply to …" button: #1 has no player, so it is on no line to apply to (Jason,
+//      2026-11-23: "not a good button"), though #3 is a second teamless card with no player that
+//      main's button would have offered it to. Its title says the club once: the card's name is the
+//      team's, so the team is not added again. Save & next.
+//   2. Counter-fixture #2 (a person under the same team) still asks; its team arrived from #1's
+//      Apply to all. Skip.
 //   3. #3, "Checklist", is a walk stop for its team alone: its header and title say "Checklist",
 //      no Player tile, no Card name tile, a pink Team tile with "No team on this card". The
 //      operator answers it; Save & next.
@@ -46,9 +50,11 @@ import { anyPlayerChip, closeCardDrawer, openCardDrawer } from "../../support/al
 import { usePastedChecklist } from "../../support/published-checklist";
 import { drillToCustom, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
+  applyNameToAll,
   createTeamOnOpenRow,
   expectCardSettled,
   expectCardsLeft,
+  expectTidyEndScreen,
   finishTidyWalk,
   mustFixLine,
   needsYouPill,
@@ -70,7 +76,7 @@ const NOT_A_PLAYER = "Not a player (checklist, team card, stadium)";
 const RULED_OUT_FOR_YOU = /Ruled out for you/;
 
 test(
-  "Tidy Up — a card with no player is asked like any card and keeps its name: Not a player settles every card that prints the name, with no note, Edit brings it back, and a Checklist row keeps its name in its title while its team is the operator's",
+  "Tidy Up — a card with no player is asked like any card and keeps its name: Not a player settles the open card with no note, Edit brings it back, Apply to all carries it to every card printing the name, and a Checklist row keeps its name in its title while its team is the operator's",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const T = env.ATTEMPT_TOKEN;
@@ -110,6 +116,7 @@ test(
     const notAPlayer = clubRow.getByRole("button", { name: NOT_A_PLAYER, exact: true });
     // C1: a not-a-player row's Edit carries the printed name.
     const edit = clubRow.getByRole("button", { name: `Edit ${CLUB}`, exact: true });
+    const applyLabel = `Apply to all cards printing “${CLUB}”`;
 
     // ── STEP 1: #1, the team card: its own name is asked, beside its new team name ──
     await expect(tidyCardHeader(page, `#1 · ${CLUB}`)).toBeVisible();
@@ -136,6 +143,10 @@ test(
       await expect(clubRow.getByRole("note"), "the operator said it, so no note").toHaveCount(0);
       await expect(walk.getByText(RULED_OUT_FOR_YOU)).toHaveCount(0);
       await expect(pinkTile(page, "Player")).toHaveCount(0);
+      // B1: the answer is #1's alone. #5 still waits on the name (and on the team), so all five
+      // cards are still left, and the answer offers itself to #5.
+      await expectCardsLeft(page, 5);
+      await expect(clubRow.getByRole("button", { name: applyLabel, exact: true })).toBeVisible();
       if (pass === "first") {
         await edit.click();
         await expect(notAPlayer, "Edit brought the question back").toBeVisible();
@@ -147,17 +158,26 @@ test(
     await expect(pinkTile(page, "Team")).toHaveCount(0);
     await expect(mustFixLine(page)).toHaveCount(0);
     await expect(saveUsable, "both answers given: nothing on the team card is pink").toBeVisible();
-    // The fan-out: #5 prints the same name and team, so both answers settled it too. #1 and #5 are
-    // out of the walk; #2, #3 and #4 are left.
+    // Both answers are still #1's alone: #5 waits on both names, #2 on the club.
+    await expectCardsLeft(page, 4);
+    // Apply to all, once per answer: the Player tile's clears the name from #5 (the one other card
+    // printing it as a player), the Team tile's links the club on #5 and #2 (both print it as a team).
+    expect(await applyNameToAll(page, "Player", CLUB), "Not a player reached #5").toBe("Cleared 1 more card.");
+    expect(await applyNameToAll(page, "Team", CLUB), "the club reached #5 and #2").toBe("Linked 2 more cards.");
+    // #1 and #5 are out of the walk; #2, #3 and #4 are left.
     await expectCardsLeft(page, 3);
-    // No "Apply to all" on a card with no player (R2: paired with the sibling control the button
-    // would sit beside). #3 ("Checklist", no player, blank team) is still teamless, so the button
-    // main showed ("Apply to the other card with no player") would have offered #1's team to it.
-    await expect(teamTile.getByRole("group", { name: `Team ${CLUB}`, exact: true })).toBeVisible();
+    // No line "Apply to all <N> other…" / "Apply to the other…" on a card with no player (R2: paired
+    // with the sibling control the button would sit beside). #3 ("Checklist", no player, blank team)
+    // is still teamless, so the button main showed ("Apply to the other card with no player") would
+    // have offered #1's team to it. The printed-name "Apply to all cards printing" is not that button.
+    // The linked club is the tile's own line with its Edit (B11: no per-name row once linked).
+    await expect(
+      teamTile.getByRole("group", { name: `Team ${CLUB}`, exact: true }).getByRole("button", { name: `Edit ${CLUB}`, exact: true }),
+    ).toBeVisible();
     await expect(teamTile.getByRole("button", { name: "+ Another team", exact: true })).toBeVisible();
     await expect(
-      teamTile.getByRole("button", { name: /^Apply to/ }),
-      "a card with no player offers no Apply to all",
+      teamTile.getByRole("button", { name: /^Apply to (all [0-9]+ other|the other) / }),
+      "a card with no player offers no line Apply to all",
     ).toHaveCount(0);
     // The card's name is its title's subject, and the team it names is not said twice.
     await expect(
@@ -173,7 +193,7 @@ test(
       "a person's name under the same team still asks",
     ).toBeVisible();
     await expect(pinkTile(page, "Player")).toHaveCount(1);
-    // The team created on #1 reached #2: its Team tile asks nothing.
+    // The club Apply to all carried from #1 reached #2: its Team tile asks nothing.
     await expect(teamTile).toBeVisible();
     await expect(pinkTile(page, "Team")).toHaveCount(0);
     await skipCard(page);
@@ -202,17 +222,16 @@ test(
     await skipCard(page);
 
     // ── STEP 5: the end screen (#5 was never shown), the pill, and two cards read back ──
-    await expect(walk.getByText("2 cards skipped, not ready to list", { exact: true })).toBeVisible();
-    // #1 and #3 saved, #2 and #4 skipped: the walk counts the cards it passed.
-    await expect(walk.getByText("2 cards fixed, 2 skipped.", { exact: true })).toBeVisible();
-    await expect(cardLines("5"), "the fan-out settled #5, so the walk never showed it").toHaveCount(0);
+    // #1 and #3 saved, #2 and #4 skipped (each still pink, by its live data).
+    await expectTidyEndScreen(page, { fixed: 2, skipped: 2 });
+    await expect(cardLines("5"), "Apply to all settled #5, so the walk never showed it").toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk end screen with its tally" });
     await finishTidyWalk(page);
 
     await expect(needsYouPill(page)).toHaveAccessibleName("2 need you, 2 to fix");
     const fannedOut = await openCardDrawer(page, "5");
     await expect(fannedOut.getByRole("button", { name: `Remove team ${CLUB}`, exact: true }), "the team reached #5").toBeVisible();
-    await expect(anyPlayerChip(fannedOut), "Not a player reached #5").toHaveCount(0);
+    await expect(anyPlayerChip(fannedOut), "Apply to all cleared the name from #5").toHaveCount(0);
     await closeCardDrawer(fannedOut);
     const checklistCard = await openCardDrawer(page, "3");
     await expect(checklistCard.getByRole("button", { name: "No Team for this card", pressed: true })).toBeVisible();

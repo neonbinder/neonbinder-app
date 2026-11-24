@@ -8,97 +8,58 @@ import NeonButton from "../../../modules/NeonButton";
 import { TeamMatchSearch } from "../../../entities/TeamMatchSearch";
 import SportSwitch from "../../SportSwitch";
 import type { TidyCardContext, TidyRow } from "../tile-types";
-import { TidyNote, WRAP_LABEL_CLASS } from "../TidyTile";
+import { WRAP_LABEL_CLASS } from "../TidyTile";
 import { useAnswered } from "../answered";
+import { useNameLookup, useWalkMemory } from "../walk-memory";
 import EditLine from "./EditLine";
-import { noteworthyReason, teamLinkedForText } from "./copy";
 import InlineNewTeam, { teamLookupCarryOf } from "./InlineNewTeam";
-import { printedOnText } from "./printed-on";
+import NameApplyToAll from "./NameApplyToAll";
+import { printedOnOf, printedOnText } from "./printed-on";
 import TeamCandidates, { type TeamCandidate } from "./TeamCandidates";
 import { orderCandidateTeams } from "./team-candidates";
 import type { TidyWrite } from "./tidy-write";
+import { useReopenedFocus } from "./use-reopened-focus";
+
+const NO_IDS: Array<Id<"teams">> = [];
 
 type Ctx = NonNullable<TidyCardContext>;
 export type ContextName = Ctx["names"][number];
 
+/** Answering a name needs the sport it is asked in; with none there is nothing to send. */
+function needSport(sportId: Id<"selectorOptions"> | undefined): Id<"selectorOptions"> {
+  if (!sportId) throw new Error("Pick a sport.");
+  return sportId;
+}
+
 /**
- * One printed team name on the open card, in whatever state it is in:
+ * One printed team name still waiting on the open card (`pendingTeamNames`):
+ * the rows the name could mean, a search over every team ("Remember it as a name
+ * for this team" included), the inline New team form, "Not a team" and the
+ * Sport chip. A team that is linked has no name of its own on the card: it is
+ * the card's team, and Change goes through the Team tile.
  *
- *  - unanswered (pink): the rows the name could mean, a search over every team
- *    ("Remember it as a name for this team" included), the inline New team
- *    form, "Not a team" and the Sport chip;
- *  - linked (by us or by the operator): the team with Edit at the end of its
- *    line, and a note saying why when NB made a judgement;
- *  - "Not a team": said so, and Edit.
- *
- * Every answer is `tidyNames.answerName`, scoped by the server to the leaf that
- * printed the name. A listing's name is never written as NB data: it only finds
- * the rows offered here.
+ * Every answer is `tidyNames.answerName` and links THIS card (NEO-656). A
+ * listing's name is never written as NB data: it only finds the rows offered
+ * here.
  */
 export default function TeamNameRow({
   row,
   name,
-  context,
   setSportId,
   leafId,
   multi,
   write,
+  leafCards,
 }: {
   row: TidyRow;
   name: ContextName;
-  context: Ctx;
   setSportId: Id<"selectorOptions"> | undefined;
   leafId: Id<"selectorOptions">;
   multi: boolean;
   write: TidyWrite;
+  /** The checklist's cards: "Printed on". */
+  leafCards: readonly TidyRow[];
 }) {
-  const answer = name.row?.answer;
-  const answerName = useMutation(api.tidyNames.answerName);
-
-  const clear = () =>
-    write.run(
-      () =>
-        answerName({ cardId: row._id, kind: "team", name: name.printed, answer: { kind: "clear" } }),
-      "Couldn't change that answer. Try again.",
-    );
-
-  if (answer?.kind === "notEntity" || answer?.kind === "linkTeam") {
-    const team =
-      answer.kind === "linkTeam" ? context.teams.find((t) => t.teamId === answer.teamId) : undefined;
-    const linkedTeamId = answer.kind === "linkTeam" ? answer.teamId : undefined;
-    const note = noteworthyReason(
-      answer.kind === "linkTeam"
-        ? context.linkedFor.find((l) => l.kind === "team" && l.teamId === answer.teamId)?.reason
-        : undefined,
-    );
-    return (
-      <div role="group" aria-label={`Team ${name.printed}`} className="grid gap-1.5">
-        <EditLine
-          editLabel={`Edit ${answer.kind === "linkTeam" ? (team?.name ?? name.printed) : name.printed}`}
-          busy={write.busy}
-          onEdit={() => void clear()}
-          textClass="text-sm text-ink-2"
-        >
-          {answer.kind === "notEntity" ? (
-            <>
-              <span className="font-medium text-ink">{name.printed}</span> is not a team.
-            </>
-          ) : (
-            <span className="font-medium text-ink">{team?.name ?? name.printed}</span>
-          )}
-        </EditLine>
-        {note && (
-          <TidyNote>
-            {teamLinkedForText(
-              note,
-              context.players.find((p) => p.stints.some((s) => s.teamId === linkedTeamId))?.name,
-            )}
-          </TidyNote>
-        )}
-      </div>
-    );
-  }
-
   return (
     <UnansweredTeamName
       row={row}
@@ -107,7 +68,67 @@ export default function TeamNameRow({
       leafId={leafId}
       multi={multi}
       write={write}
+      leafCards={leafCards}
     />
+  );
+}
+
+/**
+ * A team name the operator ruled out ("Not a team") on the card that is open.
+ * The name is off the card, so the walk's memory is all that holds it; Edit
+ * puts it back to waiting. Gone with the card.
+ */
+export function RuledOutTeamRow({
+  row,
+  printed,
+  setSportId,
+  write,
+  leafCards,
+}: {
+  row: TidyRow;
+  printed: string;
+  setSportId: Id<"selectorOptions"> | undefined;
+  write: TidyWrite;
+  leafCards: readonly TidyRow[];
+}) {
+  const memory = useWalkMemory();
+  const answerName = useMutation(api.tidyNames.answerName);
+  const clear = async () => {
+    memory.oweFocus(row._id, "team", printed);
+    const ok = await write.run(
+      () =>
+        answerName({
+          cardId: row._id,
+          kind: "team",
+          name: printed,
+          sportId: needSport(memory.defaultSportFor("team", printed, setSportId)),
+          answer: { kind: "clear" },
+        }),
+      "Couldn't change that answer. Try again.",
+    );
+    // The row re-opens as soon as the card says so, which can be before this
+    // await resolves: the focus is owed first, and given back if the write fails.
+    if (ok) memory.forgetAnswer(row._id, "team", printed);
+    else memory.takeFocusOwed(row._id, "team", printed);
+  };
+  return (
+    <div role="group" aria-label={`Team ${printed}`} className="grid gap-1.5">
+      <EditLine
+        editLabel={`Edit ${printed}`}
+        busy={write.busy}
+        onEdit={() => void clear()}
+        textClass="text-sm text-ink-2"
+      >
+        <span className="font-medium text-ink">{printed}</span> is not a team.
+      </EditLine>
+      <NameApplyToAll
+        cardId={row._id}
+        kind="team"
+        printed={printed}
+        answer={{ kind: "notEntity" }}
+        leafCards={leafCards}
+      />
+    </div>
   );
 }
 
@@ -118,6 +139,7 @@ function UnansweredTeamName({
   leafId,
   multi,
   write,
+  leafCards,
 }: {
   row: TidyRow;
   name: ContextName;
@@ -125,10 +147,14 @@ function UnansweredTeamName({
   leafId: Id<"selectorOptions">;
   multi: boolean;
   write: TidyWrite;
+  leafCards: readonly TidyRow[];
 }) {
   const answerName = useMutation(api.tidyNames.answerName);
-  const setNameSport = useMutation(api.tidyNames.setNameSport);
   const answered = useAnswered();
+  const memory = useWalkMemory();
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  // Edit on a ruled-out name re-opens this row: focus lands on its first control.
+  useReopenedFocus(memory, row._id, "team", name.printed, wrapRef);
 
   /** A write that ANSWERS the name: on success the walk moves focus on. */
   const answer = async (fn: () => Promise<unknown>, fallback: string): Promise<boolean> => {
@@ -137,11 +163,26 @@ function UnansweredTeamName({
     return ok;
   };
 
-  const nameRow = name.row;
-  const rowSportId = nameRow?.sportId ?? setSportId;
-  const queryName = nameRow?.name ?? name.printed;
-  const enrichment = nameRow?.enrichment;
-  const candidateIds = nameRow?.candidateTeamIds ?? [];
+  // The Sport chip is local: it is the question's sport for this sitting, never
+  // saved. The facts' sport leads, else the set's.
+  const [chipSportId, setChipSportId] = useState<Id<"selectorOptions"> | undefined>(undefined);
+  const rowSportId = chipSportId ?? memory.defaultSportFor("team", name.printed, setSportId);
+  const queryName = name.printed;
+  const { lookup, retry } = useNameLookup({
+    memory,
+    cardId: row._id,
+    kind: "team",
+    name: name.printed,
+    sportId: rowSportId,
+  });
+  const enrichment = lookup?.enrichment;
+  const lookupFailed = rowSportId !== undefined && lookup?.status === "error";
+  // The rows the name reached (from the set's facts) are that sport's: another
+  // sport's would not link.
+  const gateItem = memory.gateItemFor("team", name.printed);
+  const factsApply = gateItem !== undefined && gateItem.sportId === rowSportId;
+  const candidateIds = factsApply ? (gateItem.candidateTeamIds ?? NO_IDS) : NO_IDS;
+  const candidatePlace = factsApply && gateItem.candidatePlace === true;
   const suffix = multi ? ` ${name.printed}` : "";
 
   const [newOpen, setNewOpen] = useState(false);
@@ -188,8 +229,8 @@ function UnansweredTeamName({
       };
     });
     return orderCandidateTeams(rows).map((r) => r.candidate);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- candidateIds is read through nameRow
-  }, [nameRow?.candidateTeamIds, candidateRows, leagues]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `queryName` is the name `candidateRows` were asked about
+  }, [candidateIds, candidateRows, leagues]);
   const candidateStep = candidateIds.length >= 2;
   // "+ New team" waits for the near-match answer: an exact match turns it into
   // a link, and a created team can't be taken back.
@@ -202,7 +243,7 @@ function UnansweredTeamName({
   // Collector review: a string equal to some team's LOCATION is a place, not a
   // name for the team linked here, so it starts unticked.
   const nameIsAPlace =
-    nameRow?.candidatePlace === true || (matches ?? []).some((m) => m.locationMatch === true);
+    candidatePlace || (matches ?? []).some((m) => m.locationMatch === true);
   const aliasDefaultPending = aliasChoice === undefined && matches === undefined;
   const saveAsAlias = aliasChoice ?? (!nameIsAPlace && !aliasDefaultPending);
 
@@ -212,37 +253,43 @@ function UnansweredTeamName({
         cardId: row._id,
         kind: "team",
         name: name.printed,
+        sportId: needSport(rowSportId),
         answer: {
           kind: "linkTeam",
           teamId: teamId as Id<"teams">,
           ...(saveAsAlias ? { saveAsAlias: true as const } : {}),
         },
       });
+      // What "Apply to all" copies; the card itself holds only the team.
+      memory.rememberAnswer(row._id, "team", name.printed, {
+        kind: "linkTeam",
+        printed: name.printed,
+        teamId: teamId as Id<"teams">,
+      });
     }, "Couldn't link that team. Try again.");
 
   const notATeam = () =>
-    answer(
-      () =>
-        answerName({
-          cardId: row._id,
-          kind: "team",
-          name: name.printed,
-          answer: { kind: "notEntity" },
-        }),
-      "Couldn't save that answer. Try again.",
-    );
+    answer(async () => {
+      await answerName({
+        cardId: row._id,
+        kind: "team",
+        name: name.printed,
+        sportId: needSport(rowSportId),
+        answer: { kind: "notEntity" },
+      });
+      memory.rememberAnswer(row._id, "team", name.printed, {
+        kind: "notEntity",
+        printed: name.printed,
+      });
+    }, "Couldn't save that answer. Try again.");
 
-  const switchSport = (sportId: Id<"selectorOptions">) =>
-    write.run(
-      () => setNameSport({ cardId: row._id, kind: "team", name: name.printed, sportId }),
-      "Couldn't switch the sport. Try again.",
-    );
+  const switchSport = (sportId: Id<"selectorOptions">) => setChipSportId(sportId);
 
-  const printedOn = printedOnText(name.printedOn);
+  const printedOn = printedOnText(printedOnOf(leafCards, "team", name.printed));
   const disabled = write.busy ? true : undefined;
 
   return (
-    <div role="group" aria-label={`Team ${name.printed}`} className="grid gap-2">
+    <div ref={wrapRef} role="group" aria-label={`Team ${name.printed}`} className="grid gap-2">
       <p className="text-sm text-ink wrap-anywhere">
         {candidateStep ? `Which team: ${queryName}` : `“${queryName}” isn't linked to a team yet.`}
       </p>
@@ -251,7 +298,7 @@ function UnansweredTeamName({
       <TeamCandidates
         candidates={candidates}
         printedName={queryName}
-        fromPlace={nameRow?.candidatePlace === true}
+        fromPlace={candidatePlace}
         disabled={write.busy}
         onLink={(teamId) => void link(teamId)}
       />
@@ -291,7 +338,11 @@ function UnansweredTeamName({
       {/* Mounted for the whole life of the row, so the sentence is a change to a
           live region that is already in the page. */}
       <p role="status" className="text-xs italic text-ink-3 empty:hidden">
-        {checking && !newOpen ? "Checking for teams by that name…" : null}
+        {checking && !newOpen
+          ? "Checking for teams by that name…"
+          : lookupFailed && !newOpen
+            ? "Couldn't look this one up."
+            : null}
       </p>
 
       {newOpen && rowSportId ? (
@@ -312,7 +363,13 @@ function UnansweredTeamName({
               cardId: row._id,
               kind: "team",
               name: name.printed,
+              sportId: needSport(rowSportId),
               answer: { kind: "linkTeam", teamId },
+            });
+            memory.rememberAnswer(row._id, "team", name.printed, {
+              kind: "linkTeam",
+              printed: name.printed,
+              teamId,
             });
             answered();
           }}
@@ -358,7 +415,19 @@ function UnansweredTeamName({
           >
             Not a team
           </NeonButton>
-          {nameRow && setSportId && rowSportId && (
+          {lookupFailed && (
+            <NeonButton
+              size="1"
+              variant="secondary"
+              outline
+              aria-label={`Try again${suffix}`}
+              aria-disabled={disabled}
+              onClick={retry}
+            >
+              Try again
+            </NeonButton>
+          )}
+          {setSportId && rowSportId && (
             <span className="text-xs text-ink-3">
               <SportSwitch
                 value={rowSportId}

@@ -1,29 +1,18 @@
 /**
- * NEO-645 — the One-card Tidy Up derivation in convex/features/cardAttention.ts
+ * NEO-645 / NEO-656 — the One-card Tidy Up derivation in convex/features/cardAttention.ts
  * (`deriveCardAttention`): pink ("fix"), blue ("check") and "none", from the
- * row alone.
+ * row plus the career gaps the caller read LIVE (`live`). Nothing is remembered
+ * as "seen": an item shows for as long as the data holds it.
  *
  * Pure function, so plain unit tests. The legacy rule (`missingTeam`,
  * `unreviewedName`) is covered, unchanged, in cardAttention.test.ts under its
  * new name `deriveLegacyCardAttention`.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
-  TIDY_REVIEWED_KEY_MAX_LENGTH,
-  TIDY_CHECKS_MAX,
-  TIDY_REVIEWED_MAX_KEYS,
-  currentReviewKeys,
   blocksParallelBuild,
   deriveCardAttention,
-  teamFillOf,
-  tidyHash,
-  tidyReviewedKeyCareer,
-  tidyReviewedKeyCareerGap,
-  tidyReviewedKeyCut,
-  tidyReviewedKeyVariation,
   type AttentionCardRow,
 } from "./cardAttention";
 import { assessListingTitle } from "./generateListing";
@@ -291,14 +280,7 @@ describe("deriveCardAttention — title boundaries", () => {
       cardVariation: "v".repeat(66),
     });
     expect(l).toBe("check");
-    expect(items).toEqual([
-      {
-        level: "check",
-        kind: "variationOverLimit",
-        length: 66,
-        key: tidyReviewedKeyVariation("v".repeat(66)),
-      },
-    ]);
+    expect(items).toEqual([{ level: "check", kind: "variationOverLimit", length: 66 }]);
   });
 
   test("the variation is measured trimmed", () => {
@@ -307,58 +289,47 @@ describe("deriveCardAttention — title boundaries", () => {
 });
 
 describe("deriveCardAttention — blue", () => {
-  test("a new player's career is blue only while that player is on the card", () => {
-    const row: AttentionCardRow = {
-      ...CLEAN,
-      tidyChecks: [{ kind: "newPlayerCareer", playerId: "p1" }],
-    };
-    expect(deriveCardAttention(row).items).toEqual([
-      {
-        level: "check",
-        kind: "newPlayerCareer",
-        playerId: "p1",
-        key: tidyReviewedKeyCareer("p1"),
-      },
+  const gap = { playerId: "p1", teamId: "t1" };
+
+  test("a career gap is blue on a single-player card whose team is still on it, read from the live gaps", () => {
+    expect(deriveCardAttention(CLEAN, { careerGaps: [gap] }).items).toEqual([
+      { level: "check", kind: "careerGap", playerId: "p1", teamId: "t1" },
     ]);
-    expect(level({ ...row, playerIds: ["p2"] })).toBe("none");
   });
 
-  test("a career gap is blue on a single-player card whose team is still on it", () => {
-    const row: AttentionCardRow = {
-      ...CLEAN,
-      tidyChecks: [{ kind: "careerGap", playerId: "p1", teamId: "t1" }],
-    };
-    expect(deriveCardAttention(row).items).toEqual([
-      {
-        level: "check",
-        kind: "careerGap",
-        playerId: "p1",
-        teamId: "t1",
-        key: tidyReviewedKeyCareerGap("p1", "t1"),
-      },
-    ]);
+  test("without live gaps the card raises no career gap (the derivation stays pure)", () => {
+    expect(deriveCardAttention(CLEAN).items).toEqual([]);
+    expect(deriveCardAttention(CLEAN, {}).items).toEqual([]);
+    expect(deriveCardAttention(CLEAN, { careerGaps: [] }).items).toEqual([]);
   });
 
   test("a career gap is never raised on a multi-player card (nobody can say whose team it is)", () => {
+    expect(level({ ...CLEAN, playerIds: ["p1", "p2"] })).toBe("none");
     expect(
-      level({
-        ...CLEAN,
-        playerIds: ["p1", "p2"],
-        tidyChecks: [{ kind: "careerGap", playerId: "p1", teamId: "t1" }],
-      }),
+      deriveCardAttention({ ...CLEAN, playerIds: ["p1", "p2"] }, { careerGaps: [gap] }).level,
     ).toBe("none");
   });
 
-  test("a stale career gap (team changed by hand, or another player now) says nothing", () => {
-    const gap = { kind: "careerGap" as const, playerId: "p1", teamId: "t1" };
-    expect(level({ ...CLEAN, teamOnCardIds: ["t2"], tidyChecks: [gap] })).toBe("none");
-    expect(level({ ...CLEAN, playerIds: ["p9"], tidyChecks: [gap] })).toBe("none");
+  test("a live gap for a team or player no longer on the card says nothing", () => {
+    expect(deriveCardAttention({ ...CLEAN, teamOnCardIds: ["t2"] }, { careerGaps: [gap] }).level).toBe("none");
+    expect(deriveCardAttention({ ...CLEAN, playerIds: ["p9"] }, { careerGaps: [gap] }).level).toBe("none");
   });
 
-  test("a cut generated title is blue, keyed on the title", () => {
+  test("a gap goes away when the live data stops reporting it: nothing is remembered", () => {
+    expect(deriveCardAttention(CLEAN, { careerGaps: [gap] }).level).toBe("check");
+    expect(deriveCardAttention(CLEAN, { careerGaps: [] }).level).toBe("none");
+  });
+
+  test("the gap for another team does not raise this card's own", () => {
+    expect(
+      deriveCardAttention(CLEAN, { careerGaps: [{ playerId: "p1", teamId: "t9" }] }).level,
+    ).toBe("none");
+  });
+
+  test("a cut generated title is blue", () => {
     const row: AttentionCardRow = { ...CLEAN, listingTitleTruncated: true };
     expect(deriveCardAttention(row).items).toEqual([
-      { level: "check", kind: "titleCut", key: tidyReviewedKeyCut(CLEAN.listingTitle!) },
+      { level: "check", kind: "titleCut" },
     ]);
   });
 
@@ -406,12 +377,16 @@ describe("deriveCardAttention — blue", () => {
     expect(deriveCardAttention(row).items.map((i) => i.kind)).toEqual(["titleCut"]);
   });
 
-  test("teamFill is a note, never a stop: no item, whatever the card", () => {
+  test("a leftover stored note on the row is ignored: nothing in tidyChecks raises an item", () => {
     expect(
       deriveCardAttention({
         ...CLEAN,
-        tidyChecks: [{ kind: "teamFill", teamIds: ["t1"], reason: "otherCards" }],
-      }).items,
+        tidyChecks: [
+          { kind: "teamFill", teamIds: ["t1"], reason: "otherCards" },
+          { kind: "newPlayerCareer", playerId: "p1" },
+          { kind: "careerGap", playerId: "p1", teamId: "t1" },
+        ],
+      } as never).items,
     ).toEqual([]);
   });
 });
@@ -518,6 +493,7 @@ describe("deriveCardAttention — pink beats blue, and the order is the tiles'",
   test("items come in tile order: sources, player, career, team, autograph, title", () => {
     const row: AttentionCardRow = {
       playerIds: ["p1"],
+      teamOnCardIds: ["t1"],
       platformData: {},
       attributes: ["AU"],
       listingTitle: `Player ${"x".repeat(75)}`,
@@ -531,164 +507,9 @@ describe("deriveCardAttention — pink beats blue, and the order is the tiles'",
           ],
         },
       ],
-      tidyChecks: [{ kind: "newPlayerCareer", playerId: "p1" }],
     };
-    expect(kinds(row)).toEqual([
-      "sourcesDisagree",
-      "playerName",
-      "newPlayerCareer",
-      "autograph",
-      "titleOverLimit",
-    ]);
-  });
-});
-
-describe("deriveCardAttention — tidyReviewed (seen) suppresses blue, never pink", () => {
-  const cut: AttentionCardRow = { ...CLEAN, listingTitleTruncated: true };
-
-  test("a reviewed blue item drops out; the card leaves the walk", () => {
     expect(
-      deriveCardAttention({
-        ...cut,
-        tidyReviewed: { keys: [tidyReviewedKeyCut(CLEAN.listingTitle!)] },
-      }),
-    ).toEqual({ level: "none", items: [] });
-  });
-
-  test("a changed value re-raises: the old key no longer matches", () => {
-    const reviewedOld = { keys: [tidyReviewedKeyCut(CLEAN.listingTitle!)] };
-    const retitled = deriveCardAttention({
-      ...cut,
-      listingTitle: "2024 Topps #1 Michael Trout",
-      tidyReviewed: reviewedOld,
-    });
-    expect(retitled.level).toBe("check");
-    expect(retitled.items.map((i) => i.kind)).toEqual(["titleCut"]);
-  });
-
-  test("seen is per item: other blue items on the card still show", () => {
-    const row: AttentionCardRow = {
-      ...cut,
-      cardVariation: "v".repeat(70),
-      tidyReviewed: { keys: [tidyReviewedKeyCut(CLEAN.listingTitle!)] },
-    };
-    expect(kinds(row)).toEqual(["variationOverLimit"]);
-  });
-
-  test("a pink item is never suppressed, even if a stray key matches nothing it owns", () => {
-    expect(
-      level({
-        ...CLEAN,
-        pendingPlayerNames: ["X Y"],
-        tidyReviewed: { keys: ["playerName", "anything"] },
-      }),
-    ).toBe("fix");
-  });
-
-  test("a career-gap key for one team does not clear the gap for another", () => {
-    const row: AttentionCardRow = {
-      ...CLEAN,
-      teamOnCardIds: ["t2"],
-      tidyChecks: [{ kind: "careerGap", playerId: "p1", teamId: "t2" }],
-      tidyReviewed: { keys: [tidyReviewedKeyCareerGap("p1", "t1")] },
-    };
-    expect(level(row)).toBe("check");
-  });
-});
-
-describe("currentReviewKeys — what markReviewed stores", () => {
-  test("every blue key, reviewed or not, and no pink ones", () => {
-    const row: AttentionCardRow = {
-      ...CLEAN,
-      pendingPlayerNames: ["Mike Trout"],
-      listingTitleTruncated: true,
-      cardVariation: "v".repeat(70),
-      tidyReviewed: { keys: [tidyReviewedKeyCut(CLEAN.listingTitle!)] },
-    };
-    expect(currentReviewKeys(row)).toEqual([
-      tidyReviewedKeyCut(CLEAN.listingTitle!),
-      tidyReviewedKeyVariation("v".repeat(70)),
-    ]);
-  });
-
-  test("a card with nothing blue stores nothing", () => {
-    expect(currentReviewKeys(CLEAN)).toEqual([]);
-  });
-
-  test("stored keys, once written, make the card quiet", () => {
-    const row: AttentionCardRow = {
-      ...CLEAN,
-      listingTitleTruncated: true,
-      cardVariation: "v".repeat(70),
-    };
-    const stored = { keys: currentReviewKeys(row) };
-    expect(deriveCardAttention({ ...row, tidyReviewed: stored }).level).toBe("none");
-  });
-});
-
-describe("the key helpers", () => {
-  test("every key fits the stored bound, whatever the value", () => {
-    const longName = "n".repeat(500);
-    const keys = [
-      tidyReviewedKeyCareer("jh7a2b3c4d5e6f7g8h9i0j1k2l3m4n5"),
-      tidyReviewedKeyCareerGap(
-        "jh7a2b3c4d5e6f7g8h9i0j1k2l3m4n5",
-        "kh7a2b3c4d5e6f7g8h9i0j1k2l3m4n5",
-      ),
-      tidyReviewedKeyCut(longName),
-      tidyReviewedKeyVariation(longName),
-    ];
-    for (const k of keys) {
-      expect(k.length).toBeLessThanOrEqual(TIDY_REVIEWED_KEY_MAX_LENGTH);
-    }
-  });
-
-  test("the hash is stable, value-sensitive and the same on repeat calls", () => {
-    expect(tidyHash("Jackson Merrill")).toBe(tidyHash("Jackson Merrill"));
-    expect(tidyHash("Jackson Merrill")).not.toBe(tidyHash("Jackson Merril"));
-    expect(tidyHash("")).toMatch(/^[0-9a-z]+$/);
-    // Pinned: the client and the server share this function; a change here
-    // would silently un-see every stored review.
-    expect(tidyHash("abc")).toBe("1dtlchkfkb1");
-  });
-
-  test("the cap matches the schema doc (16 keys of at most 64 characters)", () => {
-    expect(TIDY_REVIEWED_MAX_KEYS).toBe(16);
-    expect(TIDY_REVIEWED_KEY_MAX_LENGTH).toBe(64);
-  });
-});
-
-describe("TIDY_CHECKS_MAX", () => {
-  test("one constant: the writers import it from here, none keeps its own copy", () => {
-    expect(TIDY_CHECKS_MAX).toBe(32);
-    for (const file of ["tidyCardWrites.ts", "tidyNames.ts"]) {
-      const text = readFileSync(join(__dirname, "..", file), "utf8");
-      expect(text).not.toMatch(/(?:const|let)\s+TIDY_CHECKS_(?:MAX|CAP)\s*=/);
-      expect(text).toMatch(
-        /import \{[^}]*\bTIDY_CHECKS_MAX\b[^}]*\} from "\.\/features\/cardAttention"/,
-      );
-    }
-  });
-});
-
-describe("teamFillOf", () => {
-  test("returns the fill while the card's teams are still the ones the commit wrote", () => {
-    expect(
-      teamFillOf({
-        teamOnCardIds: ["t1", "t2"],
-        tidyChecks: [{ kind: "teamFill", teamIds: ["t1"], reason: "otherCards" }],
-      }),
-    ).toEqual({ teamIds: ["t1"], reason: "otherCards" });
-  });
-
-  test("is gone once the team was changed by hand", () => {
-    expect(
-      teamFillOf({
-        teamOnCardIds: ["t9"],
-        tidyChecks: [{ kind: "teamFill", teamIds: ["t1"], reason: "career" }],
-      }),
-    ).toBeUndefined();
-    expect(teamFillOf({ teamOnCardIds: [], tidyChecks: [] })).toBeUndefined();
-    expect(teamFillOf({})).toBeUndefined();
+      deriveCardAttention(row, { careerGaps: [{ playerId: "p1", teamId: "t1" }] }).items.map((i) => i.kind),
+    ).toEqual(["sourcesDisagree", "playerName", "careerGap", "autograph", "titleOverLimit"]);
   });
 });

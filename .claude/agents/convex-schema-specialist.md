@@ -1,7 +1,7 @@
 ---
 name: convex-schema-specialist
 description: |
-  Plans and reviews Convex data-model changes in `apps/web/convex/schema.ts`: new tables, index changes on hot tables, multi-step field migrations, validator shape, and slow-query diagnosis. Produces the design and the migration steps; another builder implements them. Use when a change adds a table, adds or alters an index on `selectorOptions`, `cardChecklist`, `players`, `teams` or `entityReviewQueue`, removes or retypes a field, or when a query is slow. Do not use for routine work that only adds an optional field and reads it (neonbinder-web-dev does that directly), for adapter or sync logic (marketplace-adapter-dev), or for writing tests.
+  Plans and reviews Convex data-model changes in `apps/web/convex/schema.ts`: new tables, index changes on hot tables, multi-step field migrations, validator shape, and slow-query diagnosis. Produces the design and the migration steps; another builder implements them. Use when a change adds a table, adds or alters an index on `selectorOptions`, `cardChecklist`, `players` or `teams`, removes or retypes a field, or when a query is slow. Do not use for routine work that only adds an optional field and reads it (neonbinder-web-dev does that directly), for adapter or sync logic (marketplace-adapter-dev), or for writing tests.
 
   Examples:
   - "Track card price history over time" → the specialist proposes the table, its indexes for the read paths, and how rows link to `cardChecklist`.

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useQuery, useAction, useMutation, useConvex } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api } from "../../convex/_generated/api";
@@ -40,6 +41,7 @@ import CrossListingImportModal from "./CrossListingImportModal";
 import { faceHeaderFromChain } from "./tidy/face-header";
 import TidyUpWalk from "./tidy/TidyUpWalk";
 import { useTidyWalkUrl } from "./tidy/useTidyWalkUrl";
+import { useLeafCareerGaps } from "./useLeafCareerGaps";
 import { resetSitting } from "./tidy/walk-order";
 // NEO-497: the tidy-up dialogs name the set ("Tidy up 2024 Topps Chrome").
 import { tidyUpTitleFromChain } from "./WizardChrome";
@@ -173,9 +175,24 @@ type CardChecklistProps = {
  * `batchId` is whatever `resolveChecklistEntities` answered; the commit reads
  * it back where it still needs it.
  */
+type GateLinks = NonNullable<
+  FunctionReturnType<typeof api.selectorOptions.resolveChecklistEntities>["gateLinks"]
+>;
+
 type FetchPreview = {
   sportId: Id<"selectorOptions">;
   batchId?: string;
+  /**
+   * NEO-656 — the automatic links the gate made (`resolveChecklistEntities`),
+   * handed to the commit untouched. Nothing is stored between the two.
+   */
+  gateLinks?: GateLinks;
+  /**
+   * NEO-656 — the team names the gate left for the operator
+   * (`resolveChecklistEntities` -> `unknownTeams`), handed to the commit so
+   * the year-only shortcut never links one. Nothing is stored.
+   */
+  gateTeamNames?: string[];
   cards: Array<{
     cardNumber: string;
     cardName: string;
@@ -671,6 +688,9 @@ export default function CardChecklist({
   const cards = useQuery(api.selectorOptions.getCardChecklist, {
     selectorOptionId: variantId,
   });
+  // NEO-656: the blue "team missing from the career" item is read from the
+  // data, never stored on the card. One subscribed query for the leaf.
+  const careerGaps = useLeafCareerGaps(cards);
   // Names the set in the pairing dialog's header. That dialog is modal and can
   // be hundreds of rows long — without this it says only "Match Cards" and an
   // operator who steps away has no way to tell which set they came back to.
@@ -2131,7 +2151,7 @@ export default function CardChecklist({
     // writes the cards with those names pending. Whatever still needs a
     // person is answered in Tidy Up afterwards, card by card, so there is no
     // gate to hold the save.
-    const { batchId } = await resolveEntities({
+    const { batchId, gateLinks, unknownTeams } = await resolveEntities({
       selectorOptionId: variantId,
       sportId,
       cards: kept.map(({ card }) => card),
@@ -2139,6 +2159,8 @@ export default function CardChecklist({
     const preview: FetchPreview = {
       sportId,
       batchId,
+      ...(gateLinks && gateLinks.length > 0 ? { gateLinks } : {}),
+      ...(unknownTeams.length > 0 ? { gateTeamNames: unknownTeams } : {}),
       cards: kept.map(({ card }) => card),
       decisions: kept.map(({ index }) => ({
         applyFields: review.applyFieldsByIndex[index],
@@ -2203,6 +2225,8 @@ export default function CardChecklist({
             : card;
         }),
         batchId: preview.batchId,
+        ...(preview.gateLinks ? { gateLinks: preview.gateLinks } : {}),
+        ...(preview.gateTeamNames ? { gateTeamNames: preview.gateTeamNames } : {}),
         ...(preview.operatorDeleteIds.length > 0
           ? { operatorDeleteIds: preview.operatorDeleteIds }
           : {}),
@@ -2518,14 +2542,20 @@ export default function CardChecklist({
    * it.
    */
   const attentionCount = useMemo(
-    () => (cards ?? []).filter((c) => needsTidyUp(c)).length,
-    [cards],
+    () =>
+      (cards ?? []).filter((c) => needsTidyUp(c, { careerGaps: careerGaps.gapsByCard.get(c._id) }))
+        .length,
+    [cards, careerGaps.gapsByCard],
   );
   // Of those, the cards with something pink on them (cannot be listed yet):
   // the pill says how many, so a checklist of mere checks reads differently.
   const attentionToFix = useMemo(
-    () => (cards ?? []).filter((c) => deriveCardAttention(c).level === "fix").length,
-    [cards],
+    () =>
+      (cards ?? []).filter(
+        (c) =>
+          deriveCardAttention(c, { careerGaps: careerGaps.gapsByCard.get(c._id) }).level === "fix",
+      ).length,
+    [cards, careerGaps.gapsByCard],
   );
   /**
    * NEO-535 — a parallel's cards whose stored title still fails (over 80, or
@@ -2697,9 +2727,13 @@ export default function CardChecklist({
   // pink. Reads refs set by `runCommit`; no state is set here.
   useEffect(() => {
     if (!cards) return;
-    if (openTidyAfterCommitRef.current) {
+    // NEO-656: wait for the career gaps, so a card whose only blue item is a
+    // gap still opens the walk. The ref stays set until they have arrived.
+    if (openTidyAfterCommitRef.current && careerGaps.ready) {
       openTidyAfterCommitRef.current = false;
-      if (cards.some((c) => needsTidyUp(c))) openTidyWalk();
+      if (cards.some((c) => needsTidyUp(c, { careerGaps: careerGaps.gapsByCard.get(c._id) }))) {
+        openTidyWalk();
+      }
     }
     const held = heldParallelBuildRef.current;
     if (held) {
@@ -2715,7 +2749,7 @@ export default function CardChecklist({
     // `openTidyWalk` changes with the router's params; the ticks and the live
     // rows are what this reacts to.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [postCommitTick, cards, variantId]);
+  }, [postCommitTick, cards, variantId, careerGaps.ready, careerGaps.gapsByCard]);
 
   /**
    * a11y (NEO-335) — the "N need you" pill leaves the page the moment the
@@ -2862,10 +2896,15 @@ export default function CardChecklist({
     if (!searching) return null;
     const map = new Map<string, CardSearchHaystack>();
     for (const card of cards ?? []) {
-      map.set(card._id as string, cardSearchHaystack(card, searchLookups));
+      map.set(
+        card._id as string,
+        cardSearchHaystack(card, searchLookups, {
+          careerGaps: careerGaps.gapsByCard.get(card._id),
+        }),
+      );
     }
     return map;
-  }, [cards, searchLookups, searching]);
+  }, [cards, searchLookups, searching, careerGaps.gapsByCard]);
   const searchedCards = useMemo(() => {
     if (!searchHaystacks) return sortedCards;
     return sortedCards.filter((c) =>
@@ -3978,6 +4017,7 @@ export default function CardChecklist({
                 <CardChecklistItem
                   card={row.card}
                   sourceLabelMaps={sourceLabelMaps}
+                  careerGaps={careerGaps.gapsByCard.get(row.card._id)}
                   isSelected={row.card._id === selectedCardId}
                   onEdit={(id) => setSelectedCardId(id)}
                   variationCount={row.variationCount}
@@ -4067,6 +4107,9 @@ export default function CardChecklist({
           setNoTeam={setIsNoTeam}
           title={tidyTitle}
           cards={cards}
+          // NEO-656: the career gaps, read live for these cards.
+          careerGaps={careerGaps.gapsByCard}
+          careerGapsReady={careerGaps.ready}
           // a11y: the durable restore target, because the control that opened
           // this may not survive the sitting: the pill unmounts when the count
           // reaches zero, which is the state the walk is in when it ends. The

@@ -5,16 +5,16 @@
  * places that USE it, because the defect was never in one function: the same
  * regex chain had been transcribed by hand into six modules, and the copies had
  * to agree for a name to survive the round trip from an adapter, through the
- * review wizard, into `players`/`teams` and back out again. Each `describe`
+ * review gate, into `players`/`teams` and back out again. Each `describe`
  * below is a separate crossing of that round trip, and each was separately
  * capable of splitting one person into two rows:
  *
  *  - `players.findByNameAndSport` / `teams.findByNameAndSport` — the lookup the
  *    unknown-entity pass makes before it declares a name new.
- *  - `entityReviewQueue.startBatch` — the resume key. A batch keyed one way and
- *    resumed the other re-asks a question the operator already answered.
- *  - `entityReviewSkips` — the durable skip. Keyed one way at write and the
- *    other at read, a skipped name comes back on every re-fetch, forever.
+ *
+ * (NEO-656: the review batch's resume key and the durable skip are gone with
+ * the tables that held them, and the name cleansing at the door is pinned in
+ * `tidyNames.cleansedName.test.ts` and `tidyGate.ported.test.ts`.)
  *
  * Jason, 2026-09-04: "if a card says Jose but the player in the database is
  * José we should just link that player, not consider them new."
@@ -45,17 +45,15 @@ const modules = (import.meta as unknown as {
  * NEO-253 (audit) — this file must not reach the network, and must not leave
  * work running past the end of a test.
  *
- * Two of the paths under test schedule Wikidata work on their INSERT branch and
+ * The paths under test schedule Wikidata work on their INSERT branch and
  * only on that branch, which is precisely the branch these tests are about:
- * `players.findOrCreate` schedules `wikidataPool:enqueueEnrichment`, and
- * `entityReviewQueue.startBatch` schedules
- * `wikidataPool:enqueueEntityReviewLookups`. `convex-test` starts scheduled
+ * `players.findOrCreate` schedules `wikidataPool:enqueueEnrichment`. `convex-test` starts scheduled
  * work in the background without waiting for it, so a test that returns
  * immediately leaves it racing the worker's teardown — a failure that reports
  * green locally and fails the JOB in CI, which is the worst shape a failure can
  * have. See `lib/testing/drain-scheduled.ts`.
  *
- * Both are `runAfter(0)`, so `drainScheduled` (not `cancelScheduled`) settles
+ * It is `runAfter(0)`, so `drainScheduled` (not `cancelScheduled`) settles
  * them: actually running the work is always preferable to discarding it, and
  * the delay that forces a cancel elsewhere does not exist here.
  *
@@ -321,128 +319,5 @@ describe("the location-composed team key folds accents (NEO-236 + NEO-253)", () 
     // `findOrCreate`'s INSERT branch schedules enrichment work; settle it here
     // rather than letting it race teardown. See the file note.
     await drainScheduled(t);
-  });
-});
-
-
-describe("startBatch cleanses incoming names (NEO-643)", () => {
-  /**
-   * BSC writes "Wilmer R\ios" for Ríos. The row must be stored (and shown) as
-   * "Wilmer Rios", keyed the same as a clean spelling, and a resume that sends
-   * the backslash form again must find the SAME row rather than add a second.
-   */
-  test("a backslash or soft hyphen never reaches a stored row, and a resume keeps one row", async () => {
-    const t = convexTest(schema, modules);
-    const selectorOptionId = await seedSport(t);
-
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId,
-      createdByUserId: USER.subject,
-      sportId: selectorOptionId,
-      playerNames: ["Wilmer R\\ios", "  Mike\u200b   Trout "],
-      teamNames: ["Le\\on Mex\u00adico"],
-    });
-
-    // `getBatch` is retired (NEO-645): read the batch's rows straight off the table.
-    const readBatch = () =>
-      t.run((ctx) =>
-        ctx.db
-          .query("entityReviewQueue")
-          .withIndex("by_selector_option_and_batch", (q) =>
-            q.eq("selectorOptionId", selectorOptionId).eq("batchId", batchId),
-          )
-          .collect(),
-      );
-    const rows = await readBatch();
-    expect(rows.map((r) => r.name).sort()).toEqual(["Leon Mexico", "Mike Trout", "Wilmer Rios"]);
-
-    const resumed = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId,
-      createdByUserId: USER.subject,
-      sportId: selectorOptionId,
-      playerNames: ["Wilmer Ríos", "Mike Trout"],
-      teamNames: ["Leon Mexico"],
-    });
-    expect(resumed).toBe(batchId);
-    const after = await readBatch();
-    expect(after.map((r) => r._id).sort()).toEqual(rows.map((r) => r._id).sort());
-
-    await drainScheduled(t);
-  });
-
-  test("a name that NFC lengthens past the bound is refused, by length and not by echo", async () => {
-    const t = convexTest(schema, modules);
-    const selectorOptionId = await seedSport(t);
-    // 100 characters raw, 200 once composed: U+0958 composes to two characters.
-    const long = "\u0958".repeat(100);
-    expect(long.length).toBeLessThanOrEqual(120);
-    for (const lists of [{ playerNames: [long], teamNames: [] }, { playerNames: [], teamNames: [long] }]) {
-      const attempt = t.mutation(internal.entityReviewQueue.startBatch, {
-        selectorOptionId,
-        createdByUserId: USER.subject,
-        sportId: selectorOptionId,
-        ...lists,
-      });
-      await expect(attempt).rejects.toThrow(/once cleansed; the limit is 120/);
-      await expect(attempt).rejects.not.toThrow(/\u0958/);
-    }
-    // At the bound exactly is fine.
-    const ok = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId,
-      createdByUserId: USER.subject,
-      sportId: selectorOptionId,
-      playerNames: ["A".repeat(120)],
-      teamNames: [],
-    });
-    expect(typeof ok).toBe("string");
-
-    await drainScheduled(t);
-  });
-});
-
-describe("the entityReviewSkips key agrees across accents (NEO-253)", () => {
-  /**
-   * The skip is written by `commitCardChecklistPrelude` (its own `norm`) and
-   * read by `findSkippedEntityNames` (keys built with `normalizePlayerName` /
-   * `normalizeTeamName`). Two hand copies, two chances to disagree — and a
-   * disagreement here is invisible: the name simply reappears in the wizard on
-   * the next fetch of the set, forever, with nothing anywhere saying why.
-   */
-  test("a skip recorded under one spelling suppresses the other", async () => {
-    const t = convexTest(schema, modules);
-    const selectorOptionId = await seedSport(t);
-
-    await t.run(async (ctx) => {
-      await ctx.db.insert("entityReviewSkips", {
-        selectorOptionId,
-        kind: "player",
-        nameNormalized: normalizePlayerName("José Ramírez"),
-        name: "José Ramírez",
-        skippedAt: Date.now(),
-        skippedByUserId: USER.subject,
-      });
-      await ctx.db.insert("entityReviewSkips", {
-        selectorOptionId,
-        kind: "team",
-        nameNormalized: normalizeTeamName("Montréal Expos"),
-        name: "Montréal Expos",
-        skippedAt: Date.now(),
-        skippedByUserId: USER.subject,
-      });
-    });
-
-    const skipped = await t.query(
-      internal.selectorOptions.findSkippedEntityNames,
-      {
-        selectorOptionId,
-        candidates: [
-          { kind: "player", nameNormalized: normalizePlayerName("Jose Ramirez") },
-          { kind: "team", nameNormalized: normalizeTeamName("Montreal Expos") },
-        ],
-      },
-    );
-    expect(skipped.sort()).toEqual(
-      ["player:jose ramirez", "team:expos montreal"].sort(),
-    );
   });
 });

@@ -1,7 +1,8 @@
 // ONE FEATURE (NEO-424 set history, on the NEO-645 Tidy Up walk): a name already linked on a SAVED
 // card of a set links, at the commit, to that same player when another variant of the set is
-// fetched, whatever sport he is filed under, with no stop; the walk's Player tile says why in a
-// purple note, and the row's "Edit <name>" re-asks it (an exact namesake then leads, main's rule). Around it, the rules that
+// fetched, whatever sport he is filed under, with no stop; the walk's Player tile shows him linked
+// with no note (NEO-656 J1: nothing records why NeonBinder linked a name, so no "Linked for you"),
+// and the row's "Edit <name>" re-asks it (an exact namesake then leads, main's rule). Around it, the rules that
 // share the gate: one namesake in another sport is a suggestion (E2), the Hall of Famer among
 // namesakes is linked (D), a historic club is linked from the stint of the player on the card (2b),
 // a club held in several eras is never linked from set history (NEO-602), and a year on, the prior
@@ -18,9 +19,9 @@
 //   0. FIXTURE, from the UI: a FOOTBALL player "Michael Brantley" on /admin/players (E2's case).
 //   1. Team Bonus: its one unknown name, STAR, is moved to Football on his Player tile and added as
 //      a new player ("Also add Baseball to their sports" left unticked). Save for later.
-//   2. Silk Collection (rule A, cross-sport, and E2): STAR arrives linked, his Player row carries
-//      the note "Linked for you: another card in this set is already linked to them" (his card is
-//      in the walk for its blue career check: a player on file with no stints). "Edit STAR"
+//   2. Silk Collection (rule A, cross-sport, and E2): STAR arrives linked, his Player row reads
+//      answered with no note (J1) (his card is in the walk for its live blue career check: the
+//      card's team is in no stint of a player on file with no stints). "Edit STAR"
 //      reopens the row. Its sport is still Football (his phase-1 answer), so STAR himself is the
 //      one exact namesake there, and main's rule holds: an exact namesake is the stronger, live
 //      answer, so "Link to STAR" leads and the set-history suggestion and its reason give way;
@@ -33,7 +34,7 @@
 //      clubs, and the 1943 Joe Morgan's page lists the card while the other Joe Morgan's does not.
 //   4. Turkey Red: TR92's Browns link from Sisler's stint again. NEO-602 (Jason, 2026-11-19): a
 //      name several eras answer to is the players' (or the operator's), never set history's: where
-//      the walk shows the Browns, the note is never the set-history one. TR92's drawer carries them.
+//      the walk shows the Browns, no "Linked for you" note sits on them (J1). TR92's drawer carries them.
 //   5. STAR's page lists exactly his two cards as Baseball guest cards.
 //   6. Prior year (E1): 2009 Career Best Jumbo Jerseys, Rickie Weeks moved to Football and added
 //      (and no "Which Chris Carpenter is this?" stop: the checklist's Cardinals settle him); then
@@ -148,8 +149,11 @@ const CHECKLIST_OF: Readonly<Record<string, ChecklistName | undefined>> = {
  * `expectAfterMarketplace` (NEO-487).
  */
 const LIVE_BSC_FETCH = 60_000;
-/** The purple notes (tidy/parts/copy.ts `linkedForText`). */
-const SET_HISTORY_NOTE = "Linked for you: another card in this set is already linked to them";
+/**
+ * The retired purple note (NEO-645 `linkedForText`). NEO-656 J1 dropped it: nothing records why
+ * NeonBinder linked a name, so a linked row never carries it. Asserted absent only.
+ */
+const LINKED_FOR_YOU = /Linked for you/;
 /**
  * An answered row's Edit (NEO-645 C1): "Edit <name>", the linked player's name on a linked row.
  * Exact, read inside the row's own group. Contract: a locator, nothing waited for.
@@ -294,7 +298,7 @@ async function openPlayer(page: Page, filter: string, row: RegExp | string): Pro
 }
 
 test(
-  "Tidy Up — a name linked on a saved card of the set links to the same player on the set's next variant (another sport's player, a Hall of Famer), the Player tile says why and its Edit re-asks it; a club held in several eras links from its player's stint, never from set history; a year on, the prior year's edition suggests the same player (NEO-424, NEO-602)",
+  "Tidy Up — a name linked on a saved card of the set links to the same player on the set's next variant (another sport's player, a Hall of Famer), the Player tile shows the link with no note and its Edit re-asks it; a club held in several eras links from its player's stint, never from set history; a year on, the prior year's edition suggests the same player (NEO-424, NEO-602)",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     // ── PHASE 0: the fixture, from the UI: a FOOTBALL Michael Brantley ──
@@ -332,8 +336,11 @@ test(
       const star = playerRow(page, STAR);
       if (!sawStar && (await star.count()) > 0) {
         sawStar = true;
-        // Linked at the commit, with the reason; nothing to answer.
-        await expect(star.getByRole("note")).toHaveText(SET_HISTORY_NOTE);
+        // Linked at the commit; nothing to answer. Positive first: the row reads answered, its
+        // Edit offered. J1, read against it: no "Linked for you" note, and no note of any kind.
+        await expect(editPlayer(star, STAR), `${STAR} arrives linked`).toBeVisible();
+        await expect(star.getByText(LINKED_FOR_YOU)).toHaveCount(0);
+        await expect(star.getByRole("note")).toHaveCount(0);
         await expect(star.getByRole("button", { name: NOT_A_PLAYER })).toHaveCount(0);
         await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, a name linked from this set" });
         // Edit clears the link and re-asks (C1). The row's sport is still Football (his phase-1
@@ -347,13 +354,12 @@ test(
         await expect(star.getByRole("button", { name: /^Add as new player anyway( .+)?$/ })).toBeVisible();
         await expect(star.getByRole("button", { name: `Link to ${STAR} (Football)`, exact: true })).toHaveCount(0);
         await expect(star.getByText(/^Another card in this set is already linked to /)).toHaveCount(0);
-        await expect(star.getByRole("note").filter({ hasText: SET_HISTORY_NOTE })).toHaveCount(0);
+        await expect(star.getByText(LINKED_FOR_YOU)).toHaveCount(0);
         await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, the exact namesake after Edit" });
         await linkExact.click();
         await expect(editPlayer(star, STAR), `${STAR} is linked again`).toBeVisible();
         await expect(linkExact).toHaveCount(0);
-        // C4: a plain exact-match link says nothing; purple is only for set history, the Hall of
-        // Fame and a career team.
+        // A link says nothing (J1): no note on the answered row.
         await expect(star.getByRole("note")).toHaveCount(0);
       }
       const brantley = openPlayerRow(page, BRANTLEY);
@@ -387,12 +393,12 @@ test(
     // ── PHASE 4: FOURTH. The Browns link from Sisler's stint, never from set history ──
     await drillToSet(page, env, TARGET);
     if (await fetchInsert(page, env, FOURTH, { reconcile: false })) {
-      // Wherever the walk shows the Browns, the reason is never the set's history (NEO-602).
+      // Wherever the walk shows the Browns, no note claims a reason (NEO-602, J1).
       await visitWalk(page, async () => {
         const browns = tidyTile(page, "Team").getByRole("group", { name: `Team ${BROWNS}`, exact: true });
         if ((await browns.count()) > 0) {
           await expect(browns.getByText(BROWNS, { exact: true }).first()).toBeVisible();
-          await expect(browns.getByText(SET_HISTORY_NOTE)).toHaveCount(0);
+          await expect(browns.getByText(LINKED_FOR_YOU)).toHaveCount(0);
         }
         return "next";
       });

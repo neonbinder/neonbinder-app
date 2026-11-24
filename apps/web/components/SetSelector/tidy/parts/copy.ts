@@ -43,60 +43,6 @@ export function preselectReasonLine(preselect: PreselectLike): string {
   }
 }
 
-/**
- * Why NeonBinder linked a name without being asked: the purple "Linked for you"
- * note. Only links where NB made a judgement are noted. The plain exact match
- * (one player of that exact name, in the set's sport) is the base case and says
- * nothing: purple is for what an admin would want a second look at (Jason,
- * 2026-11-22).
- */
-export type LinkedForReason = "setHistory" | "hallOfFame" | "careerTeam";
-
-const NOTEWORTHY_REASONS: ReadonlySet<string> = new Set<LinkedForReason>([
-  "setHistory",
-  "hallOfFame",
-  "careerTeam",
-]);
-
-/**
- * The reason a row's note is drawn for, or undefined for no note. Takes the
- * server's word as a string so a reason this build does not know (an older
- * server's plain "exact") reads as no note rather than an empty purple pill.
- */
-export function noteworthyReason(reason: string | undefined): LinkedForReason | undefined {
-  return reason !== undefined && NOTEWORTHY_REASONS.has(reason) ? (reason as LinkedForReason) : undefined;
-}
-
-export function linkedForText(reason: LinkedForReason): string {
-  switch (reason) {
-    case "setHistory":
-      return "Linked for you: another card in this set is already linked to them";
-    case "hallOfFame":
-      return "Linked for you: none of the others on file played that year, but this one is in the Hall of Fame";
-    case "careerTeam":
-      return "Linked for you: the only one on file who played for this card's team";
-  }
-}
-
-/**
- * The same note on a TEAM row. `linkedForText("careerTeam")` is about a player
- * ("the only one on file who played for this card's team"), so a team row says
- * which player's career names the team instead. `playerName` is the card's
- * player whose stints include it, when there is one.
- */
-export function teamLinkedForText(reason: LinkedForReason, playerName?: string): string {
-  if (reason !== "careerTeam") return linkedForText(reason);
-  const who = playerName?.trim();
-  return who ? `Linked for you: ${who} played here` : "Linked for you: a player on this card played here";
-}
-
-/** The Q1-A purple note on a card whose team the commit filled in. */
-export function teamFillText(reason: "otherCards" | "career"): string {
-  return reason === "career"
-    ? "Team filled from the player's career"
-    : "Team filled from the player's other cards";
-}
-
 /** "2011–2018", "2024–" or "" for a stint with no years. An open stint reads "2024–". */
 export function stintYears(stint: { fromYear?: number; toYear?: number }): string {
   if (stint.fromYear === undefined) return "";

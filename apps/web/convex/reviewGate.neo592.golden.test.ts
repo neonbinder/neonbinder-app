@@ -18,8 +18,6 @@
  * export is wrapped in the registry), and that the log line names no one.
  */
 
-import type { Doc } from "./_generated/dataModel";
-import { tidyRowAsReviewRow } from "./lib/tidyAnswerDecisions";
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -34,7 +32,6 @@ import {
   playerRow,
   product,
   seedGateWorld,
-  skipRow,
   teamRow,
   type FetchedCard,
 } from "../lib/testing/neo592-gate-fixture";
@@ -57,14 +54,6 @@ const faults: Fault[] = [];
 // Captured at load: convex-test swaps `setTimeout` for a thrower while a query
 // or mutation handler runs, and a planted delay runs inside one.
 const realSetTimeout = globalThis.setTimeout;
-/**
- * NEO-645 — the gate's name rows are `tidyNames` rows; read each the way the
- * commit prelude reads it (the old queue shape: `decision`, `enrichment`, ...).
- */
-async function tidyReviewRows(ctx: { db: { query: (t: "tidyNames") => { collect: () => Promise<Doc<"tidyNames">[]> } } }) {
-  return (await ctx.db.query("tidyNames").collect()).map((row) => tidyRowAsReviewRow(row));
-}
-
 function plant(fn: string, nth: number, message: string, delayMs = 0): Fault {
   const fault: Fault = { fn, nth, error: new Error(message), delayMs, seen: 0, settled: false };
   faults.push(fault);
@@ -159,10 +148,26 @@ function logLines(spy: ReturnType<typeof vi.spyOn>) {
   return out;
 }
 
-async function queueRows(t: T, _fromGate?: unknown) {
-  return (await t.run((ctx) => tidyReviewRows(ctx))).filter(
-    () => true,
-  );
+/**
+ * NEO-656 — the gate writes nothing, so its per-name facts are READ, the way
+ * the Tidy Up walk reads them: once the commit lands, the names the gate could
+ * not settle are pending names on the set's cards, and `tidyLeafFacts` asks
+ * the same derivation about them. This stands in for that commit by putting
+ * the gate's unknown names on one card of the leaf, then returns the facts.
+ */
+async function factRows(
+  t: T,
+  selectorOptionId: Sel,
+  unknown: { unknownPlayers: string[]; unknownTeams: string[] },
+) {
+  await committedCard(t, selectorOptionId, "PENDING-1", {
+    pendingPlayerNames: unknown.unknownPlayers,
+    pendingTeamNames: unknown.unknownTeams,
+  });
+  const facts = await t
+    .withIdentity(ADMIN)
+    .action(api.selectorOptions.tidyLeafFacts, { selectorOptionId });
+  return facts.gateItems;
 }
 
 const card = (n: number, players: string[], teams: string[] = []): FetchedCard => ({
@@ -178,6 +183,11 @@ const card = (n: number, players: string[], teams: string[] = []): FetchedCard =
 const GOLDEN_UNKNOWN_PLAYERS = [
   "Bob Allen",
   "Stranger Alpha",
+  // NEO-656 — the three names origin/main left out because an operator had
+  // ruled them "not an entity" (`entityReviewSkips`). No ruling is stored or
+  // read any more, so they are asked about like every other name.
+  "Skipped Person",
+  "Dual Name",
   "Other Set Skip",
   "Bo Jackson",
   "Dan Marino",
@@ -190,6 +200,7 @@ const GOLDEN_UNKNOWN_PLAYERS = [
   "Zed Late",
 ];
 const GOLDEN_UNKNOWN_TEAMS = [
+  "Skipped Team",
   "Dual Name",
   "Fictional Whalers",
   "Pending Team A",
@@ -197,27 +208,35 @@ const GOLDEN_UNKNOWN_TEAMS = [
   "Pending Team Tie Home",
   "Pending Team Z",
 ];
-/** kind | name | status | autoLinked | preselect reason | existing candidates */
-const GOLDEN_QUEUE: Array<[string, string, string, string | null, string | null, number]> = [
-  ["player", "Bob Allen", "ready", null, null, 2],
-  ["player", "Stranger Alpha", "pending", null, null, 0],
-  ["player", "Other Set Skip", "pending", null, null, 0],
-  ["player", "Bo Jackson", "ready", null, "onlyNamesake", 0],
-  ["player", "Dan Marino", "ready", null, "priorYearProduct", 0],
-  ["player", "Pat Twin", "pending", null, null, 0],
-  ["player", "Stranger Beta", "pending", null, null, 0],
-  ["player", "Amy Early", "pending", null, null, 0],
-  ["player", "Guest Mid", "pending", null, null, 0],
-  ["player", "Tie Home", "pending", null, null, 0],
-  ["player", "Tie Guest", "pending", null, null, 0],
-  ["player", "Zed Late", "pending", null, null, 0],
-  ["team", "Dual Name", "pending", null, null, 0],
-  ["team", "Fictional Whalers", "pending", null, null, 0],
-  ["team", "Pending Team A", "pending", null, null, 0],
-  ["team", "Pending Team Guest", "pending", null, null, 0],
-  ["team", "Pending Team Tie Home", "pending", null, null, 0],
-  ["team", "Pending Team Z", "pending", null, null, 0],
-  ["team", "St. Louis Browns", "ready", "careerTeam", null, 0],
+/**
+ * kind | name | auto-link origin | preselect reason. The first three columns of
+ * origin/main's per-name rows, minus the row's `status` and its existing
+ * candidates, which were storage details (`tidyNames`) the walk now reads
+ * for itself. The same names, the same auto-link, the same preselects.
+ */
+const GOLDEN_QUEUE: Array<[string, string, string | null, string | null]> = [
+  ["player", "Bob Allen", null, null],
+  ["player", "Stranger Alpha", null, null],
+  ["player", "Skipped Person", null, null],
+  ["player", "Dual Name", null, null],
+  ["player", "Other Set Skip", null, null],
+  ["player", "Bo Jackson", null, "onlyNamesake"],
+  ["player", "Dan Marino", null, "priorYearProduct"],
+  ["player", "Pat Twin", null, null],
+  ["player", "Stranger Beta", null, null],
+  ["player", "Amy Early", null, null],
+  ["player", "Guest Mid", null, null],
+  ["player", "Tie Home", null, null],
+  ["player", "Tie Guest", null, null],
+  ["player", "Zed Late", null, null],
+  ["team", "Skipped Team", null, null],
+  ["team", "Dual Name", null, null],
+  ["team", "Fictional Whalers", null, null],
+  ["team", "Pending Team A", null, null],
+  ["team", "Pending Team Guest", null, null],
+  ["team", "Pending Team Tie Home", null, null],
+  ["team", "Pending Team Z", null, null],
+  ["team", "St. Louis Browns", "careerTeam", null],
 ];
 const GOLDEN_TITLE_CONTEXT = {
   manufacturerBrandUnknown: false,
@@ -259,31 +278,37 @@ describe("resolveChecklistEntities on the representative fixture equals origin/m
     expect(result.titleContext).toEqual(GOLDEN_TITLE_CONTEXT);
   });
 
-  test("every queue row: kind, status, auto-link, preselect and candidates", async () => {
+  test("every name's facts: kind, auto-link, preselect and candidates", async () => {
     const t = newT();
     const w = await seedGateWorld(t);
     const result = await gate(t, w.selectorOptionId, w.sportId, w.cards);
-    const rows = await queueRows(t, result.batchId);
-    expect(
-      rows.map((r) => [
-        r.kind,
-        r.name,
-        r.status,
-        r.decision?.autoLinked ?? null,
-        r.enrichment?.preselect?.reason ?? null,
-        r.enrichment?.existingCandidates?.length ?? 0,
-      ]),
-    ).toEqual(GOLDEN_QUEUE);
-    const byName = (n: string) => rows.find((r) => r.name === n)!;
-    expect(byName("Bo Jackson").enrichment?.preselect?.playerId).toBe(w.ids.boFootball);
-    expect(byName("Dan Marino").enrichment?.preselect?.playerId).toBe(w.ids.marino);
-    expect(byName("St. Louis Browns").decision).toMatchObject({
-      action: "link",
-      linkedTeamId: w.ids.browns.early,
-    });
-    expect(
-      byName("Bob Allen").enrichment?.existingCandidates?.map((c: any) => c.playerId).sort(),
-    ).toEqual([w.ids.bobA, w.ids.bobB].sort());
+    // The automatic link the gate made is RETURNED (nothing is written).
+    expect(result.gateLinks).toEqual([
+      expect.objectContaining({
+        kind: "team",
+        name: "St. Louis Browns",
+        teamId: w.ids.browns.early,
+        origin: "careerTeam",
+      }),
+    ]);
+    // Every other name is a fact the walk reads for itself: the unknown names,
+    // asked about as the leaf's pending names, come out as origin/main's rows.
+    const items = await factRows(t, w.selectorOptionId, result);
+    const byKey = new Map(items.map((i) => [`${i.kind}|${i.name}`, i]));
+    for (const [kind, name, origin, reason] of GOLDEN_QUEUE) {
+      const item = byKey.get(`${kind}|${name}`);
+      // The auto-linked name is an answered name: it is returned as a link
+      // above, never as a pending-name fact.
+      if (origin !== null) {
+        expect(item).toBeUndefined();
+        continue;
+      }
+      expect(item?.auto).toBeUndefined();
+      expect(item?.preselect?.reason ?? null).toBe(reason);
+    }
+    expect(byKey.get("player|Bo Jackson")?.preselect?.playerId).toBe(w.ids.boFootball);
+    expect(byKey.get("player|Dan Marino")?.preselect?.playerId).toBe(w.ids.marino);
+    expect(result.ambiguousPlayers).toEqual(["Bob Allen"]);
   });
 
   test("the stored name resolutions are the players the gate settled, in card order", async () => {
@@ -297,59 +322,6 @@ describe("resolveChecklistEntities on the representative fixture equals origin/m
       { nameNormalized: normalizePlayerName("Browns Veteran"), playerId: w.ids.veteran },
     ]);
   });
-
-  test("skips are per kind and per set: a name skipped as a player is still checked as a team, and another set's skip hides nothing", async () => {
-    const t = newT();
-    const w = await seedGateWorld(t);
-    const result = await gate(t, w.selectorOptionId, w.sportId, w.cards);
-    expect(result.unknownTeams).toContain("Dual Name");
-    expect(result.unknownPlayers).not.toContain("Dual Name");
-    expect(result.unknownPlayers).toContain("Other Set Skip");
-    expect(result.unknownPlayers).not.toContain("Skipped Person");
-    expect(result.unknownTeams).not.toContain("Skipped Team");
-  });
-
-  test("a name skipped as a TEAM still reaches the player check", async () => {
-    const t = newT();
-    const sportId = await node(t, { level: "sport", value: "Baseball" });
-    const p = await product(t, sportId, { year: "2024" });
-    await skipRow(t, p.insert, "team", "Mirror Name");
-    const result = await gate(t, p.insert, sportId, [card(1, ["Mirror Name"], ["Mirror Name"])]);
-    expect(result.unknownPlayers).toEqual(["Mirror Name"]);
-    expect(result.unknownTeams).toEqual([]);
-  });
-});
-
-// ─── Skip lists past the prelude's cap ──────────────────────────────────────
-
-describe("a set holding more than 300 skip rows still skips the right names", () => {
-  async function setWithSkips(t: T, count: number) {
-    const sportId = await node(t, { level: "sport", value: "Baseball" });
-    const p = await product(t, sportId, { year: "2024" });
-    for (let i = 0; i < count - 1; i++) await skipRow(t, p.insert, "player", `Filler Person ${i}`);
-    await skipRow(t, p.insert, "player", "Last Skipped");
-    await skipRow(t, p.insert, "team", "Skipped Squad");
-    return { sportId, p };
-  }
-  const cards = [card(1, ["Last Skipped", "Kept Player"], ["Skipped Squad", "Kept Squad"])];
-
-  test("at 300 rows the prelude's list answers and no point lookup is asked", async () => {
-    const t = newT();
-    const { sportId, p } = await setWithSkips(t, 300 - 1);
-    const result = await gate(t, p.insert, sportId, cards);
-    expect(result.unknownPlayers).toEqual(["Kept Player"]);
-    expect(result.unknownTeams).toEqual(["Kept Squad"]);
-    expect(calls.filter((c) => c.endsWith(":findSkippedEntityNames"))).toHaveLength(0);
-  });
-
-  test("at 301 rows the point lookups answer, and give the same names", async () => {
-    const t = newT();
-    const { sportId, p } = await setWithSkips(t, 300);
-    const result = await gate(t, p.insert, sportId, cards);
-    expect(result.unknownPlayers).toEqual(["Kept Player"]);
-    expect(result.unknownTeams).toEqual(["Kept Squad"]);
-    expect(calls.filter((c) => c.endsWith(":findSkippedEntityNames")).length).toBeGreaterThan(0);
-  });
 });
 
 // ─── Round trips ────────────────────────────────────────────────────────────
@@ -359,7 +331,7 @@ describe("the gate's round trips (the 200-name, 32-team shape)", () => {
     const sportId = await node(t, { level: "sport", value: "Baseball" });
     const p = await product(t, sportId, { year: "2024" });
     const cards: FetchedCard[] = [];
-    // 232 candidate names the skip lookup used to ask one by one.
+    // 232 candidate names.
     for (let i = 0; i < 200; i++) {
       const c = String.fromCharCode(97 + (i % 26));
       const d = String.fromCharCode(97 + (Math.floor(i / 26) % 26));
@@ -384,7 +356,7 @@ describe("the gate's round trips (the 200-name, 32-team shape)", () => {
     return { sportId, p, cards };
   }
 
-  test("at most 19 child calls, with the player slices and the teams batch as one call each", async () => {
+  test("at most 16 child calls, with the player slices and the teams batch as one call each", async () => {
     const t = newT();
     const { sportId, p, cards } = await bigSet(t);
     const names = new Set(cards.flatMap((c) => c.players));
@@ -397,39 +369,30 @@ describe("the gate's round trips (the 200-name, 32-team shape)", () => {
     expect(countOf(":reviewGatePrelude")).toBe(1);
     expect(countOf(":resolveNamesForReview")).toBe(Math.ceil(names.size / 25));
     expect(countOf(":findManyByNameAndSport")).toBe(1);
-    expect(countOf(":findSkippedEntityNames")).toBe(0);
     expect(countOf(":findByNameAndSport")).toBe(0);
     expect(countOf(":getCardChecklist")).toBe(0);
-    // NEO-645: 17 -> 18. The 200 names are written as `tidyNames` rows in pages
-    // of 100 (`upsertFromGatePage`), so two write calls where the old queue
-    // start was one; the reads are unchanged.
-    expect(countOf(":upsertFromGatePage")).toBe(Math.ceil(names.size / 100));
-    // NEO-645 (A17): 18 -> 19. The fetch forgets the earlier fetch's answers
-    // first (`resetForRefetch`), one call for a scope of up to a page of rows.
-    expect(countOf(":resetForRefetch")).toBe(1);
-    expect(calls.length).toBeLessThanOrEqual(19);
+    // NEO-656: 19 -> 16. The gate writes no name rows: the `upsertFromGatePage`
+    // pages (2) and the `resetForRefetch` call (1) are gone; every read is
+    // unchanged.
+    expect(countOf(":upsertFromGatePage")).toBe(0);
+    expect(countOf(":resetForRefetch")).toBe(0);
+    expect(calls.length).toBeLessThanOrEqual(16);
 
     // The product's own tally agrees with the count taken from outside.
     const timing = logLines(log).find((l) => l.msg === "review_gate_timing")!;
     expect(timing.hops).toBe(calls.length);
   });
 
-  test("the skip lookup is one index read whatever the number of candidate names", async () => {
-    // Direct, so the read is counted at the database: see the prelude block in
-    // reviewGate.neo592.parity.test.ts ("one index read whatever the candidate
-    // count"). Here, the gate-level consequence: 40 or 400 candidates, the same
-    // single prelude call and no lookup call.
+  test("the gate is one prelude call whatever the number of candidate names", async () => {
     for (const n of [5, 400]) {
       const t = newT();
       const sportId = await node(t, { level: "sport", value: "Baseball" });
       const p = await product(t, sportId, { year: "2024" });
-      await skipRow(t, p.insert, "player", "Some Skipped");
       const cardsN = Array.from({ length: n }, (_, i) =>
         card(i + 1, [`Candidate Name${String.fromCharCode(97 + (i % 26))}${Math.floor(i / 26)}`]),
       );
       await gate(t, p.insert, sportId, cardsN);
       expect(calls.filter((c) => c.endsWith(":reviewGatePrelude"))).toHaveLength(1);
-      expect(calls.filter((c) => c.endsWith(":findSkippedEntityNames"))).toHaveLength(0);
     }
   });
 
@@ -485,7 +448,7 @@ describe("review_gate_timing", () => {
     expect(typeof line.hops).toBe("number");
     for (const ms of Object.values(line.phasesMs)) expect(typeof ms).toBe("number");
 
-    // Every name the fixture knows, as a player, a team, a skip or a pending name.
+    // Every name the fixture knows, as a player, a team or a pending name.
     const everyName = [
       ...GOLDEN_UNKNOWN_PLAYERS,
       ...GOLDEN_UNKNOWN_TEAMS,
@@ -512,9 +475,9 @@ describe("deviations from the old call order change no answer", () => {
     const t = newT();
     const w = await seedGateWorld(t);
     const result = await gate(t, w.selectorOptionId, w.sportId, [card(1, ["Dan Marino"])]);
-    const rows = await queueRows(t, result.batchId);
+    const rows = await factRows(t, w.selectorOptionId, result);
     const marino = rows.find((r) => r.name === "Dan Marino")!;
-    expect(marino.enrichment?.preselect).toMatchObject({
+    expect(marino.preselect).toMatchObject({
       playerId: w.ids.marino,
       reason: "priorYearProduct",
     });
@@ -531,8 +494,8 @@ describe("deviations from the old call order change no answer", () => {
     await playerRow(t, football, "Bo Jackson");
     await committedCard(t, prior.base, "1", { printed: [["Bo Jackson", vincent]] });
     const result = await gate(t, now.insert, baseball, [card(1, ["Bo Jackson"])]);
-    const [row] = await queueRows(t, result.batchId);
-    expect(row.enrichment?.preselect).toMatchObject({ playerId: vincent, reason: "priorYearProduct" });
+    const [row] = await factRows(t, now.insert, result);
+    expect(row.preselect).toMatchObject({ playerId: vincent, reason: "priorYearProduct" });
   });
 
   test("with a prior-year product but no queued names nothing is scanned, asked or queued", async () => {
@@ -550,7 +513,7 @@ describe("deviations from the old call order change no answer", () => {
     expect(quiet.batchId).toBeUndefined();
     expect(logLines(log).some((l) => l.msg === "prior_year_product_scan")).toBe(false);
     expect(calls.filter((c) => c.endsWith(":findOnlyNamesakes"))).toHaveLength(0);
-    expect(await t.run((ctx) => tidyReviewRows(ctx))).toEqual([]);
+    expect(quiet.gateLinks ?? []).toEqual([]);
   });
 });
 
@@ -564,7 +527,6 @@ describe("a sportId that is not the set's sport ancestor", () => {
       /not the sport ancestor/,
     );
     expect(await t.run((ctx) => ctx.db.query("checklistNameResolutions").collect())).toEqual([]);
-    expect(await t.run((ctx) => tidyReviewRows(ctx))).toEqual([]);
     expect(calls.filter((c) => c.endsWith(":replaceForFetch") || c.endsWith(":startBatch"))).toEqual([]);
     expect(calls.filter((c) => c.endsWith(":resolveNamesForReview"))).toEqual([]);
   });
@@ -577,7 +539,6 @@ describe("a sportId that is not the set's sport ancestor", () => {
     await expect(gate(t, leaf, sportId, [card(1, ["Anyone Atall"])])).rejects.toThrow(
       /not the sport ancestor/,
     );
-    expect(await t.run((ctx) => tidyReviewRows(ctx))).toEqual([]);
   });
 });
 
@@ -723,7 +684,6 @@ describe("when a concurrent read in the gate fails", () => {
     // All three slices were started (3 in flight at once) and have settled.
     expect(calls.filter((c) => c.endsWith(":findManyByNameAndSport"))).toHaveLength(3);
     expect(await snapshotAll(t)).toEqual(before);
-    expect(await t.run((ctx) => tidyReviewRows(ctx))).toEqual([]);
     expect(await t.run((ctx) => ctx.db.query("checklistNameResolutions").collect())).toEqual([]);
   });
 

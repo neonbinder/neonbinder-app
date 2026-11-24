@@ -389,7 +389,6 @@ describe("every writer lands the true counts", () => {
         resolvedTeamNames: [],
         skippedPlayerNames: [],
         skippedTeamNames: [],
-        reviewRowIds: [],
         bscTeamEnrichmentIds: [],
         cardCount: 3,
         ...overrides,
@@ -514,7 +513,6 @@ describe("the collector guard on every card delete", () => {
       resolvedTeamNames: [],
       skippedPlayerNames: [],
       skippedTeamNames: [],
-      reviewRowIds: [],
       bscTeamEnrichmentIds: [],
       cardCount: 0,
     });
@@ -543,7 +541,6 @@ describe("the collector guard on every card delete", () => {
       resolvedTeamNames: [],
       skippedPlayerNames: [],
       skippedTeamNames: [],
-      reviewRowIds: [],
       bscTeamEnrichmentIds: [],
       cardCount: 0,
     });
@@ -832,7 +829,6 @@ describe("a refusal says how many collectors are in the way", () => {
       resolvedTeamNames: [],
       skippedPlayerNames: [],
       skippedTeamNames: [],
-      reviewRowIds: [],
       bscTeamEnrichmentIds: [],
       cardCount: 0,
     });

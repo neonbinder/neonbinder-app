@@ -5,12 +5,15 @@
 //   * Save & next (Enter) is held while anything on the card is pink, and the
 //     status line says why ("1 to fix before this card can save. ...");
 //   * Save for later (Esc) closes the walk and writes nothing;
-//   * Skip: not ready to list moves on and writes nothing; the end screen
-//     counts the card ("1 card skipped, not ready to list");
+//   * Skip: not ready to list moves on and writes nothing;
 //   * Back, and the browser's Back, step to the card before;
-//   * the end screen's "Review the N skipped" reopens the skipped cards from
-//     the first of them ("N cards left" again), and the browser's Back returns
-//     to the end screen with its tally and button unchanged.
+//   * the end screen counts every walked card by what its data says NOW
+//     (NEO-656 J5/B20): a pink card is "skipped, not ready to list", a blue one
+//     is "still to check" whether it was Skipped or Saved & next'd (nothing
+//     records a card as seen), and its button names what it reviews ("Review
+//     the skipped card" while one is pink). It reopens the cards still flagged
+//     from the first of them ("N cards left" again), and the browser's Back
+//     returns to the end screen with its verdict, tally and button unchanged.
 // The position is the address (`?tidy=<card>`): a pasted link opens that card,
 // and an id that is none of this checklist's cards opens the first card.
 //
@@ -19,13 +22,15 @@
 //   #2 no team -> pink. Answered in the walk ("No team on this card"), then
 //      Enter saves it.
 //   #3 a team too long for the title -> blue (Listing title, "To check": the
-//      title had to give up the team). Enter marks it seen, so it leaves the
-//      count. That is what Save & next writes and Skip does not.
+//      title had to give up the team). Save & next writes nothing for it (no
+//      career gap on screen) and nothing records it as seen (J4/J5), so it
+//      stays blue: the end screen counts it "still to check" after Save & next
+//      and again after Skip, and the checklist keeps its mark.
 //
 // R2 - every move is proved by the card that lands (`skipCard`/`saveAndNext`
 // compare the "#..." lines before and after) and by the count after the walk:
-// the pill drops from "3 need you, 2 to fix" to "1 needs you, 1 to fix" (#1, skipped, the only card
-// left flagged). Enter on the pink #1 is held: the Skip right after it lands on
+// the pill drops from "3 need you, 2 to fix" to "2 need you, 1 to fix" (#1, skipped and
+// still pink; #3, still blue). Enter on the pink #1 is held: the Skip right after it lands on
 // #2, which it could not if Enter had already moved the walk on. Every
 // negative (`toHaveCount(0)`, `toBeHidden`) sits beside a positive.
 //
@@ -68,6 +73,7 @@ import { addCardViaForm, createTeamInCardForm, escapeRe } from "../../support/ca
 import {
   expectCardSettled,
   expectCardsLeft,
+  expectTidyEndScreen,
   mustFixLine,
   needsYouPill,
   openTidyWalk,
@@ -246,57 +252,57 @@ test(
     await skipCard(page);
     await expect(tidyCardHeader(page, header(cardC))).toBeVisible();
 
-    // ── Skip the blue #3 too: the end screen offers the two skipped cards again ──
-    await skipCard(page);
-    const twoSkipped = walk.getByText("2 cards skipped, not ready to list", { exact: true });
-    const twoTally = walk.getByText("1 card fixed, 2 skipped.", { exact: true });
-    const reviewTwo = walk.getByRole("button", { name: "Review the 2 skipped", exact: true });
-    await expect(twoSkipped).toBeVisible();
-    await expect(twoTally).toBeVisible();
-    await expect(reviewTwo).toBeVisible();
+    // ── Save & next on the blue #3: the end screen counts it by its data, still to check ──
+    await saveAndNext(page);
+    // #1 is pink (skipped), #3 is blue though it was saved (nothing records it as seen), #2 is fixed.
+    await expectTidyEndScreen(page, { fixed: 1, skipped: 1, stillToCheck: 1 });
+    // The button names what it reviews: with a pink card left, the skipped card.
+    const review = walk.getByRole("button", { name: "Review the skipped card", exact: true });
+    await expect(review).toBeVisible();
+    await expect(walk.getByRole("button", { name: /^(Review the [0-9]+ skipped|Check the )/ })).toHaveCount(0);
     await expectCardsLeft(page, 0);
     const endUrl = page.url();
-    await expectAccessible(page, { within: walk, label: "Tidy Up walk end screen offering the skipped cards" });
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk end screen with a skipped card and one still to check" });
 
-    // Review lands on the first skipped card (#1, not the answered #2), and both count as left again.
-    await reviewTwo.click();
+    // Review lands on the first card still flagged (#1, not the answered #2); #1 and the blue #3
+    // both count as left again.
+    await review.click();
     await expect(tidyCardHeader(page, header(cardA))).toBeVisible();
     await expectCardSettled(page);
     await expect(page).toHaveURL(new RegExp(`[?&]tidy=${escapeRe(idA)}(&|$)`));
     await expectCardsLeft(page, 2);
-    await expect(reviewTwo).toHaveCount(0);
+    await expect(review).toHaveCount(0);
 
-    // The browser's Back returns to the end screen, the tally and the button as they were.
+    // The browser's Back returns to the end screen, the verdict, tally and button as they were.
     await page.goBack();
     await expect(page).toHaveURL(endUrl);
-    await expect(twoSkipped).toBeVisible();
-    await expect(twoTally).toBeVisible();
-    await expect(reviewTwo).toBeVisible();
+    await expectTidyEndScreen(page, { fixed: 1, skipped: 1, stillToCheck: 1 });
+    await expect(review).toBeVisible();
     await expect(tidyCardHeader(page, header(cardA))).toHaveCount(0);
     await expectCardsLeft(page, 0);
 
-    // Review again, skip #1 a last time, and Save & next on #3 marks it seen.
-    await reviewTwo.click();
+    // Review again, skip #1 a last time, and SKIP the blue #3 this time.
+    await review.click();
     await expect(tidyCardHeader(page, header(cardA))).toBeVisible();
     await expectCardsLeft(page, 2);
     await skipCard(page);
     await expect(tidyCardHeader(page, header(cardC))).toBeVisible();
+    await expect(tidyTile(page, "Listing title"), "#3 is still blue after Save & next").toHaveAccessibleDescription("To check");
     await expectCardsLeft(page, 1);
 
-    // ── Save & next on the blue card reaches the end screen ──
-    await saveAndNext(page);
-    await expect(walk.getByText("1 card skipped, not ready to list", { exact: true })).toBeVisible();
-    await expect(walk.getByText("All tidy. Nothing on this checklist needs you.")).toHaveCount(0);
+    // ── Skip on the blue card ends the same as Save & next did: the data decides ──
+    await skipCard(page);
+    await expectTidyEndScreen(page, { fixed: 1, skipped: 1, stillToCheck: 1 });
+    await expect(review).toBeVisible();
     await expectCardsLeft(page, 0);
-    await expectAccessible(page, { within: walk, label: "Tidy Up walk end screen with a skipped card" });
     await page.keyboard.press("Escape");
     await expect(walk).toBeHidden();
     await expect(page).not.toHaveURL(/[?&]tidy=/);
 
-    // What was written: #2's answer and #3's "seen". Skipped #1 is the one card left.
-    await expect(needsYouPill(page)).toHaveText("1 needs you, 1 to fix");
+    // What was written: #2's answer alone. Skipped #1 is still pink and #3 is still blue.
+    await expect(needsYouPill(page)).toHaveText("2 need you, 1 to fix");
     await expect(pinkBadge(cardA.number)).toBeVisible();
+    await expect(blueBadge(cardC.number)).toBeVisible();
     await expect(anyMark(cardB.number)).toHaveCount(0);
-    await expect(anyMark(cardC.number)).toHaveCount(0);
   },
 );

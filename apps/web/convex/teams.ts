@@ -900,8 +900,7 @@ export const aliasesInUse = query({
  *
  * The reverse order of the alias rule: a team may not take a name another
  * team holds as an alias when their years overlap (a team with no years
- * overlaps everything), and `entityReviewQueue.recordDecision` refuses such a
- * create. This is the same lookup (`findAliasHoldersOfName`) read ahead of the
+ * overlaps everything), and creating such a team is refused. This is the same lookup (`findAliasHoldersOfName`) read ahead of the
  * click, so the step can say so, disable "Add as New Team", and offer the
  * holder as the link instead. `yearsActive` is the draft's era, so the step
  * stops warning the moment the operator dates the new team clear of the

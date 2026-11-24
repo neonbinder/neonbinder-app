@@ -4,6 +4,7 @@
  */
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { AnsweredProvider } from "./answered";
 import TidyTile, { ApplyToAllButton, TidyNote, WRAP_LABEL_CLASS } from "./TidyTile";
 
 describe("TidyTile", () => {
@@ -190,6 +191,31 @@ describe("ApplyToAllButton", () => {
     await act(async () => fireEvent.click(screen.getByRole("button")));
     rerender(<ApplyToAllButton count={0} label="Apply to all 0 cards" onApply={onApply} />);
     expect(screen.getByRole("button").getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("hands focus on through the walk's answered hook once it is done, with what it said (C5)", async () => {
+    const onAnswered = vi.fn();
+    const onApply = vi.fn().mockResolvedValue({ applied: 3, skipped: 0 });
+    render(
+      <AnsweredProvider value={onAnswered}>
+        <ApplyToAllButton count={3} label="Apply to all 3 cards" onApply={onApply} />
+      </AnsweredProvider>,
+    );
+    await act(async () => fireEvent.click(screen.getByRole("button")));
+    expect(onAnswered).toHaveBeenCalledTimes(1);
+    expect(onAnswered).toHaveBeenCalledWith("Applied to 3 cards.");
+  });
+
+  it("does not hand focus on when the apply fails (C5)", async () => {
+    const onAnswered = vi.fn();
+    const onApply = vi.fn().mockRejectedValue(new Error("no"));
+    render(
+      <AnsweredProvider value={onAnswered}>
+        <ApplyToAllButton count={3} label="Apply to all 3 cards" onApply={onApply} />
+      </AnsweredProvider>,
+    );
+    await act(async () => fireEvent.click(screen.getByRole("button")));
+    expect(onAnswered).not.toHaveBeenCalled();
   });
 
   it("forgets an old result when the offer changes", async () => {

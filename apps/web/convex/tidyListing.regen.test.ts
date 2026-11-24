@@ -21,8 +21,8 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { listingInputsForStoredCard, newStoredCardReadCache } from "./storedCardTitle";
 import { assessListingTitle, leftOutOfTitle } from "./features/generateListing";
-import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
-import { addPlayer, addTeam, nameRow, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
+import { cancelScheduled } from "../lib/testing/drain-scheduled";
+import { addPlayer, addTeam, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -261,17 +261,10 @@ describe("T4: every walk write rebuilds a typed title", () => {
     expect(after.listingTitle).toBe((await generated(t, card)).title);
   });
 
-  test("answerName rebuilds every card that prints the name, a typed title included (the fan-out)", async () => {
+  test("answerName rebuilds this card's title, a typed one included; Apply to all rebuilds the others", async () => {
     const t = newT();
     const { w, lindor } = await setup(t);
     const [one, two] = await t.run(async (ctx) => {
-      await nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "player",
-        name: "Francisco Lindor",
-        over: { answerGen: 0 },
-      });
       const mk = (n: string) =>
         printCard(ctx, w, {
           number: n,
@@ -284,15 +277,26 @@ describe("T4: every walk write rebuilds a typed title", () => {
       cardId: one,
       kind: "player",
       name: "Francisco Lindor",
+      sportId: w.sport,
       answer: { kind: "linkPlayer", playerId: lindor },
     });
-    await drainScheduled(t);
-    for (const id of [one, two]) {
-      const c = (await get(t, id))!;
-      expect(c.playerIds).toEqual([lindor]);
-      expect(c.listingTitle).toContain("Lindor");
-      expect(c.listingTitle).not.toBe(STALE);
-    }
+    const first = (await get(t, one))!;
+    expect(first.playerIds).toEqual([lindor]);
+    expect(first.listingTitle).toContain("Lindor");
+    expect(first.listingTitle).not.toBe(STALE);
+    // The other card is untouched until Apply to all.
+    expect((await get(t, two))!.listingTitle).toBe(STALE);
+
+    await t.withIdentity(ADMIN).action(api.tidyNames.applyNameToAll, {
+      cardId: one,
+      kind: "player",
+      name: "Francisco Lindor",
+      answer: { kind: "linkPlayer", playerId: lindor },
+    });
+    const c = (await get(t, two))!;
+    expect(c.playerIds).toEqual([lindor]);
+    expect(c.listingTitle).toContain("Lindor");
+    expect(c.listingTitle).not.toBe(STALE);
   });
 });
 

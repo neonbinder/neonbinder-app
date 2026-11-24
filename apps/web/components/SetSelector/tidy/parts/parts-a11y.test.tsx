@@ -149,20 +149,17 @@ describe("TeamFillChips", () => {
     const idle = screen.getByRole("button", { name: /Seattle Mariners/ });
     expect(chosen.className).toContain("hit-area-24");
     expect(idle.className).toContain("hit-area-24");
-    expect(chosen.getAttribute("aria-pressed")).toBe("true");
+    // A chip acts (a click saves it), so it is a plain button, not a toggle.
+    expect(chosen.getAttribute("aria-pressed")).toBeNull();
+    expect(idle.getAttribute("aria-pressed")).toBeNull();
+    // The preselected chip says so by name, not by a state a reader may skip. The
+    // name is set whole (aria-label), so Chromium cannot pad a sr-only span in it.
+    expect(chosen.getAttribute("aria-current")).toBeNull();
+    expect(chosen.getAttribute("aria-label")).toBe("San Diego Padres, suggested · Jackson Merrill played here");
+    expect(screen.getByRole("button", { name: "San Diego Padres, suggested · Jackson Merrill played here" })).toBe(chosen);
+    expect(idle.getAttribute("aria-label")).not.toContain("suggested");
     expect(chosen.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     expect(idle.querySelector("svg")).toBeNull();
-    fireEvent.click(idle);
-    expect(screen.getByRole("button", { name: /Seattle Mariners/ }).querySelector("svg")).not.toBeNull();
-  });
-
-  it("keeps the limit message in a live region that is on the page from the start", () => {
-    render(<Chips />);
-    const status = screen
-      .getAllByRole("status")
-      .find((el) => el.className.includes("text-ink-2") && el.className.includes("empty:hidden"));
-    expect(status).toBeTruthy();
-    expect(status?.textContent).toBe("");
   });
 
   it("reads its headings, status and chip suffixes in the quiet ink, not link blue", () => {
@@ -195,7 +192,7 @@ describe("TeamFillChips", () => {
     }
     // The Mariners chip is not preselected, so it shows the player's years there.
     expect(screen.getByRole("button", { name: "Seattle Mariners · 2015–2019" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "San Diego Padres · Jackson Merrill played here" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "San Diego Padres, suggested · Jackson Merrill played here" })).toBeTruthy();
   });
 
   it("with two players on the card the years line names each player after the separator", () => {
@@ -221,10 +218,49 @@ describe("TeamFillChips", () => {
     ).toBeTruthy();
   });
 
-  it("Save team is an answer: the walk is told once it lands", async () => {
+  it("two preselected chips are described by 'Suggested teams save together.'; their names do not change (NEO-656)", () => {
+    const two = evidence();
+    two.players.push({
+      playerId: "player-2",
+      answer: { tier: "career", teams: [{ teamId: "t2", name: "Seattle Mariners" }] },
+      candidates: [{ teamId: "t2", name: "Seattle Mariners" }],
+      stints: [],
+    } as never);
+    queryResults["cardChecklist.teamSuggestionsForPreview"] = two;
+    const { container } = render(
+      <Chips
+        row={{ playerIds: ["player-1", "player-2"] }}
+        players={[
+          { playerId: "player-1", name: "Jackson Merrill", sportId: "sport-1", stints: [], stintsMore: false },
+          { playerId: "player-2", name: "Pete Rose", sportId: "sport-1", stints: [], stintsMore: false },
+        ]}
+      />,
+    );
+    const note = container.querySelector<HTMLElement>('p[id^="fill-together-"]');
+    expect(note?.textContent).toBe("Suggested teams save together.");
+    expect(note?.className).toContain("sr-only");
+    const padres = screen.getByRole("button", { name: /^San Diego Padres, suggested/ });
+    const mariners = screen.getByRole("button", { name: /^Seattle Mariners, suggested/ });
+    for (const chip of [padres, mariners]) {
+      expect(chip.getAttribute("aria-describedby")).toBe(note?.id);
+      // The note describes the chip; it is not part of its name.
+      expect(chip.textContent).not.toContain("save together");
+    }
+  });
+
+  it("one preselected chip has no 'save together' note and no description", () => {
+    const { container } = render(<Chips />);
+    expect(container.querySelector('p[id^="fill-together-"]')).toBeNull();
+    for (const chip of screen.getAllByRole("button", { name: /Padres|Mariners/ })) {
+      expect(chip.getAttribute("aria-describedby")).toBeNull();
+    }
+  });
+
+  it("clicking a chip saves it, and that is an answer: the walk is told once it lands", async () => {
     const onAnswered = vi.fn();
     render(<Chips onAnswered={onAnswered} />);
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save team" })));
+    expect(screen.queryByRole("button", { name: /^Save teams?$/ })).toBeNull();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /San Diego Padres/ })));
     expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
       id: "c1",
       teamOnCardIds: ["t1"],
@@ -243,17 +279,17 @@ describe("TeamFillChips", () => {
     expect(onAnswered).toHaveBeenCalledTimes(1);
   });
 
-  it("a team picked with Other team… sends focus to Save team, so Enter saves instead of reopening the search", async () => {
+  it("a team picked with Other team… is saved right away and is an answer", async () => {
     const onAnswered = vi.fn();
     render(<Chips onAnswered={onAnswered} />);
-    const other = screen.getByRole("button", { name: "Other team…" });
-    other.focus();
-    fireEvent.click(other);
-    const pick = screen.getByRole("button", { name: "Pick another team" });
-    pick.focus();
-    fireEvent.click(pick);
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: /^Save teams?$/ })));
-    expect(onAnswered).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Other team…" }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pick another team" })));
+    expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+      id: "c1",
+      teamOnCardIds: ["team-9"],
+      regenerateListing: true,
+    });
+    expect(onAnswered).toHaveBeenCalledTimes(1);
   });
 
   it("Cancel on the search returns focus to Other team…", async () => {

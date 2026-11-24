@@ -25,7 +25,6 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
-import { normalizeEntityName } from "../lib/entities/normalize-name";
 // NEO-236: `teams.pickerCandidates` returns raw rows, so a split team's
 // `name` is the nickname alone. Every assertion about a team NAME composes it.
 import { teamFullName } from "../lib/teams/team-name";
@@ -89,7 +88,8 @@ async function seedTree(t: ReturnType<typeof convexTest>) {
  * NEO-645: the commit no longer creates players or teams. The walk does: the
  * commit leaves a printed name pending, then the operator's "Add as new player"
  * (`tidyNames.createPlayer`) or New Team form (`teams.findOrCreate` + an
- * `answerName` link) makes the row. These helpers drive exactly that.
+ * `answerName` link) makes the row. (NEO-656: nothing is seeded first; the name
+ * waits on the card.) These helpers drive exactly that.
  */
 async function openCardFor(
   t: ReturnType<typeof convexTest>,
@@ -98,16 +98,6 @@ async function openCardFor(
   name: string,
   cardNumber: string,
 ) {
-  await t.run(async (ctx) => {
-    await ctx.db.insert("tidyNames", {
-      scopeId: s.variantTypeId,
-      kind,
-      nameNormalized: normalizeEntityName(name),
-      name,
-      sportId: s.sportId,
-      status: "ready",
-    });
-  });
   await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
     selectorOptionId: s.variantTypeId,
     sportId: s.sportId,
@@ -129,7 +119,11 @@ async function walkCreatePlayer(
   cardNumber: string,
 ) {
   const cardId = await openCardFor(t, s, "player", name, cardNumber);
-  await t.withIdentity(ADMIN_IDENTITY).mutation(api.tidyNames.createPlayer, { cardId, name });
+  await t.withIdentity(ADMIN_IDENTITY).mutation(api.tidyNames.createPlayer, {
+    cardId,
+    name,
+    sportId: s.sportId,
+  });
 }
 
 async function walkCreateTeam(
@@ -146,6 +140,7 @@ async function walkCreateTeam(
     cardId,
     kind: "team",
     name: printed,
+    sportId: s.sportId,
     answer: { kind: "linkTeam", teamId },
   });
   await drainScheduled(t);

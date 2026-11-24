@@ -16,11 +16,15 @@ import { createContext, useContext } from "react";
  *
  * Outside a walk (a tile rendered alone) this is a no-op.
  */
-const AnsweredContext = createContext<() => void>(() => {});
+const AnsweredContext = createContext<(announcement?: string) => void>(() => {});
 
 export const AnsweredProvider = AnsweredContext.Provider;
 
-/** Call once an answer has been saved. */
-export function useAnswered(): () => void {
+/**
+ * Call once an answer has been saved. The tile that was answered may be gone
+ * a moment later, so a sentence for a screen reader ("Saved Padres.") goes to
+ * the walk, whose live region stays mounted.
+ */
+export function useAnswered(): (announcement?: string) => void {
   return useContext(AnsweredContext);
 }

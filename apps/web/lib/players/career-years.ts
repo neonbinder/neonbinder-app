@@ -4,7 +4,7 @@
  * ## Why this had to be consolidated
  *
  * There were three copies of this number and they did not agree. The review
- * wizard's server validation (`entityReviewQueue.recordDecision`) refused
+ * wizard's server validation refused
  * anything under 1869; `CareerTeamEntry` mirrored that by hand in a comment
  * that named the file it was mirroring; and `players.savePlayerFields` — the
  * OTHER route into the same `players.teamYears` field — used 1850.
@@ -80,13 +80,10 @@ export function maxBirthYear(now: Date = new Date()): number {
  * The loose bounds a career stint's years have to sit inside, in the one place
  * both writers can reach.
  *
- * NEO-574 moved it here from `entityReviewQueue.ts` so the commit's career-stint
- * phase checks the same bounds. NEO-248 put a SECOND route into the same numbers — `stageCareerTeamRows` now
- * carries the operator's years so the wizard can rebuild the chip after the
- * team's own step, and years that reach `entityReviewQueue.source` must be
- * exactly as well-formed as the ones that reach `decision.manualCareerTeams`,
- * because the same pair ends up in `players.teamYears` either way. Two copies
- * of the rule is how one of them drifts.
+ * NEO-574 moved it here from the review wizard's module so the commit's career-stint
+ * phase checks the same bounds. Every route into `players.teamYears` must be
+ * exactly as well-formed as the others, because the same pair ends up there
+ * either way. Two copies of the rule is how one of them drifts.
  *
  * `forName` reproduces `recordDecision`'s existing message verbatim — those
  * strings are asserted — and is omitted by the staging path, where the caller

@@ -136,39 +136,6 @@ async function seedStale(t: T) {
       sportId: baseball,
       lastUpdated: NOW,
     });
-    const skip = await ctx.db.insert("entityReviewSkips", {
-      selectorOptionId: set,
-      kind: "player",
-      name: "C. J. Kayfus",
-      nameNormalized: "c j kayfus",
-      skippedAt: NOW,
-      skippedByUserId: "user_seed",
-    });
-    const queueBase = {
-      selectorOptionId: set,
-      batchId: "batch-1",
-      createdByUserId: "user_seed",
-      sportId: baseball,
-      status: "ready" as const,
-    };
-    const queuePlayer = await ctx.db.insert("entityReviewQueue", {
-      ...queueBase,
-      kind: "player",
-      name: "C. J. Kayfus",
-      nameNormalized: "c j kayfus",
-    });
-    const queueTeam = await ctx.db.insert("entityReviewQueue", {
-      ...queueBase,
-      kind: "team",
-      name: "Texas A&M Aggies",
-      nameNormalized: "a aggies m texas",
-    });
-    const queueLeague = await ctx.db.insert("entityReviewQueue", {
-      ...queueBase,
-      kind: "league",
-      name: "N. H. L.",
-      nameNormalized: "n h l",
-    });
     return {
       baseball,
       football,
@@ -181,10 +148,6 @@ async function seedStale(t: T) {
       teamAlias,
       league,
       franchise,
-      skip,
-      queuePlayer,
-      queueTeam,
-      queueLeague,
     };
   });
 }
@@ -197,8 +160,6 @@ const ALL_TABLES = [
   "teamAliases",
   "leagues",
   "franchises",
-  "entityReviewSkips",
-  "entityReviewQueue",
 ] as const;
 
 /** Every row of every table the re-key may touch, as plain JSON. */
@@ -247,7 +208,7 @@ describe("rekeyEntityNames: a call without both arms writes nothing", () => {
     expect(report.mode).toBe("dry_run");
     expect(report.armed).toBe(false);
     expect(report.isComplete).toBe(true);
-    for (const table of ALL_TABLES) expect(toRekey(report, table)).toBe(table === "entityReviewQueue" ? 3 : 1);
+    for (const table of ALL_TABLES) expect(toRekey(report, table)).toBe(1);
     expect(report.tables.every((r) => r.applied === 0)).toBe(true);
     expect(report.collisionCount).toBe(0);
     expect(report.samples).toContainEqual(
@@ -348,7 +309,6 @@ describe("rekeyEntityNames: an armed run", () => {
     expect(report.refusedCount).toBe(0);
     expect(report.tables.find((r) => r.table === "players")!.applied).toBe(1);
     expect(report.tables.find((r) => r.table === "teams")!.applied).toBe(1);
-    expect(report.tables.find((r) => r.table === "entityReviewQueue")!.applied).toBe(3);
 
     await t.run(async (ctx) => {
       const player = (await ctx.db.get(ids.player))!;
@@ -378,11 +338,6 @@ describe("rekeyEntityNames: an armed run", () => {
 
       expect((await ctx.db.get(ids.league))!.nameNormalized).toBe("nhl");
       expect((await ctx.db.get(ids.franchise))!.nameNormalized).toBe("dodgers la");
-      expect((await ctx.db.get(ids.skip))!.nameNormalized).toBe("cj kayfus");
-      expect((await ctx.db.get(ids.queuePlayer))!.nameNormalized).toBe("cj kayfus");
-      expect((await ctx.db.get(ids.queueTeam))!.nameNormalized).toBe("aggies am texas");
-      // The league-kind queue row takes the ORDERED key, like startBatch.
-      expect((await ctx.db.get(ids.queueLeague))!.nameNormalized).toBe("nhl");
     });
   });
 
@@ -572,24 +527,6 @@ describe("rekeyEntityNames: hyphenated names are already current (NEO-643)", () 
         nameNormalized: "barons wilkes-barre",
         sportId: baseball,
         lastUpdated: NOW,
-      });
-      await ctx.db.insert("entityReviewSkips", {
-        selectorOptionId: set,
-        kind: "player",
-        name: "Shin-Soo Choo",
-        nameNormalized: "choo shin-soo",
-        skippedAt: NOW,
-        skippedByUserId: "user_seed",
-      });
-      await ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: set,
-        batchId: "batch-1",
-        createdByUserId: "user_seed",
-        sportId: baseball,
-        status: "ready" as const,
-        kind: "player",
-        name: "Min-jae Kim",
-        nameNormalized: "kim min-jae",
       });
     });
     const before = await snapshot(t);

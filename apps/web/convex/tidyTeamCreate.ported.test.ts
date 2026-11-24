@@ -1,5 +1,5 @@
 /**
- * NEO-645 — ported from the retired `create` decision for TEAMS, the staged
+ * NEO-645 / NEO-656 — ported from the retired `create` decision for TEAMS, the staged
  * career-team and league rows, and the commit prelude's New Team pass
  * (commitCardChecklist.entityReview / careerTeamRows / careerCheck /
  * careerNewPlayer / teamAnswers, teamAliasLookups, teamsEra, sportReference,
@@ -32,7 +32,6 @@ import {
   readCards,
   seedLeaf,
   seedTeam,
-  seedUnansweredName,
   type T,
 } from "../lib/testing/tidy-ported";
 
@@ -62,12 +61,6 @@ async function teamCard(t: T, printed: string, opts: { setYear?: string } = {}) 
       }
     });
   }
-  await seedUnansweredName(t, {
-    scopeId: s.variantTypeId,
-    sportId: s.sportId,
-    kind: "team",
-    name: printed,
-  });
   await commit(t, s, [makeCard({ cardNumber: "1", cardName: "Team Card", teams: [printed] })]);
   const [card] = await readCards(t, s.variantTypeId);
   return { ...s, card };
@@ -76,11 +69,12 @@ async function teamCard(t: T, printed: string, opts: { setYear?: string } = {}) 
 const findOrCreate = (t: T, args: Record<string, unknown>) =>
   asAdmin(t).mutation(api.teams.findOrCreate, args as never);
 
-const linkTeam = (t: T, cardId: Id<"cardChecklist">, name: string, teamId: Id<"teams">) =>
+const linkTeam = async (t: T, cardId: Id<"cardChecklist">, name: string, teamId: Id<"teams">) =>
   asAdmin(t).mutation(api.tidyNames.answerName, {
     cardId,
     kind: "team",
     name,
+    sportId: (await t.run((ctx) => ctx.db.get(cardId)))!.sportId!,
     answer: { kind: "linkTeam", teamId },
   });
 
@@ -379,8 +373,6 @@ describe("teams.findOrCreate — the New Team form's League answer (was: staged 
     const teams = await allOf(t, "teams");
     expect(teams.find((x) => x._id === canucks)!.leagueId).toBeUndefined();
     expect(teams.find((x) => x._id === flames)!.leagueId).toBe(nhl);
-    // And "no league" is not a suppressed name: nothing is recorded as ruled out.
-    expect((await allOf(t, "tidyNames")).filter((r) => r.answer?.kind === "notEntity")).toEqual([]);
   });
 
   test("an explicit league on a team's own form is its answer, by id or by name, and no other league is minted (was: a skipped step never overrules the team's own answer)", async () => {
@@ -413,13 +405,13 @@ describe("career teams made through the form reach the player's teamYears (was: 
   test("two clubs made with the operator's leagues, then the player's stints against them", async () => {
     const t = newT();
     const s = await seedLeaf(t);
-    await seedUnansweredName(t, { scopeId: s.variantTypeId, sportId: s.sportId, kind: "player", name: "Travis Bazzana" });
     await commit(t, s, [makeCard({ players: ["Travis Bazzana"] })]);
     const card = await cardOf(t, s.variantTypeId);
     const abl = await league(t, s.sportId, "Australian Baseball League");
     const { playerId } = await asAdmin(t).mutation(api.tidyNames.createPlayer, {
       cardId: card._id,
       name: "Travis Bazzana",
+      sportId: card.sportId!,
     });
 
     const sox = await findOrCreate(t, { name: "Blue Sox", location: "Sydney", sportId: s.sportId, leagueId: abl });
@@ -439,10 +431,9 @@ describe("career teams made through the form reach the player's teamYears (was: 
   test("NEO-248: a hand-typed stint's years reach players.teamYears through the New Team form", async () => {
     const t = newT();
     const s = await seedLeaf(t);
-    await seedUnansweredName(t, { scopeId: s.variantTypeId, sportId: s.sportId, kind: "player", name: "Travis Bazzana" });
     await commit(t, s, [makeCard({ players: ["Travis Bazzana"] })]);
     const card = await cardOf(t, s.variantTypeId);
-    const { playerId } = await asAdmin(t).mutation(api.tidyNames.createPlayer, { cardId: card._id, name: "Travis Bazzana" });
+    const { playerId } = await asAdmin(t).mutation(api.tidyNames.createPlayer, { cardId: card._id, name: "Travis Bazzana", sportId: card.sportId! });
 
     const sox = await findOrCreate(t, { name: "Blue Sox", location: "Sydney", sportId: s.sportId, leagueId: null });
     await asAdmin(t).mutation(api.players.addStint, { cardId: card._id, playerId, teamId: sox, fromYear: 2001, toYear: 2005 });
@@ -460,10 +451,9 @@ describe("career teams made through the form reach the player's teamYears (was: 
     const t = newT();
     const s = await seedLeaf(t);
     const padres = await seedTeam(t, s.sportId, { location: "San Diego", name: "Padres" });
-    await seedUnansweredName(t, { scopeId: s.variantTypeId, sportId: s.sportId, kind: "player", name: "Tony Gwynn" });
     await commit(t, s, [makeCard({ players: ["Tony Gwynn"] })]);
     const card = await cardOf(t, s.variantTypeId);
-    const { playerId } = await asAdmin(t).mutation(api.tidyNames.createPlayer, { cardId: card._id, name: "Tony Gwynn" });
+    const { playerId } = await asAdmin(t).mutation(api.tidyNames.createPlayer, { cardId: card._id, name: "Tony Gwynn", sportId: card.sportId! });
 
     const id = await findOrCreate(t, { name: "Padres", location: "San Diego", sportId: s.sportId });
     expect(id).toBe(padres);
@@ -478,10 +468,9 @@ describe("career teams made through the form reach the player's teamYears (was: 
     // written against the team the Teams step made".
     const t = newT();
     const s = await seedLeaf(t);
-    await seedUnansweredName(t, { scopeId: s.variantTypeId, sportId: s.sportId, kind: "player", name: "Tony Gwynn" });
     await commit(t, s, [makeCard({ players: ["Tony Gwynn"], teams: ["Brand New Club"] })]);
     const card = await cardOf(t, s.variantTypeId);
-    const { playerId } = await asAdmin(t).mutation(api.tidyNames.createPlayer, { cardId: card._id, name: "Tony Gwynn" });
+    const { playerId } = await asAdmin(t).mutation(api.tidyNames.createPlayer, { cardId: card._id, name: "Tony Gwynn", sportId: card.sportId! });
     const club = await findOrCreate(t, { name: "New Club", location: "Brand", sportId: s.sportId, yearsActive: { from: 1980 } });
 
     const out = await asAdmin(t).mutation(api.players.addStint, { cardId: card._id, playerId, teamId: club, fromYear: 1988 });
@@ -501,16 +490,9 @@ describe("career teams made through the form reach the player's teamYears (was: 
         name: "Jets",
         yearsActive: { from: 1972, to: 1996 },
       });
-      await seedUnansweredName(t, {
-        scopeId: s.variantTypeId,
-        sportId: s.sportId,
-        kind: "player",
-        name: "Blake Wheeler",
-        enrichment: { careerTeams: [{ name: "Winnipeg Jets", fromYear: stintFrom }] },
-      });
       await commit(t, s, [makeCard({ players: ["Blake Wheeler"] })]);
       const card = await cardOf(t, s.variantTypeId);
-      const { playerId } = await asAdmin(t).mutation(api.tidyNames.createPlayer, { cardId: card._id, name: "Blake Wheeler" });
+      const { playerId } = await asAdmin(t).mutation(api.tidyNames.createPlayer, { cardId: card._id, name: "Blake Wheeler", sportId: card.sportId!, enrichment: { careerTeams: [{ name: "Winnipeg Jets", fromYear: stintFrom }] } });
       return { jets, teamYears: (await t.run((ctx) => ctx.db.get(playerId)))!.teamYears ?? [] };
     };
     expect((await run(2015)).teamYears).toEqual([]);
@@ -733,10 +715,9 @@ describe("teams.findOrCreate — the alias rules (was: the commit's New Team cre
       aliases: ["Brooklyn Dodgers"],
       yearsActive: { from: 1958 },
     });
-    await seedUnansweredName(t, { scopeId: s.variantTypeId, sportId: s.sportId, kind: "player", name: "Pee Wee Reese" });
     await commit(t, s, [makeCard({ players: ["Pee Wee Reese"] })]);
     const card = await cardOf(t, s.variantTypeId);
-    const { playerId } = await asAdmin(t).mutation(api.tidyNames.createPlayer, { cardId: card._id, name: "Pee Wee Reese" });
+    const { playerId } = await asAdmin(t).mutation(api.tidyNames.createPlayer, { cardId: card._id, name: "Pee Wee Reese", sportId: card.sportId! });
 
     // A 1940 stint cannot resolve to a 1958- row by name, so it can only come through the link.
     const held = await asAdmin(t).query(api.teams.nameHeldAsAliasBy, { sportId: s.sportId, name: "Brooklyn Dodgers" });

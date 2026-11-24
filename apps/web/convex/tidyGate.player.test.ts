@@ -1,13 +1,13 @@
 /**
- * NEO-645 (ported from NEO-602 `playerStepContext.test.ts`) — the gate's
- * decision for a same-name player, now written to `tidyNames`.
+ * NEO-645 / NEO-656 (ported from NEO-602 `playerStepContext.test.ts`) — the
+ * gate's decision for a same-name player, now returned as facts (nothing is
+ * stored).
  *
  * The 2026 Topps Chrome case: four Luis Castillos on file in baseball, two of
  * them with the Mariners on the printed card's roster in 2026, so the printed
- * team separates neither. The gate must ask (a `tidyNames` row with NO answer
- * and every candidate), and a card that names no team asks too. The stored
- * `playerContext` of the old queue row is gone: the card's context is read live
- * (`tidyCards.cardContext`), so what is pinned here is the decision.
+ * team separates neither. The gate must ask (the name is unknown AND ambiguous,
+ * no link), and a card that names no team asks too. The card's context is read
+ * live (`tidyCards.cardContext`).
  */
 
 import { convexTest } from "convex-test";
@@ -28,13 +28,6 @@ const ADMIN = {
   issuer: "https://clerk.example.com",
   tokenIdentifier: "clerk|admin_player_step_context_001",
   name: "Admin User",
-  role: "admin",
-};
-const OTHER_ADMIN = {
-  subject: "admin_player_step_context_002",
-  issuer: "https://clerk.example.com",
-  tokenIdentifier: "clerk|admin_player_step_context_002",
-  name: "Other Admin",
   role: "admin",
 };
 
@@ -164,15 +157,8 @@ async function gate(t: T, s: { sportId: Sel; insert: Sel }, cards: ReturnType<ty
   });
 }
 
-async function playerRows(t: T) {
-  return (await t.run((ctx) => ctx.db.query("tidyNames").collect())).filter(
-    (r) => r.kind === "player",
-  );
-}
-
-
 describe("the gate: both Mariners rows were on the roster, so the printed team separates neither", () => {
-  test("the name goes to the operator: one unanswered name row carrying every candidate", async () => {
+  test("the name goes to the operator: unknown, ambiguous, and no automatic link", async () => {
     const t = newT();
     const s = await setup(t);
     await castillos(t, s);
@@ -181,10 +167,7 @@ describe("the gate: both Mariners rows were on the roster, so the printed team s
 
     expect(result.unknownPlayers).toEqual([NAME]);
     expect(result.ambiguousPlayers).toEqual([NAME]);
-    const [row] = await playerRows(t);
-    // Not linked: nothing decided it.
-    expect(row.answer).toBeUndefined();
-    expect(row.enrichment?.existingCandidates).toHaveLength(4);
+    expect(result.gateLinks ?? []).toEqual([]);
   });
 
   test("a card that names no team asks too", async () => {
@@ -195,29 +178,37 @@ describe("the gate: both Mariners rows were on the roster, so the printed team s
     const result = await gate(t, s, [card([NAME], 62, [])]);
 
     expect(result.ambiguousPlayers).toEqual([NAME]);
-    const [row] = await playerRows(t);
-    expect(row.answer).toBeUndefined();
+    expect(result.gateLinks ?? []).toEqual([]);
   });
 
-  test("a name nobody has on file is one pending row with no candidates", async () => {
+  test("a name nobody has on file is unknown and not ambiguous", async () => {
     const t = newT();
     const s = await setup(t);
 
     const result = await gate(t, s, [card(["Nobody Atall"], 1)]);
 
     expect(result.unknownPlayers).toEqual(["Nobody Atall"]);
-    const [row] = await playerRows(t);
-    expect(row.answer).toBeUndefined();
-    expect(row.enrichment?.existingCandidates ?? []).toEqual([]);
+    expect(result.ambiguousPlayers ?? []).toEqual([]);
+    expect(result.gateLinks ?? []).toEqual([]);
   });
 
-  test("the same name on two cards is ONE row (the walk answers it once)", async () => {
+  test("the same name on two cards is listed once (the walk answers it once)", async () => {
     const t = newT();
     const s = await setup(t);
     await castillos(t, s);
 
-    await gate(t, s, [card([NAME], 62), card([NAME], 63)]);
+    const result = await gate(t, s, [card([NAME], 62), card([NAME], 63)]);
 
-    expect(await playerRows(t)).toHaveLength(1);
+    expect(result.unknownPlayers).toEqual([NAME]);
+  });
+
+  test("the gate stores nothing: no player or team row is added", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await castillos(t, s);
+    const count = () => t.run(async (ctx) => (await ctx.db.query("players").collect()).length);
+    const before = await count();
+    await gate(t, s, [card([NAME], 62)]);
+    expect(await count()).toBe(before);
   });
 });

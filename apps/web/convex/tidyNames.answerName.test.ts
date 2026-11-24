@@ -1,24 +1,21 @@
 /**
- * NEO-645 — `tidyNames.answerName`, the one door for a name's answer.
+ * NEO-645 / NEO-656 — `tidyNames.answerName`, the one door for a name's answer.
  *
- * The open card is patched in the SAME transaction; the rest of the scope is
- * written by the scheduled fan-out (parallel copies included: they keep their
- * source leaf's scope). What is pinned here, per the build contract:
+ * An answer writes to THIS card only (the card is the record; nothing is
+ * stored about the answer). Other cards are reached only by
+ * `tidyNames.applyNameToAll`, tested in `tidyNames.applyToAll.test.ts`. What is
+ * pinned here:
  *
- *   - `cardOverride` is never overwritten;
- *   - compare-and-set: a card whose state is not what the previous answer left
- *     is skipped; a newer answer (`answerGen`) stops the older job's pages;
- *   - accent variants are ONE row, and each card keeps its own spelling;
+ *   - the open card is linked, and no other card moves;
+ *   - an answer twice writes nothing the second time;
  *   - "Not a player" takes the name out of pending AND the generated title,
  *     and clear/Change brings it back;
- *   - a multi-player card keeps its printed order;
+ *   - a multi-player card keeps `playerIds` equal to `playerLinks`;
  *   - `saveAsAlias` (NEO-284) and `addSetSport` (NEO-313) are written;
  *   - the teamless-sport default (NEO-426) is re-asked of a card that just lost
  *     its last pending player name;
+ *   - the sport rule, and the lookup's offered link (which may cross sports);
  *   - `requireAdmin`.
- *
- * Page-level mechanics of the fan-out (the page size, cost) are in
- * `tidyNames.fanOut.test.ts`.
  */
 
 import { convexTest } from "convex-test";
@@ -26,11 +23,10 @@ import { afterEach, describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+import { cancelScheduled } from "../lib/testing/drain-scheduled";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import {
   addPlayer,
-  nameRow,
   printCard,
   seedTidyWorld,
   stampGeneratedTitle,
@@ -56,33 +52,23 @@ afterEach(async () => {
 });
 
 const BO = "Bo Jackson";
-const KEY = normalizeEntityName(BO);
 
 type World = TidyWorld & { bo: Id<"players">; other: Id<"players"> };
 
-/** The chain, Bo Jackson and a namesake, and a settled unanswered row for "Bo Jackson". */
+/** The chain, Bo Jackson and a namesake. */
 async function world(t: T): Promise<World> {
   return t.run(async (ctx) => {
     const w = await seedTidyWorld(ctx);
     const bo = await addPlayer(ctx, w, BO);
     const other = await addPlayer(ctx, w, "Vincent Jackson");
-    await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "player", name: BO });
     return { ...w, bo, other } as World;
   });
 }
 
 const card = (t: T, id: Id<"cardChecklist">) => t.run((ctx) => ctx.db.get(id));
-const rowOf = (t: T, scopeId: Id<"selectorOptions">, kind: "player" | "team", name: string) =>
-  t.run((ctx) =>
-    ctx.db
-      .query("tidyNames")
-      .withIndex("by_scope_kind_name", (q) =>
-        q.eq("scopeId", scopeId).eq("kind", kind).eq("nameNormalized", normalizeEntityName(name)),
-      )
-      .first(),
-  );
 const answerPlayer = (
   t: T,
+  w: World,
   cardId: Id<"cardChecklist">,
   playerId: Id<"players">,
   name = BO,
@@ -92,11 +78,26 @@ const answerPlayer = (
     cardId,
     kind: "player",
     name,
+    sportId: w.sport,
     answer: { kind: "linkPlayer", playerId, ...extra },
   });
+const answerTeam = (
+  t: T,
+  w: World,
+  cardId: Id<"cardChecklist">,
+  name: string,
+  answer: { kind: "linkTeam"; teamId: Id<"teams">; saveAsAlias?: true },
+) =>
+  t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+    cardId,
+    kind: "team",
+    name,
+    sportId: w.sport,
+    answer,
+  });
 
-describe("answerName — the open card and the fan-out", () => {
-  test("the open card is patched in the same transaction; the rest waits for the fan-out", async () => {
+describe("answerName — this card, and only this card", () => {
+  test("the open card is linked and loses the pending name; a card printing the same name is not touched", async () => {
     const t = newT();
     const w = await world(t);
     const [open, other] = await t.run(async (ctx) => [
@@ -104,225 +105,58 @@ describe("answerName — the open card and the fan-out", () => {
       await printCard(ctx, w, { number: "2", printed: [{ kind: "player", name: BO }] }),
     ]);
 
-    const out = await answerPlayer(t, open, w.bo);
-    expect(out).toEqual({ answerGen: 1, fanOutScheduled: true });
+    const out = await answerPlayer(t, w, open, w.bo);
+    expect(out).toBeNull();
 
-    // Before the scheduled job runs: the open card is done, the other is not.
     const openCard = (await card(t, open))!;
     expect(openCard.playerIds).toEqual([w.bo]);
     expect(openCard.playerLinks).toEqual([{ playerId: w.bo, nameOnCard: BO }]);
     expect(openCard.pendingPlayerNames).toBeUndefined();
+    // Nothing is scheduled to reach the rest: only Apply to all does that.
+    const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+    expect(scheduled.filter((s) => s.name.includes("tidyNames"))).toEqual([]);
     expect((await card(t, other))!.playerIds).toBeUndefined();
     expect((await card(t, other))!.pendingPlayerNames).toEqual([BO]);
-
-    await drainScheduled(t);
-    expect((await card(t, other))!.playerIds).toEqual([w.bo]);
-    expect((await card(t, other))!.pendingPlayerNames).toBeUndefined();
   });
 
-  test("records the answer as the operator's, with who and when", async () => {
+  test("answering with the same answer again writes nothing", async () => {
     const t = newT();
     const w = await world(t);
     const open = await t.run((ctx) =>
       printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
     );
-    await answerPlayer(t, open, w.bo);
-    const row = (await rowOf(t, w.base, "player", BO))!;
-    expect(row.answer).toEqual({ kind: "linkPlayer", playerId: w.bo, by: "operator" });
-    expect(row.answerGen).toBe(1);
-    expect(row.answeredByUserId).toBeTruthy();
-    expect(row.answeredAt).toBeGreaterThan(0);
+    await answerPlayer(t, w, open, w.bo);
+    const once = (await card(t, open))!;
+    await answerPlayer(t, w, open, w.bo);
+    expect(await card(t, open)).toEqual(once);
   });
 
-  test("a parallel copy keeps its SOURCE leaf's scope, so the same answer reaches it", async () => {
-    const t = newT();
-    const w = await world(t);
-    const [open, copy] = await t.run(async (ctx) => [
-      await printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
-      // The copy lives on the parallel leaf; its printed row is scoped to the base leaf.
-      await printCard(ctx, w, {
-        leaf: w.parallel,
-        number: "1",
-        printed: [{ kind: "player", name: BO, scopeId: w.base }],
-      }),
-    ]);
-    await answerPlayer(t, open, w.bo);
-    await drainScheduled(t);
-    expect((await card(t, copy))!.playerIds).toEqual([w.bo]);
-    // And no name row was born on the copy's own leaf.
-    expect(await rowOf(t, w.parallel, "player", BO)).toBeNull();
-  });
-
-  test("a card in ANOTHER scope that prints the same name is not touched", async () => {
-    const t = newT();
-    const w = await world(t);
-    const [open, elsewhere] = await t.run(async (ctx) => {
-      await nameRow(ctx, { scopeId: w.insert, sportId: w.sport, kind: "player", name: BO });
-      return [
-        await printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
-        await printCard(ctx, w, { leaf: w.insert, number: "1", printed: [{ kind: "player", name: BO }] }),
-      ];
-    });
-    await answerPlayer(t, open, w.bo);
-    await drainScheduled(t);
-    expect((await card(t, elsewhere))!.playerIds).toBeUndefined();
-    expect((await card(t, elsewhere))!.pendingPlayerNames).toEqual([BO]);
-  });
-
-  test("a card the operator edited by hand (cardOverride) is never overwritten", async () => {
-    const t = newT();
-    const w = await world(t);
-    const [open, edited] = await t.run(async (ctx) => [
-      await printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
-      await printCard(ctx, w, {
-        number: "2",
-        printed: [{ kind: "player", name: BO, cardOverride: true }],
-      }),
-    ]);
-    await answerPlayer(t, open, w.bo);
-    await drainScheduled(t);
-    const after = (await card(t, edited))!;
-    expect(after.playerIds).toBeUndefined();
-    expect(after.pendingPlayerNames).toEqual([BO]);
-  });
-
-  test("answering with the same answer again writes nothing and schedules nothing", async () => {
-    const t = newT();
-    const w = await world(t);
-    const [open] = await t.run(async (ctx) => [
-      await printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
-      await printCard(ctx, w, { number: "2", printed: [{ kind: "player", name: BO }] }),
-    ]);
-    await answerPlayer(t, open, w.bo);
-    await drainScheduled(t);
-    const again = await answerPlayer(t, open, w.bo);
-    expect(again).toEqual({ answerGen: 1, fanOutScheduled: false });
-  });
-
-  test("no fan-out is scheduled when the open card is the only printer", async () => {
+  test("Change replaces the link on this card; the card keeps its own spelling of the name", async () => {
     const t = newT();
     const w = await world(t);
     const open = await t.run((ctx) =>
       printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
     );
-    expect((await answerPlayer(t, open, w.bo)).fanOutScheduled).toBe(false);
-  });
-});
-
-describe("answerName — compare-and-set and the generation", () => {
-  test("Change: a card the operator linked to someone else by hand is skipped, not overwritten", async () => {
-    const t = newT();
-    const w = await world(t);
-    const [open, handLinked, followed] = await t.run(async (ctx) => [
-      await printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
-      await printCard(ctx, w, { number: "2", printed: [{ kind: "player", name: BO }] }),
-      await printCard(ctx, w, { number: "3", printed: [{ kind: "player", name: BO }] }),
-    ]);
-    await answerPlayer(t, open, w.bo);
-    await drainScheduled(t);
-    // The operator relinks card 2 by hand to the namesake (no cardOverride mark).
-    await t.run((ctx) =>
-      ctx.db.patch(handLinked, {
-        playerIds: [w.other],
-        playerLinks: [{ playerId: w.other, nameOnCard: BO }],
-      }),
-    );
-    await answerPlayer(t, open, w.other); // Change the answer
-    await drainScheduled(t);
-    expect((await card(t, followed))!.playerIds).toEqual([w.other]);
-    // Card 2 was already on the namesake and not in the state the first answer left.
-    expect((await card(t, handLinked))!.playerIds).toEqual([w.other]);
-    expect((await card(t, handLinked))!.playerLinks).toEqual([{ playerId: w.other, nameOnCard: BO }]);
+    await answerPlayer(t, w, open, w.bo);
+    await answerPlayer(t, w, open, w.other);
+    const c = (await card(t, open))!;
+    expect(c.playerIds).toEqual([w.other]);
+    expect(c.playerLinks).toEqual([{ playerId: w.other, nameOnCard: BO }]);
   });
 
-  test("Change: a card that no longer shows what the previous answer produced is left alone", async () => {
-    const t = newT();
-    const w = await world(t);
-    const [open, drifted] = await t.run(async (ctx) => [
-      await printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
-      await printCard(ctx, w, { number: "2", printed: [{ kind: "player", name: BO }] }),
-    ]);
-    await answerPlayer(t, open, w.bo);
-    await drainScheduled(t);
-    // A sync (or the operator) took Bo's link off card 2 and left it blank.
-    await t.run((ctx) =>
-      ctx.db.patch(drifted, {
-        playerIds: undefined,
-        playerLinks: undefined,
-        pendingPlayerNames: undefined,
-      }),
-    );
-    await answerPlayer(t, open, w.other);
-    await drainScheduled(t);
-    const after = (await card(t, drifted))!;
-    expect(after.playerIds).toBeUndefined();
-    expect(after.pendingPlayerNames).toBeUndefined();
-  });
-
-  // An answer given while the previous answer's fan-out has not reached every
-  // card: job 1 stops (stale), and job 2 takes a card in ANY state an earlier
-  // unfinished answer may have left (`tidyNames.fanOutFrom`), so nobody is
-  // stranded on the older answer or still pending.
-  test("a newer answer stops the older job: every card ends on the LAST answer", async () => {
-    const t = newT();
-    const w = await world(t);
-    const ids = await t.run(async (ctx) => {
-      const out: Array<Id<"cardChecklist">> = [];
-      for (let i = 1; i <= 5; i++) {
-        out.push(await printCard(ctx, w, { number: String(i), printed: [{ kind: "player", name: BO }] }));
-      }
-      return out;
-    });
-    // Two answers before either job runs: job 1 is stale by the time it starts.
-    const first = await answerPlayer(t, ids[0], w.bo);
-    const second = await answerPlayer(t, ids[0], w.other);
-    expect(second.answerGen).toBe(first.answerGen + 1);
-    await drainScheduled(t);
-    for (const id of ids) {
-      const c = (await card(t, id))!;
-      expect(c.playerIds, `card ${c.cardNumber}`).toEqual([w.other]);
-    }
-  });
-});
-
-describe("answerName — one row per name, however it is spelled", () => {
-  test("accent variants are ONE name row, and each card keeps its own spelling", async () => {
+  test("a card's own spelling (an accent variant) is kept on the link", async () => {
     const t = newT();
     const w = await world(t);
     const acuna = await t.run((ctx) => addPlayer(ctx, w, "Ronald Acuna Jr."));
-    const [open, accented] = await t.run(async (ctx) => {
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "player", name: "Ronald Acuña Jr." });
-      return [
-        await printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Ronald Acuña Jr." }] }),
-        await printCard(ctx, w, { number: "2", printed: [{ kind: "player", name: "Ronald Acuna Jr." }] }),
-      ];
-    });
-    const rows = await t.run((ctx) =>
-      ctx.db
-        .query("tidyNames")
-        .withIndex("by_scope_kind_name", (q) => q.eq("scopeId", w.base))
-        .collect(),
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "2", printed: [{ kind: "player", name: "Ronald Acuna Jr." }] }),
     );
-    expect(rows.filter((r) => r.nameNormalized === normalizeEntityName("Ronald Acuña Jr."))).toHaveLength(1);
-    await answerPlayer(t, open, acuna, "Ronald Acuña Jr.");
-    await drainScheduled(t);
-    // The card printed the unaccented spelling: that is ITS fact, kept.
-    expect((await card(t, accented))!.playerLinks).toEqual([
+    // The operator answers under the accented spelling; the card printed the other.
+    await answerPlayer(t, w, open, acuna, "Ronald Acuña Jr.");
+    expect((await card(t, open))!.playerLinks).toEqual([
       { playerId: acuna, nameOnCard: "Ronald Acuna Jr." },
     ]);
-  });
-
-  test("a name that is not on the card, or has no row, has nothing to answer", async () => {
-    const t = newT();
-    const w = await world(t);
-    const open = await t.run((ctx) =>
-      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
-    );
-    await expect(answerPlayer(t, open, w.bo, "Somebody Else")).rejects.toThrow(/isn't on this card/);
-    const noRow = await t.run((ctx) =>
-      printCard(ctx, w, { number: "2", printed: [{ kind: "player", name: "Rowless Rookie" }] }),
-    );
-    await expect(answerPlayer(t, noRow, w.bo, "Rowless Rookie")).rejects.toThrow(/nothing to answer/);
+    expect((await card(t, open))!.pendingPlayerNames).toBeUndefined();
   });
 });
 
@@ -339,46 +173,53 @@ describe("answerName — Not a player takes the name off the card AND out of its
     });
     return { w, ids };
   }
+  const ask = (
+    t: T,
+    w: World,
+    cardId: Id<"cardChecklist">,
+    answer: { kind: "notEntity" } | { kind: "clear" },
+  ) =>
+    t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+      cardId,
+      kind: "player",
+      name: BO,
+      sportId: w.sport,
+      answer,
+    });
 
-  test("pending name and generated title both lose it, on the open card and the rest", async () => {
+  test("pending name and generated title both lose it on the open card; the other card keeps both", async () => {
     const t = newT();
     const { w, ids } = await twoCards(t);
     expect((await card(t, ids[0]))!.listingTitle).toContain(BO);
-    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
-      cardId: ids[0],
-      kind: "player",
-      name: BO,
-      answer: { kind: "notEntity" },
-    });
-    await drainScheduled(t);
-    for (const id of ids) {
-      const c = (await card(t, id))!;
-      expect(c.pendingPlayerNames).toBeUndefined();
-      expect(c.playerIds).toBeUndefined();
-      expect(c.listingTitle).not.toContain("Jackson");
-    }
-    expect((await rowOf(t, w.base, "player", BO))!.answer).toEqual({ kind: "notEntity", by: "operator" });
+    await ask(t, w, ids[0], { kind: "notEntity" });
+    const open = (await card(t, ids[0]))!;
+    expect(open.pendingPlayerNames).toBeUndefined();
+    expect(open.playerIds).toBeUndefined();
+    expect(open.listingTitle).not.toContain("Jackson");
+    const other = (await card(t, ids[1]))!;
+    expect(other.pendingPlayerNames).toEqual([BO]);
+    expect(other.listingTitle).toContain(BO);
   });
 
   test("clear (Change) puts the name back as pending, in the title again", async () => {
     const t = newT();
-    const { ids } = await twoCards(t);
-    const ask = (answer: { kind: "notEntity" } | { kind: "clear" }) =>
-      t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
-        cardId: ids[0],
-        kind: "player",
-        name: BO,
-        answer,
-      });
-    await ask({ kind: "notEntity" });
-    await drainScheduled(t);
-    await ask({ kind: "clear" });
-    await drainScheduled(t);
-    for (const id of ids) {
-      const c = (await card(t, id))!;
-      expect(c.pendingPlayerNames).toEqual([BO]);
-      expect(c.listingTitle).toContain(BO);
-    }
+    const { w, ids } = await twoCards(t);
+    await ask(t, w, ids[0], { kind: "notEntity" });
+    await ask(t, w, ids[0], { kind: "clear" });
+    const c = (await card(t, ids[0]))!;
+    expect(c.pendingPlayerNames).toEqual([BO]);
+    expect(c.listingTitle).toContain(BO);
+  });
+
+  test("clear after a link takes the link off and the name waits again", async () => {
+    const t = newT();
+    const { w, ids } = await twoCards(t);
+    await answerPlayer(t, w, ids[0], w.bo);
+    await ask(t, w, ids[0], { kind: "clear" });
+    const c = (await card(t, ids[0]))!;
+    expect(c.playerIds).toBeUndefined();
+    expect(c.playerLinks).toBeUndefined();
+    expect(c.pendingPlayerNames).toEqual([BO]);
   });
 
   test("a hand-typed title is rebuilt when the name leaves the card (T4: always overwrite)", async () => {
@@ -391,84 +232,100 @@ describe("answerName — Not a player takes the name off the card AND out of its
         extra: { listingTitle: "My own title for card one" },
       }),
     );
-    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
-      cardId: id,
-      kind: "player",
-      name: BO,
-      answer: { kind: "notEntity" },
-    });
+    await ask(t, w, id, { kind: "notEntity" });
     expect((await card(t, id))!.listingTitle).toBe("Chrome Base #1 Baseball");
   });
 });
 
-describe("answerName — a multi-player card keeps its printed order", () => {
-  test("linking the SECOND printed player first, then the first, ends in printed order", async () => {
-    const t = newT();
+describe("answerName — a multi-player card keeps playerIds equal to playerLinks", () => {
+  const twoNames = async (t: T) => {
     const w = await world(t);
-    const [judge, soto] = await t.run(async (ctx) => [await addPlayer(ctx, w, "Aaron Judge"), await addPlayer(ctx, w, "Juan Soto")]);
-    const id = await t.run(async (ctx) => {
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "player", name: "Aaron Judge" });
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "player", name: "Juan Soto" });
-      return printCard(ctx, w, {
+    const [judge, soto] = await t.run(async (ctx) => [
+      await addPlayer(ctx, w, "Aaron Judge"),
+      await addPlayer(ctx, w, "Juan Soto"),
+    ]);
+    const id = await t.run((ctx) =>
+      printCard(ctx, w, {
         number: "1",
         printed: [
           { kind: "player", name: "Aaron Judge" },
           { kind: "player", name: "Juan Soto" },
         ],
-      });
-    });
-    await answerPlayer(t, id, soto, "Juan Soto");
-    expect((await card(t, id))!.playerIds).toEqual([soto]);
-    expect((await card(t, id))!.pendingPlayerNames).toEqual(["Aaron Judge"]);
-    await answerPlayer(t, id, judge, "Aaron Judge");
-    const c = (await card(t, id))!;
-    expect(c.playerIds).toEqual([judge, soto]);
-    expect(c.playerLinks?.map((l) => l.nameOnCard)).toEqual(["Aaron Judge", "Juan Soto"]);
-    expect(c.pendingPlayerNames).toBeUndefined();
-  });
+      }),
+    );
+    return { w, judge, soto, id };
+  };
 
   test("a card with one name linked still carries the other as pending", async () => {
     const t = newT();
+    const { w, judge, id } = await twoNames(t);
+    await answerPlayer(t, w, id, judge, "Aaron Judge");
+    expect((await card(t, id))!.pendingPlayerNames).toEqual(["Juan Soto"]);
+  });
+
+  test("a newly linked name goes after the players already linked (Jason, J2), ids and links in step", async () => {
+    // Was: linking the SECOND printed player first and then the first ended in
+    // printed order. The card no longer records how linked and pending names
+    // interleave, so the new link lands last (NEO-656, J2: "a newly linked name
+    // goes after the players already linked").
+    const t = newT();
+    const { w, judge, soto, id } = await twoNames(t);
+    await answerPlayer(t, w, id, soto, "Juan Soto");
+    expect((await card(t, id))!.playerIds).toEqual([soto]);
+    expect((await card(t, id))!.pendingPlayerNames).toEqual(["Aaron Judge"]);
+    await answerPlayer(t, w, id, judge, "Aaron Judge");
+    const c = (await card(t, id))!;
+    expect(c.playerIds).toEqual([soto, judge]);
+    expect(c.playerLinks).toEqual([
+      { playerId: soto, nameOnCard: "Juan Soto" },
+      { playerId: judge, nameOnCard: "Aaron Judge" },
+    ]);
+    expect(c.pendingPlayerNames).toBeUndefined();
+  });
+
+  test("linking a MIDDLE pending name keeps playerIds equal to playerLinks, and the others stay pending in order", async () => {
+    const t = newT();
     const w = await world(t);
-    const judge = await t.run((ctx) => addPlayer(ctx, w, "Aaron Judge"));
-    const id = await t.run(async (ctx) => {
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "player", name: "Aaron Judge" });
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "player", name: "Juan Soto" });
-      return printCard(ctx, w, {
+    const [a, b, c] = await t.run(async (ctx) => [
+      await addPlayer(ctx, w, "Aaron Judge"),
+      await addPlayer(ctx, w, "Juan Soto"),
+      await addPlayer(ctx, w, "Mookie Betts"),
+    ]);
+    const id = await t.run((ctx) =>
+      printCard(ctx, w, {
         number: "1",
         printed: [
           { kind: "player", name: "Aaron Judge" },
           { kind: "player", name: "Juan Soto" },
+          { kind: "player", name: "Mookie Betts" },
         ],
-      });
-    });
-    await answerPlayer(t, id, judge, "Aaron Judge");
-    expect((await card(t, id))!.pendingPlayerNames).toEqual(["Juan Soto"]);
+      }),
+    );
+    await answerPlayer(t, w, id, b, "Juan Soto");
+    let row = (await card(t, id))!;
+    expect(row.pendingPlayerNames).toEqual(["Aaron Judge", "Mookie Betts"]);
+    expect(row.playerIds).toEqual(row.playerLinks!.map((l) => l.playerId));
+    expect(row.playerIds).toEqual([b]);
+
+    await answerPlayer(t, w, id, c, "Mookie Betts");
+    await answerPlayer(t, w, id, a, "Aaron Judge");
+    row = (await card(t, id))!;
+    expect(row.playerIds).toEqual(row.playerLinks!.map((l) => l.playerId));
+    expect(row.playerIds).toEqual([b, c, a]);
+    expect(row.pendingPlayerNames).toBeUndefined();
   });
 });
 
 describe("answerName — NEO-284 saveAsAlias and NEO-313 addSetSport", () => {
-  test("saveAsAlias writes the PRINTED spelling onto the team and records it on the answer", async () => {
+  test("saveAsAlias writes the PRINTED spelling onto the team and links it", async () => {
     const t = newT();
     const w = await world(t);
-    const open = await t.run(async (ctx) => {
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "team", name: "Pads" });
-      return printCard(ctx, w, { number: "1", printed: [{ kind: "team", name: "Pads" }] });
-    });
-    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
-      cardId: open,
-      kind: "team",
-      name: "Pads",
-      answer: { kind: "linkTeam", teamId: w.padres, saveAsAlias: true },
-    });
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "team", name: "Pads" }] }),
+    );
+    await answerTeam(t, w, open, "Pads", { kind: "linkTeam", teamId: w.padres, saveAsAlias: true });
     const team = (await t.run((ctx) => ctx.db.get(w.padres)))!;
     expect(team.aliases).toContain("Pads");
-    expect((await rowOf(t, w.base, "team", "Pads"))!.answer).toEqual({
-      kind: "linkTeam",
-      teamId: w.padres,
-      by: "operator",
-      saveAsAlias: true,
-    });
     expect((await card(t, open))!.teamOnCardIds).toEqual([w.padres]);
     expect((await card(t, open))!.pendingTeamNames).toBeUndefined();
   });
@@ -476,40 +333,56 @@ describe("answerName — NEO-284 saveAsAlias and NEO-313 addSetSport", () => {
   test("without saveAsAlias no alias is written", async () => {
     const t = newT();
     const w = await world(t);
-    const open = await t.run(async (ctx) => {
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "team", name: "Pads" });
-      return printCard(ctx, w, { number: "1", printed: [{ kind: "team", name: "Pads" }] });
-    });
-    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
-      cardId: open,
-      kind: "team",
-      name: "Pads",
-      answer: { kind: "linkTeam", teamId: w.padres },
-    });
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "team", name: "Pads" }] }),
+    );
+    await answerTeam(t, w, open, "Pads", { kind: "linkTeam", teamId: w.padres });
     expect((await t.run((ctx) => ctx.db.get(w.padres)))!.aliases ?? []).toEqual([]);
+  });
+
+  test("a team that is not in the question's sport is refused", async () => {
+    const t = newT();
+    const w = await world(t);
+    const hoops = await t.run((ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Basketball",
+        platformData: {},
+        children: [],
+        lastUpdated: 1,
+      }),
+    );
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "team", name: "Pads" }] }),
+    );
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+        cardId: open,
+        kind: "team",
+        name: "Pads",
+        sportId: hoops,
+        answer: { kind: "linkTeam", teamId: w.padres },
+      }),
+    ).rejects.toThrow(/isn't in this sport/);
+    expect((await card(t, open))!.pendingTeamNames).toEqual(["Pads"]);
   });
 
   test("Change never removes an alias already saved", async () => {
     const t = newT();
     const w = await world(t);
-    const open = await t.run(async (ctx) => {
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "team", name: "Pads" });
-      return printCard(ctx, w, { number: "1", printed: [{ kind: "team", name: "Pads" }] });
-    });
-    const ask = (answer: never) =>
-      t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
-        cardId: open,
-        kind: "team",
-        name: "Pads",
-        answer,
-      });
-    await ask({ kind: "linkTeam", teamId: w.padres, saveAsAlias: true } as never);
-    await ask({ kind: "linkTeam", teamId: w.mets } as never);
+    // A linked team has no name on its card (a Change goes through the Team
+    // tile), so the second answer is on another card still waiting on "Pads".
+    const [open, later] = await t.run(async (ctx) => [
+      await printCard(ctx, w, { number: "1", printed: [{ kind: "team", name: "Pads" }] }),
+      await printCard(ctx, w, { number: "2", printed: [{ kind: "team", name: "Pads" }] }),
+    ]);
+    await answerTeam(t, w, open, "Pads", { kind: "linkTeam", teamId: w.padres, saveAsAlias: true });
+    await answerTeam(t, w, later, "Pads", { kind: "linkTeam", teamId: w.mets });
     expect((await t.run((ctx) => ctx.db.get(w.padres)))!.aliases).toContain("Pads");
-    expect((await card(t, open))!.teamOnCardIds).toEqual([w.mets]);
+    expect((await card(t, later))!.teamOnCardIds).toContain(w.mets);
   });
 
-  test("addSetSport adds the SET's sport to a player of another sport, and records it", async () => {
+  test("addSetSport adds the SET's sport to a player of another sport", async () => {
     const t = newT();
     const w = await world(t);
     const { hoops, guard } = await t.run(async (ctx) => {
@@ -526,21 +399,19 @@ describe("answerName — NEO-284 saveAsAlias and NEO-313 addSetSport", () => {
         sportId: hoops,
         lastUpdated: 1,
       });
-      // The question is asked in basketball (the Sport chip), on a baseball set.
-      await ctx.db.insert("tidyNames", {
-        scopeId: w.base,
-        kind: "player",
-        nameNormalized: normalizeEntityName("Deion Sanders"),
-        name: "Deion Sanders",
-        sportId: hoops,
-        status: "ready",
-      });
       return { hoops, guard };
     });
     const open = await t.run((ctx) =>
       printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Deion Sanders" }] }),
     );
-    await answerPlayer(t, open, guard, "Deion Sanders", { addSetSport: true });
+    // The question is asked in basketball (the Sport chip), on a baseball set.
+    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+      cardId: open,
+      kind: "player",
+      name: "Deion Sanders",
+      sportId: hoops,
+      answer: { kind: "linkPlayer", playerId: guard, addSetSport: true },
+    });
     const extra = await t.run((ctx) =>
       ctx.db
         .query("playerSports")
@@ -549,10 +420,7 @@ describe("answerName — NEO-284 saveAsAlias and NEO-313 addSetSport", () => {
     );
     expect(extra.map((r) => r.sportId)).toEqual([w.sport]);
     expect(hoops).not.toBe(w.sport);
-    expect((await rowOf(t, w.base, "player", "Deion Sanders"))!.answer).toMatchObject({
-      kind: "linkPlayer",
-      addSetSport: true,
-    });
+    expect((await card(t, open))!.playerIds).toEqual([guard]);
   });
 });
 
@@ -562,30 +430,27 @@ describe("answerName — the teamless-sport default (NEO-426) is re-stamped", ()
       const w = await seedTidyWorld(ctx, { sportValue: "Golf" });
       await ctx.db.patch(w.sport, { teamlessSport: { setAt: 1, setByUserId: "setter" } });
       const tiger = await addPlayer(ctx, w, "Tiger Woods");
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "player", name: "Tiger Woods" });
       const mk = (n: string) =>
         printCard(ctx, w, { number: n, printed: [{ kind: "player", name: "Tiger Woods" }] });
-      return { w, tiger, open: await mk("1"), other: await mk("2") };
+      return { w: w as World, tiger, open: await mk("1"), other: await mk("2") };
     });
   }
 
-  test("born with a pending name it holds back; the answer stamps No team on the open card and the fan-out", async () => {
+  test("born with a pending name it holds back; the answer stamps No team on the open card only", async () => {
     const t = newT();
-    const { tiger, open, other } = await golf(t);
+    const { w, tiger, open, other } = await golf(t);
     expect((await card(t, open))!.teamNoneConfirmedAt).toBeUndefined();
-    await answerPlayer(t, open, tiger, "Tiger Woods");
+    await answerPlayer(t, w, open, tiger, "Tiger Woods");
     expect((await card(t, open))!.teamNoneConfirmedAt).toBeGreaterThan(0);
-    await drainScheduled(t);
-    expect((await card(t, other))!.teamNoneConfirmedAt).toBeGreaterThan(0);
+    expect((await card(t, other))!.teamNoneConfirmedAt).toBeUndefined();
   });
 
   test("a card that names a team is not stamped (rule 8: a data claim holds back a guess)", async () => {
     const t = newT();
     const { w, tiger, open } = await golf(t);
     await t.run((ctx) => ctx.db.patch(open, { bscTeamName: "Some Team" }));
-    await answerPlayer(t, open, tiger, "Tiger Woods");
+    await answerPlayer(t, w, open, tiger, "Tiger Woods");
     expect((await card(t, open))!.teamNoneConfirmedAt).toBeUndefined();
-    expect(w.sport).toBeTruthy();
   });
 
   test("a sport that is not flagged is never stamped", async () => {
@@ -594,7 +459,7 @@ describe("answerName — the teamless-sport default (NEO-426) is re-stamped", ()
     const open = await t.run((ctx) =>
       printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
     );
-    await answerPlayer(t, open, w.bo);
+    await answerPlayer(t, w, open, w.bo);
     expect((await card(t, open))!.teamNoneConfirmedAt).toBeUndefined();
   });
 });
@@ -603,21 +468,21 @@ describe("answerName — validation and the gate", () => {
   test("a team answer on a player name, and a player answer on a team name, are refused", async () => {
     const t = newT();
     const w = await world(t);
-    const open = await t.run(async (ctx) => {
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "team", name: "Pads" });
-      return printCard(ctx, w, {
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, {
         number: "1",
         printed: [
           { kind: "player", name: BO },
           { kind: "team", name: "Pads" },
         ],
-      });
-    });
+      }),
+    );
     await expect(
       t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
         cardId: open,
         kind: "player",
         name: BO,
+        sportId: w.sport,
         answer: { kind: "linkTeam", teamId: w.padres },
       }),
     ).rejects.toThrow(/team name/);
@@ -626,41 +491,14 @@ describe("answerName — validation and the gate", () => {
         cardId: open,
         kind: "team",
         name: "Pads",
+        sportId: w.sport,
         answer: { kind: "linkPlayer", playerId: w.bo },
       }),
     ).rejects.toThrow(/player name/);
   });
 
-  test("a player of another sport is refused, and nothing is written", async () => {
-    const t = newT();
-    const w = await world(t);
-    const stranger = await t.run(async (ctx) => {
-      const hoops = await ctx.db.insert("selectorOptions", {
-        level: "sport",
-        value: "Basketball",
-        platformData: {},
-        children: [],
-        lastUpdated: 1,
-      });
-      return ctx.db.insert("players", {
-        name: "Michael Jordan",
-        nameNormalized: normalizeEntityName("Michael Jordan"),
-        sportId: hoops,
-        lastUpdated: 1,
-      });
-    });
-    const open = await t.run((ctx) =>
-      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
-    );
-    await expect(answerPlayer(t, open, stranger)).rejects.toThrow(/isn't in this sport/);
-    expect((await rowOf(t, w.base, "player", BO))!.answer).toBeUndefined();
-    expect((await card(t, open))!.pendingPlayerNames).toEqual([BO]);
-  });
-
-  test("a link to what the row itself OFFERED in another sport is allowed and re-points the row's sport (D7)", async () => {
-    const t = newT();
-    const w = await world(t);
-    const { hoops, mj } = await t.run(async (ctx) => {
+  const stranger = (t: T) =>
+    t.run(async (ctx) => {
       const hoops = await ctx.db.insert("selectorOptions", {
         level: "sport",
         value: "Basketball",
@@ -671,63 +509,357 @@ describe("answerName — validation and the gate", () => {
       const mj = await ctx.db.insert("players", {
         name: "Michael Jordan",
         nameNormalized: normalizeEntityName("Michael Jordan"),
+        aliases: ["Mike Jordan"],
         sportId: hoops,
         lastUpdated: 1,
       });
-      await nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "player",
-        name: "Mike Jordan",
-        over: {
-          enrichment: {
-            preselect: { playerId: mj, name: "Michael Jordan", sportId: hoops, sportValue: "Basketball", reason: "onlyNamesake" },
-          },
-        },
-      });
       return { hoops, mj };
     });
-    const open = await t.run((ctx) =>
-      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Mike Jordan" }] }),
-    );
-    await answerPlayer(t, open, mj, "Mike Jordan");
-    expect((await rowOf(t, w.base, "player", "Mike Jordan"))!.sportId).toBe(hoops);
-    expect((await card(t, open))!.playerIds).toEqual([mj]);
-  });
 
-  test("Change on an auto answer keeps the old pick as the preselect", async () => {
+  test("a player of another sport is refused, and nothing is written", async () => {
     const t = newT();
     const w = await world(t);
-    await t.run(async (ctx) => {
-      const row = await ctx.db
-        .query("tidyNames")
-        .withIndex("by_scope_kind_name", (q) =>
-          q.eq("scopeId", w.base).eq("kind", "player").eq("nameNormalized", KEY),
-        )
-        .first();
-      await ctx.db.patch(row!._id, {
-        answer: { kind: "linkPlayer", playerId: w.bo, by: "auto", autoReason: "setHistory" },
-        answerGen: 1,
-      });
-    });
+    const { mj } = await stranger(t);
     const open = await t.run((ctx) =>
-      printCard(ctx, w, {
-        number: "1",
-        printed: [{ kind: "player", name: BO }],
-        pendingPlayerNames: [],
-        extra: { playerIds: [w.bo], playerLinks: [{ playerId: w.bo, nameOnCard: BO }] },
-      }),
+      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
+    );
+    await expect(answerPlayer(t, w, open, mj)).rejects.toThrow(/isn't in this sport/);
+    expect((await card(t, open))!.pendingPlayerNames).toEqual([BO]);
+    expect((await card(t, open))!.playerIds).toBeUndefined();
+  });
+
+  test("a link to a player the lookup OFFERED in another sport is allowed (offered: true)", async () => {
+    const t = newT();
+    const w = await world(t);
+    const { mj } = await stranger(t);
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Mike Jordan" }] }),
     );
     await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
       cardId: open,
       kind: "player",
-      name: BO,
+      name: "Mike Jordan",
+      sportId: w.sport,
+      answer: { kind: "linkPlayer", playerId: mj },
+      offered: true,
+    });
+    expect((await card(t, open))!.playerIds).toEqual([mj]);
+    expect((await card(t, open))!.playerLinks).toEqual([{ playerId: mj, nameOnCard: "Mike Jordan" }]);
+  });
+
+  test("offered: true does not carry a player of another sport whose name or alias is not this name (S1)", async () => {
+    const t = newT();
+    const w = await world(t);
+    const { mj } = await stranger(t);
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
+    );
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+        cardId: open,
+        kind: "player",
+        name: BO,
+        sportId: w.sport,
+        answer: { kind: "linkPlayer", playerId: mj },
+        offered: true,
+      }),
+    ).rejects.toThrow(/isn't in this sport/);
+    expect((await card(t, open))!.playerIds).toBeUndefined();
+    expect((await card(t, open))!.pendingPlayerNames).toEqual([BO]);
+  });
+
+  // NEO-656 (N1): main took any id in the row's own preselect / candidates, so a
+  // history pick or the prior-year pick offered under ANOTHER spelling than the
+  // card's was accepted. `offered` is a client flag, so the server re-derives
+  // those two picks itself (the gate's own scan) rather than trusting it. The scan
+  // runs in the `answerOfferedName` action (a mutation must not scan a big set)
+  // and reaches the write as a server-computed `proven`, never from the client.
+  describe("offered: a pick the server itself derives for this name (N1)", () => {
+    /** A Basketball player known to the set's cards as "Magic Johnson" only: no alias says so. */
+    const nicknamed = (t: T) =>
+      t.run(async (ctx) => {
+        const hoops = await ctx.db.insert("selectorOptions", {
+          level: "sport",
+          value: "Basketball",
+          platformData: {},
+          children: [],
+          lastUpdated: 1,
+        });
+        const earvin = await ctx.db.insert("players", {
+          name: "Earvin Johnson",
+          nameNormalized: normalizeEntityName("Earvin Johnson"),
+          sportId: hoops,
+          lastUpdated: 1,
+        });
+        return earvin;
+      });
+    const printedLink = (
+      leaf: Id<"selectorOptions">,
+      playerId: Id<"players">,
+      nameOnCard: string,
+    ) => ({
+      selectorOptionId: leaf,
+      cardNumber: "H1",
+      cardName: "Earlier commit",
+      playerIds: [playerId],
+      playerLinks: [{ playerId, nameOnCard }],
+      platformData: {},
+      sortOrder: 0,
+      lastUpdated: 1,
+    });
+    const offeredLink = (t: T, w: World, cardId: Id<"cardChecklist">, playerId: Id<"players">) =>
+      t.withIdentity(ADMIN).action(api.tidyNames.answerOfferedName, {
+        cardId,
+        kind: "player",
+        name: "Magic Johnson",
+        sportId: w.sport,
+        answer: { kind: "linkPlayer", playerId },
+        offered: true,
+      });
+
+    test("a set-history pick spelled differently from the card is accepted", async () => {
+      const t = newT();
+      const w = await world(t);
+      const earvin = await nicknamed(t);
+      const open = await t.run(async (ctx) => {
+        await ctx.db.insert("cardChecklist", {
+          ...printedLink(w.insert, earvin, "Magic Johnson"),
+          listingTitle: "#H1",
+          sportId: w.sport,
+        });
+        return printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Magic Johnson" }] });
+      });
+
+      await offeredLink(t, w, open, earvin);
+
+      expect((await card(t, open))!.playerIds).toEqual([earvin]);
+      expect((await card(t, open))!.playerLinks).toEqual([
+        { playerId: earvin, nameOnCard: "Magic Johnson" },
+      ]);
+    });
+
+    test("the prior-year product's pick (rule E1) spelled differently from the card is accepted", async () => {
+      const t = newT();
+      const w = await world(t);
+      const earvin = await nicknamed(t);
+      const open = await t.run(async (ctx) => {
+        const node = (
+          level: "year" | "manufacturer" | "setName" | "variantType",
+          value: string,
+          parentId: Id<"selectorOptions">,
+        ) =>
+          ctx.db.insert("selectorOptions", {
+            level,
+            value,
+            parentId,
+            platformData: {},
+            children: [],
+            lastUpdated: 1,
+          });
+        const year = await node("year", "2023", w.sport);
+        const brand = await node("manufacturer", "Topps", year);
+        const set = await node("setName", "Chrome", brand);
+        const base = await node("variantType", "Base", set);
+        await ctx.db.insert("cardChecklist", {
+          ...printedLink(base, earvin, "Magic Johnson"),
+          listingTitle: "#H1",
+          sportId: w.sport,
+        });
+        return printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Magic Johnson" }] });
+      });
+
+      await offeredLink(t, w, open, earvin);
+
+      expect((await card(t, open))!.playerIds).toEqual([earvin]);
+    });
+
+    test("a player of another sport nothing offers for this name is still refused, history or no history", async () => {
+      const t = newT();
+      const w = await world(t);
+      const earvin = await nicknamed(t);
+      const { mj } = await stranger(t);
+      const open = await t.run(async (ctx) => {
+        // The set's history links "Magic Johnson" to Earvin, not to the stranger.
+        await ctx.db.insert("cardChecklist", {
+          ...printedLink(w.insert, earvin, "Magic Johnson"),
+          listingTitle: "#H1",
+          sportId: w.sport,
+        });
+        return printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Magic Johnson" }] });
+      });
+
+      await expect(offeredLink(t, w, open, mj)).rejects.toThrow(/isn't in this sport/);
+      expect((await card(t, open))!.playerIds).toBeUndefined();
+      expect((await card(t, open))!.pendingPlayerNames).toEqual(["Magic Johnson"]);
+    });
+
+    test("the public mutation does not run the history proof: a differently spelled history pick is refused there, and `proven` cannot be passed", async () => {
+      const t = newT();
+      const w = await world(t);
+      const earvin = await nicknamed(t);
+      const open = await t.run(async (ctx) => {
+        await ctx.db.insert("cardChecklist", {
+          ...printedLink(w.insert, earvin, "Magic Johnson"),
+          listingTitle: "#H1",
+          sportId: w.sport,
+        });
+        return printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Magic Johnson" }] });
+      });
+      const args = {
+        cardId: open,
+        kind: "player" as const,
+        name: "Magic Johnson",
+        sportId: w.sport,
+        answer: { kind: "linkPlayer" as const, playerId: earvin },
+        offered: true as const,
+      };
+      await expect(t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, args)).rejects.toThrow(
+        /isn't in this sport/,
+      );
+      await expect(
+        t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, { ...args, proven: true } as never),
+      ).rejects.toThrow();
+      await expect(
+        t.withIdentity(ADMIN).action(api.tidyNames.answerOfferedName, { ...args, proven: true } as never),
+      ).rejects.toThrow();
+      expect((await card(t, open))!.playerIds).toBeUndefined();
+    });
+
+    test("a player who plays the question's sport links through the action with no history at all", async () => {
+      const t = newT();
+      const w = await world(t);
+      const open = await t.run((ctx) =>
+        printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
+      );
+      const bo = await t.run((ctx) =>
+        ctx.db.insert("players", {
+          name: "Robert Jackson",
+          nameNormalized: normalizeEntityName("Robert Jackson"),
+          sportId: w.sport,
+          lastUpdated: 1,
+        }),
+      );
+      await t.withIdentity(ADMIN).action(api.tidyNames.answerOfferedName, {
+        cardId: open,
+        kind: "player",
+        name: BO,
+        sportId: w.sport,
+        answer: { kind: "linkPlayer", playerId: bo },
+        offered: true,
+      });
+      expect((await card(t, open))!.playerIds).toEqual([bo]);
+    });
+
+    test("a signed-out caller and a non-admin are refused by the action", async () => {
+      const t = newT();
+      const w = await world(t);
+      const earvin = await nicknamed(t);
+      const open = await t.run((ctx) =>
+        printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Magic Johnson" }] }),
+      );
+      const args = {
+        cardId: open,
+        kind: "player" as const,
+        name: "Magic Johnson",
+        sportId: w.sport,
+        answer: { kind: "linkPlayer" as const, playerId: earvin },
+        offered: true as const,
+      };
+      await expect(t.action(api.tidyNames.answerOfferedName, args)).rejects.toThrow();
+      await expect(t.withIdentity(MEMBER).action(api.tidyNames.answerOfferedName, args)).rejects.toThrow();
+    });
+
+    test("without offered: true a history pick of another sport is refused like any other", async () => {
+      const t = newT();
+      const w = await world(t);
+      const earvin = await nicknamed(t);
+      const open = await t.run(async (ctx) => {
+        await ctx.db.insert("cardChecklist", {
+          ...printedLink(w.insert, earvin, "Magic Johnson"),
+          listingTitle: "#H1",
+          sportId: w.sport,
+        });
+        return printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Magic Johnson" }] });
+      });
+
+      await expect(
+        t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+          cardId: open,
+          kind: "player",
+          name: "Magic Johnson",
+          sportId: w.sport,
+          answer: { kind: "linkPlayer", playerId: earvin },
+        }),
+      ).rejects.toThrow(/isn't in this sport/);
+    });
+  });
+
+  test("an offered id that is gone since the lookup is refused, and nothing is written", async () => {
+    const t = newT();
+    const w = await world(t);
+    const { mj } = await stranger(t);
+    await t.run((ctx) => ctx.db.delete(mj));
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Mike Jordan" }] }),
+    );
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+        cardId: open,
+        kind: "player",
+        name: "Mike Jordan",
+        sportId: w.sport,
+        answer: { kind: "linkPlayer", playerId: mj },
+        offered: true,
+      }),
+    ).rejects.toThrow(/player is gone/);
+    expect((await card(t, open))!.playerIds).toBeUndefined();
+    expect((await card(t, open))!.pendingPlayerNames).toEqual(["Mike Jordan"]);
+  });
+
+  test("a name the card does not hold is refused for a link, Not a player and a team link; only clear may name it (main's guard)", async () => {
+    const t = newT();
+    const w = await world(t);
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
+    );
+    await expect(answerPlayer(t, w, open, w.bo, "Somebody Else")).rejects.toThrow(
+      /isn't on this card/,
+    );
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+        cardId: open,
+        kind: "player",
+        name: "Somebody Else",
+        sportId: w.sport,
+        answer: { kind: "notEntity" },
+      }),
+    ).rejects.toThrow(/isn't on this card/);
+    await expect(
+      answerTeam(t, w, open, "Some Team", { kind: "linkTeam", teamId: w.padres }),
+    ).rejects.toThrow(/isn't on this card/);
+    const after = (await card(t, open))!;
+    expect(after.pendingPlayerNames).toEqual([BO]);
+    expect(after.playerIds).toBeUndefined();
+    // `clear` is the one answer that may name a name the card no longer holds
+    // (the walk re-asks after Not a player).
+    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+      cardId: open,
+      kind: "player",
+      name: "Somebody Else",
+      sportId: w.sport,
       answer: { kind: "clear" },
     });
-    const row = (await rowOf(t, w.base, "player", BO))!;
-    expect(row.answer).toBeUndefined();
-    expect(row.enrichment?.preselect).toMatchObject({ playerId: w.bo, reason: "setHistory" });
-    expect((await card(t, open))!.pendingPlayerNames).toEqual([BO]);
+    expect((await card(t, open))!.pendingPlayerNames).toContain("Somebody Else");
+  });
+
+  test("a card that is gone is refused", async () => {
+    const t = newT();
+    const w = await world(t);
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
+    );
+    await t.run((ctx) => ctx.db.delete(open));
+    await expect(answerPlayer(t, w, open, w.bo)).rejects.toThrow(/card is gone/);
   });
 
   test("a signed-out caller and a non-admin are refused before anything is read", async () => {
@@ -740,13 +872,14 @@ describe("answerName — validation and the gate", () => {
       cardId: open,
       kind: "player" as const,
       name: BO,
+      sportId: w.sport,
       answer: { kind: "linkPlayer" as const, playerId: w.bo },
     };
     await expect(t.mutation(api.tidyNames.answerName, args)).rejects.toThrow(/Not authenticated/);
     await expect(t.withIdentity(MEMBER).mutation(api.tidyNames.answerName, args)).rejects.toThrow(
       /Admin access required/,
     );
-    expect((await rowOf(t, w.base, "player", BO))!.answer).toBeUndefined();
+    expect((await card(t, open))!.pendingPlayerNames).toEqual([BO]);
   });
 
   test("a name over the cap is refused naming the limit, never the value", async () => {
@@ -756,7 +889,7 @@ describe("answerName — validation and the gate", () => {
       printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: BO }] }),
     );
     const long = "Z".repeat(121);
-    const err = await answerPlayer(t, open, w.bo, long).catch((e: Error) => e);
+    const err = await answerPlayer(t, w, open, w.bo, long).catch((e: Error) => e);
     expect(String((err as Error).message)).toMatch(/limit is 120/);
     expect(String((err as Error).message)).not.toContain(long);
   });

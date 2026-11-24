@@ -5,16 +5,16 @@
  * tests: here each is a stub, and one of them registers an inline part so the
  * Escape ordering can be driven. Router, URL, history and the sitting are real.
  */
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement, useEffect, useRef, useState } from "react";
 import { MemoryRouter, useLocation, useSearchParams } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../convex/_generated/api", () => ({
   api: {
-    tidyNames: { lookupsPending: "lookupsPending" },
-    tidyCards: { cardContext: "cardContext", markReviewed: "markReviewed" },
-    selectorOptions: { updateCard: "updateCard" },
+    tidyCards: { cardContext: "cardContext", saveCard: "saveCard" },
+    selectorOptions: { updateCard: "updateCard", tidyLeafFacts: "tidyLeafFacts" },
+    adapters: { wikidata: { lookupTidyName: "lookupTidyName" } },
     drillPath: { resolveDrillPath: "resolveDrillPath" },
   },
 }));
@@ -22,17 +22,14 @@ vi.mock("../../../convex/_generated/api", () => ({
 // Nothing in the walk asks the server on demand; any call that does lands here.
 const { convexQuery } = vi.hoisted(() => ({ convexQuery: vi.fn(async (): Promise<unknown> => undefined) }));
 
-const markReviewed = vi.fn();
+const saveCard = vi.fn();
 const updateCard = vi.fn();
-let pendingLookups: { names: Array<{ kind: "player" | "team"; nameNormalized: string }>; more: boolean } = {
-  names: [],
-  more: false,
-};
+const tidyLeafFacts = vi.fn(async (): Promise<unknown> => ({ gateItems: [] }));
+const lookupTidyName = vi.fn(async (): Promise<unknown> => ({ status: "ready" }));
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
-    if (ref === "lookupsPending") return pendingLookups;
     // The drill hook above the walk (NEO-645 race test): every id in the URL is real.
     if (ref === "resolveDrillPath") return (args as { ids: string[] }).ids.map((_id) => ({ _id }));
     if (ref === "cardContext") {
@@ -49,7 +46,9 @@ vi.mock("convex/react", () => ({
     return undefined;
   },
   useMutation: (ref: string) =>
-    ref === "markReviewed" ? markReviewed : ref === "updateCard" ? updateCard : vi.fn(),
+    ref === "saveCard" ? saveCard : ref === "updateCard" ? updateCard : vi.fn(),
+  useAction: (ref: string) =>
+    ref === "tidyLeafFacts" ? tidyLeafFacts : ref === "lookupTidyName" ? lookupTidyName : vi.fn(),
   useConvex: () => ({ query: convexQuery }),
 }));
 
@@ -102,12 +101,12 @@ vi.mock("./tiles/CardNameTile", async () => {
   };
 });
 // NEO-657: a tile's before-save hook, when a test sets one (the open "+ Add stint" form's).
-let careerBeforeSave: (() => Promise<boolean>) | null = null;
+let careerBeforeSave: ((wrote: (playerId: string) => void) => Promise<boolean>) | null = null;
 vi.mock("./tiles/CareerTile", async () => {
   const { useBeforeSave } = await import("./before-save");
   return {
     default: function CareerTile() {
-      useBeforeSave(careerBeforeSave !== null, () => careerBeforeSave!());
+      useBeforeSave(careerBeforeSave !== null, (wrote) => careerBeforeSave!(wrote));
       return <div data-testid="tile-career" />;
     },
   };
@@ -129,7 +128,7 @@ vi.mock("./tiles/TeamTile", async () => {
               type="button"
               onClick={() => {
                 setAnswered(true);
-                if (teamCallsAnswered) onAnswered();
+                if (teamCallsAnswered) onAnswered("Saved Padres.");
               }}
             >
               No team on this card
@@ -160,12 +159,12 @@ vi.mock("./tiles/TitleTile", async () => {
   };
 });
 
-import TidyUpWalk, { mustFixLine, reviewSkippedLabel } from "./TidyUpWalk";
+import TidyUpWalk, { checkStillToCheckLabel, mustFixLine, reviewButtonLabel, reviewSkippedLabel } from "./TidyUpWalk";
 import { useDrillUrlState } from "../useDrillUrlState";
 import { useTidyWalkUrl } from "./useTidyWalkUrl";
 import { forgetSearchWrite } from "../live-search-params";
 import { resetSitting } from "./walk-order";
-import { currentReviewKeys, deriveCardAttention } from "../card-attention";
+import { deriveCardAttention } from "../card-attention";
 import type { CardChecklistRow } from "../card-checklist-row";
 
 const LEAF = "leaf1" as never;
@@ -193,6 +192,21 @@ const blue = (id: string, number: string) =>
     listingTitleTruncated: true,
   }) as unknown as CardChecklistRow;
 
+/**
+ * Blue by a live career gap: one player, one team, nothing else wrong. The gap
+ * itself is data the walk is handed (`careerGaps`, read live), never stored.
+ */
+const gapCard = (id: string, number: string) =>
+  ({
+    _id: id,
+    cardNumber: number,
+    cardName: "Mike Trout",
+    playerIds: ["p1"],
+    teamOnCardIds: ["t1"],
+  }) as unknown as CardChecklistRow;
+const GAP = { playerId: "p1", teamId: "t1" };
+const gapsFor = (...ids: string[]) => new Map(ids.map((id) => [id, [GAP]]));
+
 function UrlProbe() {
   const location = useLocation();
   return <output data-testid="url">{location.search}</output>;
@@ -200,23 +214,34 @@ function UrlProbe() {
 
 function mount(
   cards: CardChecklistRow[],
-  opts: { search?: string; onClose?: () => void; setNoTeam?: boolean } = {},
+  opts: {
+    search?: string;
+    onClose?: () => void;
+    setNoTeam?: boolean;
+    careerGaps?: ReadonlyMap<string, readonly { playerId: string; teamId: string }[]>;
+    careerGapsReady?: boolean;
+    sportId?: string;
+  } = {},
 ) {
   const onClose = opts.onClose ?? vi.fn();
-  const view = render(
+  const tree = (o: typeof opts) => (
     <MemoryRouter initialEntries={[`/${opts.search ?? "?tidy=first"}`]}>
       <UrlProbe />
       <TidyUpWalk
         leafId={LEAF}
+        {...(opts.sportId ? { sportId: opts.sportId as never } : {})}
         setName="2024 Topps Chrome"
         title="Tidy up 2024 Topps Chrome"
         cards={cards}
         onClose={onClose}
+        {...(o.careerGaps ? { careerGaps: o.careerGaps } : {})}
+        {...(o.careerGapsReady !== undefined ? { careerGapsReady: o.careerGapsReady } : {})}
         {...(opts.setNoTeam !== undefined ? { setNoTeam: opts.setNoTeam } : {})}
       />
-    </MemoryRouter>,
+    </MemoryRouter>
   );
-  return { onClose, ...view };
+  const view = render(tree(opts));
+  return { onClose, ...view, rerenderWith: (o: typeof opts) => view.rerender(tree({ ...opts, ...o })) };
 }
 
 /** One animation frame, inside act, so the walk's focus repair has run. */
@@ -232,9 +257,10 @@ const button = (name: string) => screen.getByRole("button", { name });
 beforeEach(() => {
   window.sessionStorage.clear();
   resetSitting(LEAF);
-  markReviewed.mockReset();
-  markReviewed.mockResolvedValue({ keys: [] });
-  pendingLookups = { names: [], more: false };
+  saveCard.mockReset();
+  saveCard.mockResolvedValue({ keys: [] });
+  tidyLeafFacts.mockClear();
+  lookupTidyName.mockClear();
   playerLevel = "plain";
   playerControl = "button";
   playerControlLate = false;
@@ -340,7 +366,7 @@ describe("the footer", () => {
       "3 to fix before this card can save. Skip it and it can't be listed until it's fixed.",
     );
     fireEvent.click(save);
-    expect(markReviewed).not.toHaveBeenCalled();
+    expect(saveCard).not.toHaveBeenCalled();
     expect(button("Skip: not ready to list").getAttribute("aria-disabled")).toBeNull();
   });
 
@@ -349,23 +375,72 @@ describe("the footer", () => {
     await screen.findByTestId("tile-player");
     fireEvent.click(button("Skip: not ready to list"));
     await waitFor(() => expect(url()).toBe("?tidy=done"));
-    expect(markReviewed).not.toHaveBeenCalled();
+    expect(saveCard).not.toHaveBeenCalled();
     expect(screen.getByText("1 card skipped, not ready to list")).toBeTruthy();
     expect(button("Done (Esc)")).toBeTruthy();
   });
 
-  it("Save & next stores the card's blue keys, then moves to the next card", async () => {
-    const first = blue("a", "1");
-    mount([first, pink("b", "2")]);
+  it("Save & next adds the default stint for each career gap shown (saveCard), then moves to the next card", async () => {
+    mount([gapCard("a", "1"), pink("b", "2")], { careerGaps: gapsFor("a") });
     await screen.findByTestId("tile-team");
     fireEvent.click(button("Save & next (Enter)"));
     await waitFor(() => expect(url()).toBe("?tidy=b"));
-    expect(markReviewed).toHaveBeenCalledWith({ cardId: "a", keys: currentReviewKeys(first) });
+    expect(saveCard).toHaveBeenCalledWith({ cardId: "a", gaps: [GAP] });
+  });
+
+  it("Save & next moves to the next card that still needs you after the stint lands: the same player's other cards it cleared are skipped", async () => {
+    // a, b and c are the same player and club: one default stint clears all three gaps.
+    const cards = [gapCard("a", "1"), gapCard("b", "2"), gapCard("c", "3"), pink("d", "4")];
+    const gaps = gapsFor("a", "b", "c");
+    const view = mount(cards, { careerGaps: gaps });
+    await screen.findByTestId("tile-team");
+    saveCard.mockImplementationOnce(async () => {
+      // The write lands: the live gaps are now empty for every card of that player.
+      view.rerender(
+        <MemoryRouter initialEntries={["/?tidy=a"]}>
+          <UrlProbe />
+          <TidyUpWalk
+            leafId={LEAF}
+            setName="2024 Topps Chrome"
+            title="Tidy up 2024 Topps Chrome"
+            cards={cards}
+            onClose={vi.fn()}
+            careerGaps={new Map()}
+          />
+        </MemoryRouter>,
+      );
+      return { keys: [] };
+    });
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(url()).toBe("?tidy=d"));
+  });
+
+  it("holds Save & next while the career question is in flight, so a gap not shown yet is never saved without its stint", async () => {
+    const view = mount([gapCard("a", "1"), pink("b", "2")], { careerGaps: gapsFor("a") });
+    await screen.findByTestId("tile-team");
+    view.rerenderWith({ careerGapsReady: false });
+    const save = button("Save & next (Enter)");
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(save);
+    expect(saveCard).not.toHaveBeenCalled();
+    expect(url()).toBe("?tidy=a");
+    view.rerenderWith({ careerGaps: gapsFor("a"), careerGapsReady: true });
+    await waitFor(() => expect(button("Save & next (Enter)").getAttribute("aria-disabled")).toBeNull());
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(saveCard).toHaveBeenCalledWith({ cardId: "a", gaps: [GAP] }));
+  });
+
+  it("Save & next on a blue card with no career gap writes nothing: nothing records that it was seen", async () => {
+    mount([blue("a", "1"), pink("b", "2")]);
+    await screen.findByTestId("tile-team");
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    expect(saveCard).not.toHaveBeenCalled();
   });
 
   it("shows `Didn't save, try again` and stays on the card when the write fails", async () => {
-    markReviewed.mockRejectedValueOnce(new Error("nope"));
-    mount([blue("a", "1"), pink("b", "2")]);
+    saveCard.mockRejectedValueOnce(new Error("nope"));
+    mount([gapCard("a", "1"), pink("b", "2")], { careerGaps: gapsFor("a") });
     await screen.findByTestId("tile-team");
     fireEvent.click(button("Save & next (Enter)"));
     expect((await screen.findByRole("alert")).textContent).toBe("Didn't save, try again");
@@ -376,30 +451,55 @@ describe("the footer", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("NEO-657: Save & next runs a tile's before-save hook first, and marks the card reviewed after it", async () => {
+  it("NEO-657: Save & next runs a tile's before-save hook first, then saves the card's career gaps", async () => {
     const order: string[] = [];
     careerBeforeSave = vi.fn(async () => {
       order.push("hook");
       return true;
     });
-    markReviewed.mockImplementation(async () => {
-      order.push("markReviewed");
+    saveCard.mockImplementation(async () => {
+      order.push("saveCard");
       return { keys: [] };
     });
-    mount([blue("a", "1"), pink("b", "2")]);
+    mount([gapCard("a", "1"), pink("b", "2")], { careerGaps: gapsFor("a") });
     await screen.findByTestId("tile-team");
     fireEvent.click(button("Save & next (Enter)"));
     await waitFor(() => expect(url()).toBe("?tidy=b"));
-    expect(order).toEqual(["hook", "markReviewed"]);
+    expect(order).toEqual(["hook", "saveCard"]);
+  });
+
+  it("NEO-657: a gap player the before-save hook wrote a stint to is not given the default stint on top of it", async () => {
+    // The open form was edited to another team: its stint is the one written.
+    careerBeforeSave = vi.fn(async (wrote) => {
+      wrote(GAP.playerId);
+      return true;
+    });
+    mount([gapCard("a", "1"), pink("b", "2")], { careerGaps: gapsFor("a") });
+    await screen.findByTestId("tile-team");
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    expect(saveCard).not.toHaveBeenCalled();
+  });
+
+  it("NEO-657: a hook that wrote for one player leaves the other gaps' default stints to saveCard", async () => {
+    careerBeforeSave = vi.fn(async (wrote) => {
+      wrote("other-player");
+      return true;
+    });
+    mount([gapCard("a", "1"), pink("b", "2")], { careerGaps: gapsFor("a") });
+    await screen.findByTestId("tile-team");
+    fireEvent.click(button("Save & next (Enter)"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    expect(saveCard).toHaveBeenCalledWith({ cardId: "a", gaps: [GAP] });
   });
 
   it("NEO-657: a before-save hook that reports false holds the card, with the save-failed line, and writes nothing", async () => {
     careerBeforeSave = vi.fn(async () => false);
-    mount([blue("a", "1"), pink("b", "2")]);
+    mount([gapCard("a", "1"), pink("b", "2")], { careerGaps: gapsFor("a") });
     await screen.findByTestId("tile-team");
     fireEvent.click(button("Save & next (Enter)"));
     expect((await screen.findByRole("alert")).textContent).toBe("Didn't save, try again");
-    expect(markReviewed).not.toHaveBeenCalled();
+    expect(saveCard).not.toHaveBeenCalled();
     expect(url()).toBe("?tidy=a");
   });
 
@@ -421,8 +521,8 @@ describe("the footer", () => {
 
   it("Back and Skip hold with aria-disabled while a save is in flight, and Back's focus goes to Save for later", async () => {
     let finish: (v: unknown) => void = () => {};
-    markReviewed.mockReturnValueOnce(new Promise((r) => (finish = r)));
-    mount([blue("a", "1"), blue("b", "2")]);
+    saveCard.mockReturnValueOnce(new Promise((r) => (finish = r)));
+    mount([gapCard("a", "1"), gapCard("b", "2")], { careerGaps: gapsFor("a", "b") });
     await screen.findByTestId("tile-team");
     fireEvent.click(button("Skip: not ready to list"));
     await waitFor(() => expect(url()).toBe("?tidy=b"));
@@ -479,17 +579,17 @@ describe("the footer", () => {
 
 describe("the keys", () => {
   it("Enter outside a field is Save & next", async () => {
-    mount([blue("a", "1"), pink("b", "2")]);
+    mount([gapCard("a", "1"), pink("b", "2")], { careerGaps: gapsFor("a") });
     await screen.findByTestId("tile-team");
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter" });
-    await waitFor(() => expect(markReviewed).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveCard).toHaveBeenCalledTimes(1));
   });
 
   it("Enter does nothing while the card is pink", async () => {
     mount([pink("a", "1")]);
     await screen.findByTestId("tile-player");
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter" });
-    expect(markReviewed).not.toHaveBeenCalled();
+    expect(saveCard).not.toHaveBeenCalled();
   });
 
   it("Esc is Save for later", async () => {
@@ -505,7 +605,7 @@ describe("the keys", () => {
     expect(screen.getByText("Editor open")).toBeTruthy();
     // While it is open, Enter never means Save & next either.
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter" });
-    expect(markReviewed).not.toHaveBeenCalled();
+    expect(saveCard).not.toHaveBeenCalled();
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     await waitFor(() => expect(screen.queryByText("Editor open")).toBeNull());
     expect(onClose).not.toHaveBeenCalled();
@@ -610,7 +710,7 @@ describe("focus", () => {
     // Pink for the team, answered on the tile: the card is saveable once the
     // stub's answer lands, so use a blue card (nothing pink) for the Enter.
     teamCallsAnswered = false;
-    mount([blue("a", "1"), blue("b", "2")]);
+    mount([gapCard("a", "1"), gapCard("b", "2")], { careerGaps: gapsFor("a", "b") });
     const answer = await screen.findByRole("button", { name: "No team on this card" });
     await nextFrame();
     act(() => answer.focus());
@@ -629,11 +729,11 @@ describe("focus", () => {
     expect(document.activeElement).toBe(button("Save & next (Enter)"));
 
     fireEvent.click(document.activeElement as Element);
-    await waitFor(() => expect(markReviewed).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveCard).toHaveBeenCalledTimes(1));
   });
 
   it("S1: after an answer with nothing pink left, focus is on Save & next, and Enter there saves and advances", async () => {
-    mount([blue("a", "1"), blue("b", "2")]);
+    mount([gapCard("a", "1"), gapCard("b", "2")], { careerGaps: gapsFor("a", "b") });
     const answer = await screen.findByRole("button", { name: "No team on this card" });
     await nextFrame();
     act(() => answer.focus());
@@ -644,7 +744,7 @@ describe("focus", () => {
     // Enter on a focused button is the button's own click: the card saves and
     // the walk moves on, and the answer is not undone on the way.
     fireEvent.click(save);
-    await waitFor(() => expect(markReviewed).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(saveCard).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(url()).toBe("?tidy=b"));
     expect(screen.queryByRole("button", { name: /^Change/ })).toBeNull();
   });
@@ -658,7 +758,7 @@ describe("focus", () => {
     await nextFrame();
     // A button owns Enter: the dialog's key handler leaves it to the click.
     fireEvent.keyDown(document.activeElement as Element, { key: "Enter" });
-    expect(markReviewed).not.toHaveBeenCalled();
+    expect(saveCard).not.toHaveBeenCalled();
   });
 
   it("S1: with something still pink, focus goes to the first control of the first pink tile", async () => {
@@ -755,12 +855,12 @@ describe("focus: Enter in the Card name tile (NEO-645, Jason 2026-11-23)", () =>
     expect(notPrevented).toBe(false);
     await nextFrame();
     expect(updateCard).toHaveBeenCalledTimes(1);
-    expect(markReviewed).not.toHaveBeenCalled();
+    expect(saveCard).not.toHaveBeenCalled();
     expect(url()).toBe("?tidy=a");
     expect(screen.queryByRole("textbox", { name: "Card name" })).toBeNull();
     expect(document.activeElement).toBe(button("Save & next (Enter)"));
     // The walk is still on the same card, saved only once the operator says so.
-    expect(markReviewed).not.toHaveBeenCalled();
+    expect(saveCard).not.toHaveBeenCalled();
   });
 
   it("the next card then opens on its own first error, the Card name box, never on a box that was already focused", async () => {
@@ -821,6 +921,19 @@ describe("the end screen", () => {
     // The same element that was on the page all along.
     expect(verdict?.isConnected).toBe(true);
     expect(verdict?.textContent).toBe("1 card skipped, not ready to list");
+  });
+
+  it("says what a team answer saved in its own always-mounted status line, which outlives the tile and is not the alert", async () => {
+    mount([pink("a", "1")]);
+    await screen.findByTestId("tile-team");
+    const line = screen.getAllByRole("status").find((el) => el.className.includes("sr-only"));
+    expect(line?.textContent).toBe("");
+    fireEvent.click(button("No team on this card"));
+    await waitFor(() => expect(line?.textContent).toBe("Saved Padres."));
+    // The tile's own button is gone; the line is the same element, still on the page.
+    expect(screen.queryByRole("button", { name: "No team on this card" })).toBeNull();
+    expect(line?.isConnected).toBe(true);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("tallies the sitting: cards that left the walk are fixed, the rest are skipped", async () => {
@@ -925,6 +1038,29 @@ describe("the end screen: Review the skipped (NEO-645 audit)", () => {
     for (let i = 0; i < 3; i++) fireEvent.click(button("Skip: not ready to list"));
     await waitFor(() => expect(url()).toBe("?tidy=done"));
     expect(screen.getByText("3 cards skipped, not ready to list")).toBeTruthy();
+  });
+
+  it("opens on the first pink card when a blue one with a lower number was passed too (C3)", async () => {
+    await skipAll([blue("a", "1"), pink("b", "2")]);
+    fireEvent.click(button("Review the skipped card"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    // The blue card is still offered, after the pink one.
+    expect(screen.getByText("2 cards left")).toBeTruthy();
+    fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+  });
+
+  it("keeps a review through a refresh: no 'No cards left' while cards remain (C6)", async () => {
+    const cards = [pink("a", "1"), pink("b", "2")];
+    await skipAll(cards);
+    fireEvent.click(button("Review the 2 skipped"));
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+    expect(screen.getByText("2 cards left")).toBeTruthy();
+    cleanup();
+    mount(cards, { search: "?tidy=a" });
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+    expect(screen.getByText("2 cards left")).toBeTruthy();
+    expect(screen.queryByText("No cards left")).toBeNull();
   });
 
   it("activated by keyboard, it lands focus on the first skipped card's header", async () => {
@@ -1183,5 +1319,91 @@ describe("opening the walk beside the drill and other writers (NEO-645: a produc
       await new Promise((r) => setTimeout(r, 50));
     });
     expect(writes).toEqual([`?${DRILL}&tidy=c2`]);
+  });
+});
+
+describe("NEO-656: the walk reads live data and keeps nothing", () => {
+  it("asks the set's facts once when it opens", async () => {
+    mount([pink("a", "1"), pink("b", "2")]);
+    await screen.findByTestId("tile-player");
+    expect(tidyLeafFacts).toHaveBeenCalledTimes(1);
+    expect(tidyLeafFacts).toHaveBeenCalledWith({ selectorOptionId: LEAF });
+  });
+
+  it("asks about the open card's pending names, and the next card's, once each, when it opens", async () => {
+    mount(
+      [
+        pink("a", "1", { pendingPlayerNames: ["Mike Trout"], pendingTeamNames: ["Angels"] }),
+        pink("b", "2", { pendingPlayerNames: ["Shohei Ohtani"] }),
+        pink("c", "3", { pendingPlayerNames: ["Not Yet"] }),
+      ],
+      { sportId: "sport-1" },
+    );
+    await screen.findByTestId("tile-player");
+    await waitFor(() => expect(lookupTidyName).toHaveBeenCalledTimes(3));
+    const asked = lookupTidyName.mock.calls.map((c) => c[0] as { cardId: string; kind: string; name: string });
+    expect(asked.map((a) => `${a.cardId}|${a.kind}|${a.name}`).sort()).toEqual([
+      "a|player|Mike Trout",
+      "a|team|Angels",
+      "b|player|Shohei Ohtani",
+    ]);
+  });
+
+  it("a lookup that errors never blocks the walk or Skip", async () => {
+    lookupTidyName.mockRejectedValue(new Error("down"));
+    mount([pink("a", "1", { pendingPlayerNames: ["Mike Trout"] })]);
+    await screen.findByTestId("tile-player");
+    await nextFrame();
+    expect(button("Skip: not ready to list").getAttribute("aria-disabled")).toBeNull();
+    lookupTidyName.mockResolvedValue({ status: "ready" });
+  });
+
+  it("keeps nothing in storage but the sitting's own place", async () => {
+    mount([pink("a", "1", { pendingPlayerNames: ["Mike Trout"] })]);
+    await screen.findByTestId("tile-player");
+    await nextFrame();
+    const keys = Object.keys(window.sessionStorage);
+    expect(keys.every((k) => k.startsWith("nb:tidy-walk:"))).toBe(true);
+    expect(window.localStorage.length).toBe(0);
+  });
+
+  it("holds its first card until the live career gaps have answered, so a gap-only card is in the order", async () => {
+    const view = mount([gapCard("a", "1")], { careerGapsReady: false });
+    await nextFrame();
+    expect(url()).toBe("?tidy=first");
+    view.unmount();
+    mount([gapCard("a", "1")], { careerGaps: gapsFor("a"), careerGapsReady: true });
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+  });
+
+  it("the end screen counts a passed card by its live level: pink is skipped, blue alone is still to check", async () => {
+    mount([pink("a", "1"), gapCard("b", "2")], { careerGaps: gapsFor("b") });
+    await screen.findByTestId("tile-player");
+    fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=done"));
+    expect(screen.getByText("1 card skipped, not ready to list")).toBeTruthy();
+    expect(screen.getByText("0 cards fixed, 1 skipped, 1 still to check.")).toBeTruthy();
+  });
+
+  it("a blue-only passed card says 'still to check', never 'skipped'", async () => {
+    mount([gapCard("a", "1")], { careerGaps: gapsFor("a") });
+    await screen.findByTestId("tile-team");
+    fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=done"));
+    expect(screen.getByText("1 card still to check")).toBeTruthy();
+    expect(screen.queryByText(/skipped, not ready to list/)).toBeNull();
+    // The review button names what it reviews: no "skipped" beside "0 skipped, 1 still to check".
+    expect(button("Check the card still to check")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /skipped/ })).toBeNull();
+  });
+
+  it("words the end-screen review button by what remains: pink is skipped, blue alone is still to check", () => {
+    expect(checkStillToCheckLabel(1)).toBe("Check the card still to check");
+    expect(checkStillToCheckLabel(2)).toBe("Check the 2 cards still to check");
+    expect(reviewButtonLabel(1, 0)).toBe("Review the skipped card");
+    expect(reviewButtonLabel(3, 2)).toBe("Review the 3 skipped");
+    expect(reviewButtonLabel(0, 4)).toBe("Check the 4 cards still to check");
   });
 });

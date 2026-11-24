@@ -1,14 +1,14 @@
 // ONE FEATURE (R1, NEO-602 on the NEO-645 Tidy Up walk): when a card's printed team name fits two
 // eras of a club, the card's PLAYER picks the era, not the set's year. The commit links the era he
-// played for with no stop, and the Team tile shows that link as NeonBinder's ("Linked for you"),
-// with Edit offered.
+// played for with no stop, and the Team tile shows that team as the card's team, with Edit offered.
+// NEO-656 (J1): a linked name keeps no row of its own and no "Linked for you" note; the team is
+// simply the card's, whoever wrote it, and Edit is how it changes.
 //
 // The Rickey Henderson case, minted: `Loc<token> Ath<token>` (1968–2024) holds the printed name as
 // its own, and `Ath<token>` (2025–present) wears it as an ALIAS. A 2025 set's year covers only the
 // newer row, so the year alone would link the newer team. The player has one stint, on the OLDER
 // row (1979–1984), and every card printing the name is his, so the players' row stands against
-// the year (lib/teams/team-era.ts `pickCardTeam`, rule 3). Because it is not the year's pick, the
-// link is a visible one (an auto answer, reason careerTeam), not a silent one.
+// the year (lib/teams/team-era.ts `pickCardTeam`, rule 3).
 //
 // Why the card also prints a second team name: a card whose names all link has nothing to ask
 // and never enters the walk, so the tile that shows the link would never be on screen. The
@@ -120,17 +120,21 @@ test(
     await expectCardsLeft(page, 1);
     await expect(tidyCardHeader(page, `#1 · ${PLAYER}`)).toBeVisible();
 
-    // ── STEP 1: the Team tile shows the player's era, linked for the operator ──
+    // ── STEP 1: the Team tile shows the player's era as the card's team ──
     const team = tidyTile(page, "Team");
     const oldRow = team.getByRole("group", { name: `Team ${OLD}`, exact: true });
     const otherRow = team.getByRole("group", { name: `Team ${NOT_A_TEAM}`, exact: true });
-    // Positive: the printed name is answered with the OLDER team, NeonBinder's link (the purple
-    // note), and the operator can Edit it ("Edit <linked team>", NEO-645 C1).
+    // Positive: the card carries the OLDER team, on the card's own team line, and the operator can
+    // Edit it ("Edit <team>", NEO-656 B11: Change goes through the Team tile).
     await expect(oldRow.getByText(OLD, { exact: true })).toBeVisible();
-    await expect(oldRow.getByRole("note")).toHaveText(/^Linked for you/);
     await expect(oldRow.getByRole("button", { name: `Edit ${OLD}`, exact: true, disabled: false })).toBeVisible();
-    // Negative, read against it: nothing asks about that name (no era choice, no "Not a team"),
-    // and the year's own pick, the newer team, is nowhere on the tile.
+    // J1, read against that line: the linked name keeps no row of its own (the card's line is the
+    // one group under that name) and no "Linked for you" note sits anywhere on the tile.
+    await expect(oldRow).toHaveCount(1);
+    await expect(team.getByText(/Linked for you/)).toHaveCount(0);
+    await expect(team.getByRole("note")).toHaveCount(0);
+    // Nothing asks about that name (no era choice, no "Not a team"), and the year's own pick, the
+    // newer team, is nowhere on the tile.
     await expect(oldRow.getByText(/^Which team: /)).toHaveCount(0);
     await expect(oldRow.getByRole("button", { name: /^Not a team/ })).toHaveCount(0);
     await expect(team.getByText(NEW, { exact: true })).toHaveCount(0);
@@ -140,7 +144,9 @@ test(
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, a two-era team name linked to the player's era" });
 
     // The other name is no team: the tile stops being pink, and the card is done.
-    await otherRow.getByRole("button", { name: `Not a team ${NOT_A_TEAM}`, exact: true }).click();
+    // J1: the linked name is no row, so this is the tile's ONE open name and its button carries no
+    // name suffix (the suffix only tells several open rows apart); scoped to its own row.
+    await otherRow.getByRole("button", { name: "Not a team", exact: true }).click();
     await expect(otherRow.getByText(`${NOT_A_TEAM} is not a team.`)).toBeVisible();
     await expect(pinkTile(page, "Team")).toHaveCount(0);
     await saveAndNext(page);

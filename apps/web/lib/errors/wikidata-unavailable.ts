@@ -16,8 +16,7 @@
  * and not by the adapter.
  *
  * Pure on purpose: the throw happens in the node adapter, the verdict is read
- * back in the V8 pool callbacks (convex/wikidataPool.ts,
- * convex/entityReviewQueue.ts), and a V8 module cannot import a `"use node"`
+ * back in the V8 pool callbacks (convex/wikidataPool.ts), and a V8 module cannot import a `"use node"`
  * one. The error crosses the workpool as a MESSAGE string (`RunResult.error`),
  * so the message is the wire format and `parseWikidataUnavailable` reads it
  * back. It carries a kind and a transport reason, never a name.

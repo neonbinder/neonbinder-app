@@ -30,7 +30,6 @@ import {
   readCards,
   seedLeaf,
   seedTeam,
-  seedUnansweredName,
   type T,
 } from "../lib/testing/tidy-ported";
 
@@ -48,23 +47,30 @@ afterEach(async () => {
   for (const t of live.splice(0)) await cancelScheduled(t);
 });
 
-/** One leaf, an unanswered `ready` name row, one card printing the name. */
-async function openCard(t: T, name: string, enrichment?: Record<string, unknown>) {
+/** One leaf and one card printing the name, left pending by the commit. */
+async function openCard(t: T, name: string) {
   const s = await seedLeaf(t);
-  await seedUnansweredName(t, {
-    scopeId: s.variantTypeId,
-    sportId: s.sportId,
-    kind: "player",
-    name,
-    enrichment,
-  });
   await commit(t, s, [makeCard({ cardNumber: "1", cardName: name, players: [name] })]);
   const [card] = await readCards(t, s.variantTypeId);
   return { ...s, card };
 }
 
-const create = (t: T, cardId: Id<"cardChecklist">, name: string, extra: Record<string, unknown> = {}) =>
-  t.withIdentity(ADMIN).mutation(api.tidyNames.createPlayer, { cardId, name, ...extra });
+/**
+ * The lookup's payload is held by the walk and sent with the create
+ * (`enrichment`); the sport is the question's, the set's own unless the test
+ * passes another.
+ */
+const create = async (
+  t: T,
+  cardId: Id<"cardChecklist">,
+  name: string,
+  extra: Record<string, unknown> = {},
+) => {
+  const sportId =
+    (extra.sportId as Id<"selectorOptions"> | undefined) ??
+    (await t.run(async (ctx) => (await ctx.db.query("selectorOptions").collect()).find((r) => r.level === "sport")!._id));
+  return t.withIdentity(ADMIN).mutation(api.tidyNames.createPlayer, { cardId, name, ...extra, sportId });
+};
 
 const addStint = (
   t: T,
@@ -82,7 +88,11 @@ const playerRow = (t: T, id: Id<"players">) => t.run((ctx) => ctx.db.get(id));
 describe("tidyNames.createPlayer — what the lookup's career becomes (was: a player 'create' decision)", () => {
   test("a Hall of Famer with a Wikidata id and two held teams is created with chronological teamYears, mints no team, and links the card", async () => {
     const t = newT();
-    const s = await openCard(t, "Mike Trout", {
+    const s = await openCard(t, "Mike Trout");
+    const angels = await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
+    const anaheim = await seedTeam(t, s.sportId, { name: "Los Angeles Angels of Anaheim" });
+
+    const { playerId } = await create(t, s.card._id, "Mike Trout", { enrichment: {
       wikidataId: "Q123456",
       isHallOfFame: true,
       // Latest first on purpose: the assertion is about the sort, not the input.
@@ -90,11 +100,7 @@ describe("tidyNames.createPlayer — what the lookup's career becomes (was: a pl
         { name: "Los Angeles Angels", fromYear: 2011 },
         { name: "Los Angeles Angels of Anaheim", fromYear: 2005, toYear: 2010 },
       ],
-    });
-    const angels = await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
-    const anaheim = await seedTeam(t, s.sportId, { name: "Los Angeles Angels of Anaheim" });
-
-    const { playerId } = await create(t, s.card._id, "Mike Trout");
+    } });
 
     const player = (await playerRow(t, playerId))!;
     expect(player.isHallOfFame).toBe(true);
@@ -112,15 +118,15 @@ describe("tidyNames.createPlayer — what the lookup's career becomes (was: a pl
 
   test("a career team that matches no held team is dropped and never minted; the held one stays (was: excludedCareerTeamNames' mint half)", async () => {
     const t = newT();
-    const s = await openCard(t, "Mike Trout", {
+    const s = await openCard(t, "Mike Trout");
+    const angels = await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
+
+    const { playerId } = await create(t, s.card._id, "Mike Trout", { enrichment: {
       careerTeams: [
         { name: "Los Angeles Angels", fromYear: 2011 },
         { name: "Wrong Team FC", fromYear: 1999, toYear: 2001 },
       ],
-    });
-    const angels = await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
-
-    const { playerId } = await create(t, s.card._id, "Mike Trout");
+    } });
 
     expect((await playerRow(t, playerId))!.teamYears).toEqual([{ teamId: angels, fromYear: 2011 }]);
     expect((await allOf(t, "teams")).map((x) => x.name)).toEqual(["Los Angeles Angels"]);
@@ -128,16 +134,16 @@ describe("tidyNames.createPlayer — what the lookup's career becomes (was: a pl
 
   test("a career team the operator unticked is left off the player (NEO-212 excludedCareerTeamNames)", async () => {
     const t = newT();
-    const s = await openCard(t, "Mike Trout", {
+    const s = await openCard(t, "Mike Trout");
+    const angels = await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
+    await seedTeam(t, s.sportId, { name: "Salt Lake Bees" });
+
+    const { playerId } = await create(t, s.card._id, "Mike Trout", { enrichment: {
       careerTeams: [
         { name: "Los Angeles Angels", fromYear: 2011 },
         { name: "Salt Lake Bees", fromYear: 2010, toYear: 2010 },
       ],
-    });
-    const angels = await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
-    await seedTeam(t, s.sportId, { name: "Salt Lake Bees" });
-
-    const { playerId } = await create(t, s.card._id, "Mike Trout", {
+    },
       // Case, spacing and an accent do not matter: the shared name matcher decides.
       excludedCareerTeamNames: ["  salt lake  BEES "],
     });
@@ -149,11 +155,11 @@ describe("tidyNames.createPlayer — what the lookup's career becomes (was: a pl
 
   test("unticking every career team creates a player with no teamYears", async () => {
     const t = newT();
-    const s = await openCard(t, "Mike Trout", {
-      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }],
-    });
+    const s = await openCard(t, "Mike Trout");
     await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
-    const { playerId } = await create(t, s.card._id, "Mike Trout", {
+    const { playerId } = await create(t, s.card._id, "Mike Trout", { enrichment: {
+      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }],
+    },
       excludedCareerTeamNames: ["Los Angeles Angels"],
     });
     expect((await playerRow(t, playerId))!.teamYears).toBeUndefined();
@@ -161,11 +167,11 @@ describe("tidyNames.createPlayer — what the lookup's career becomes (was: a pl
 
   test("an unticked name that matches nothing is harmless; the career is untouched", async () => {
     const t = newT();
-    const s = await openCard(t, "Mike Trout", {
-      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }],
-    });
+    const s = await openCard(t, "Mike Trout");
     const angels = await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
-    const { playerId } = await create(t, s.card._id, "Mike Trout", {
+    const { playerId } = await create(t, s.card._id, "Mike Trout", { enrichment: {
+      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }],
+    },
       excludedCareerTeamNames: ["Somebody Else FC"],
     });
     expect((await playerRow(t, playerId))!.teamYears).toEqual([{ teamId: angels, fromYear: 2011 }]);
@@ -173,11 +179,11 @@ describe("tidyNames.createPlayer — what the lookup's career becomes (was: a pl
 
   test("the unticked list is bounded and validated, and a refusal writes no player", async () => {
     const t = newT();
-    const s = await openCard(t, "Mike Trout", {
-      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }],
-    });
+    const s = await openCard(t, "Mike Trout");
     await expect(
-      create(t, s.card._id, "Mike Trout", {
+      create(t, s.card._id, "Mike Trout", { enrichment: {
+      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }],
+    },
         excludedCareerTeamNames: Array.from({ length: 65 }, (_, i) => `Team ${i}`),
       }),
     ).rejects.toThrow(/the limit is 64/);
@@ -196,12 +202,12 @@ describe("tidyNames.createPlayer — what the lookup's career becomes (was: a pl
 
   test("a career team matching a held SPLIT row (location + nickname) links to it and creates nothing", async () => {
     const t = newT();
-    const s = await openCard(t, "Mike Trout", {
-      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }],
-    });
+    const s = await openCard(t, "Mike Trout");
     const angels = await seedTeam(t, s.sportId, { location: "Los Angeles", name: "Angels" });
 
-    const { playerId } = await create(t, s.card._id, "Mike Trout");
+    const { playerId } = await create(t, s.card._id, "Mike Trout", { enrichment: {
+      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011 }],
+    } });
 
     expect((await playerRow(t, playerId))!.teamYears).toEqual([{ teamId: angels, fromYear: 2011 }]);
     expect(await allOf(t, "teams")).toHaveLength(1);
@@ -209,15 +215,15 @@ describe("tidyNames.createPlayer — what the lookup's career becomes (was: a pl
 
   test("two stints at ONE held team are both stored, earliest first, on one team row", async () => {
     const t = newT();
-    const s = await openCard(t, "Returning Player", {
+    const s = await openCard(t, "Returning Player");
+    const angels = await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
+
+    const { playerId } = await create(t, s.card._id, "Returning Player", { enrichment: {
       careerTeams: [
         { name: "Los Angeles Angels", fromYear: 2016, toYear: 2019 },
         { name: "Los Angeles Angels", fromYear: 2011, toYear: 2013 },
       ],
-    });
-    const angels = await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
-
-    const { playerId } = await create(t, s.card._id, "Returning Player");
+    } });
 
     expect((await playerRow(t, playerId))!.teamYears).toEqual([
       { teamId: angels, fromYear: 2011, toYear: 2013 },
@@ -228,18 +234,13 @@ describe("tidyNames.createPlayer — what the lookup's career becomes (was: a pl
 
   test("the lookup's birth year is not written to the new player (NEO-254: it is what tells namesakes apart)", async () => {
     const t = newT();
-    const s = await openCard(t, "Mike Trout", { wikidataId: "Q1", birthYear: 1991 });
-    const { playerId } = await create(t, s.card._id, "Mike Trout");
+    const s = await openCard(t, "Mike Trout");
+    const { playerId } = await create(t, s.card._id, "Mike Trout", { enrichment: { wikidataId: "Q1" } });
     expect((await playerRow(t, playerId))!.birthYear).toBeUndefined();
-  });
-
-  test("a lead the lookup could not date (undatedCareerTeams) persists nothing on the player", async () => {
-    // was: "a dated lead becomes a stint; one left undated persists nothing".
-    const t = newT();
-    const s = await openCard(t, "Mike Trout", { undatedCareerTeams: ["Los Angeles Angels"] });
-    await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
-    const { playerId } = await create(t, s.card._id, "Mike Trout");
-    expect((await playerRow(t, playerId))!.teamYears ?? []).toEqual([]);
+    // The walk's payload type cannot carry one: a birth year sent anyway is refused outright.
+    await expect(
+      create(t, s.card._id, "Mike Trout", { enrichment: { wikidataId: "Q1", birthYear: 1991 } }),
+    ).rejects.toThrow();
   });
 
   test("the created player's name reaches the generated listing title", async () => {
@@ -247,13 +248,6 @@ describe("tidyNames.createPlayer — what the lookup's career becomes (was: a pl
     const s = await openCard(t, "Mike Trout");
     await create(t, s.card._id, "Mike Trout");
     expect((await readCards(t, s.variantTypeId))[0].listingTitle).toContain("Mike Trout");
-  });
-
-  test("refuses a name that is not printed on the card, and writes no player", async () => {
-    const t = newT();
-    const s = await openCard(t, "Mike Trout");
-    await expect(create(t, s.card._id, "Somebody Else")).rejects.toThrow(/isn't on this card/);
-    expect(await allOf(t, "players")).toHaveLength(0);
   });
 
   test("refuses a name that already has an answer: Change it first", async () => {
@@ -268,12 +262,12 @@ describe("tidyNames.createPlayer — what the lookup's career becomes (was: a pl
 describe("players.addStint — the operator's own stints (was: decision.manualCareerTeams / careerStints)", () => {
   test("a typed stint at another held team lands AFTER the lookup's, in chronological order", async () => {
     const t = newT();
-    const s = await openCard(t, "Daulton Varsho", {
-      careerTeams: [{ name: "Arizona Diamondbacks", fromYear: 2020, toYear: 2022 }],
-    });
+    const s = await openCard(t, "Daulton Varsho");
     const dbacks = await seedTeam(t, s.sportId, { name: "Arizona Diamondbacks" });
     const jays = await seedTeam(t, s.sportId, { name: "Toronto Blue Jays" });
-    const { playerId } = await create(t, s.card._id, "Daulton Varsho");
+    const { playerId } = await create(t, s.card._id, "Daulton Varsho", { enrichment: {
+      careerTeams: [{ name: "Arizona Diamondbacks", fromYear: 2020, toYear: 2022 }],
+    } });
 
     const out = await addStint(t, { cardId: s.card._id, playerId, teamId: jays, fromYear: 2023 });
 
@@ -303,11 +297,11 @@ describe("players.addStint — the operator's own stints (was: decision.manualCa
 
   test("a stint with a DIFFERENT fromYear at a team the lookup already gave APPENDS instead of replacing", async () => {
     const t = newT();
-    const s = await openCard(t, "Returning Player", {
-      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011, toYear: 2013 }],
-    });
+    const s = await openCard(t, "Returning Player");
     const angels = await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
-    const { playerId } = await create(t, s.card._id, "Returning Player");
+    const { playerId } = await create(t, s.card._id, "Returning Player", { enrichment: {
+      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011, toYear: 2013 }],
+    } });
 
     await addStint(t, { cardId: s.card._id, playerId, teamId: angels, fromYear: 2016, toYear: 2019 });
 
@@ -322,11 +316,11 @@ describe("players.addStint — the operator's own stints (was: decision.manualCa
     // is keyed (team, fromYear); a second answer for it never silently
     // overwrites the stored years (NEO-203: no silent rewrite of NB data).
     const t = newT();
-    const s = await openCard(t, "Mike Trout", {
-      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011, toYear: 2018 }],
-    });
+    const s = await openCard(t, "Mike Trout");
     const angels = await seedTeam(t, s.sportId, { name: "Los Angeles Angels" });
-    const { playerId } = await create(t, s.card._id, "Mike Trout");
+    const { playerId } = await create(t, s.card._id, "Mike Trout", { enrichment: {
+      careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011, toYear: 2018 }],
+    } });
 
     const out = await addStint(t, {
       cardId: s.card._id,
@@ -393,15 +387,17 @@ describe("players.addStint — the operator's own stints (was: decision.manualCa
         lastUpdated: Date.now(),
       }),
     );
-    await seedUnansweredName(t, {
-      scopeId: s.variantTypeId,
-      sportId: s.sportId,
-      kind: "player",
-      name: "Bob Allen",
-      enrichment: { existingCandidates: [{ playerId: namesake, name: "Bob Allen", careerSummary: "" }] },
-    });
     await commit(t, s, [makeCard({ cardNumber: "1", players: ["Bob Allen"] })]);
     const [card] = await readCards(t, s.variantTypeId);
+    // The exact single match was adopted at the commit; the operator Changes it, then adds a new one.
+    expect(card.playerIds).toEqual([namesake]);
+    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+      cardId: card._id,
+      kind: "player",
+      name: "Bob Allen",
+      sportId: s.sportId,
+      answer: { kind: "clear" },
+    });
 
     const { playerId } = await create(t, card._id, "Bob Allen");
     expect(playerId).not.toBe(namesake);
@@ -435,18 +431,6 @@ describe("tidyNames.createPlayer — the same-name and exact-match rules at the 
       );
     const a = await mk(1975);
     const b = await mk(1992);
-    await seedUnansweredName(t, {
-      scopeId: s.variantTypeId,
-      sportId: s.sportId,
-      kind: "player",
-      name: "Luis Castillo",
-      enrichment: {
-        existingCandidates: [
-          { playerId: a, name: "Luis Castillo", birthYear: 1975, careerSummary: "" },
-          { playerId: b, name: "Luis Castillo", birthYear: 1992, careerSummary: "" },
-        ],
-      },
-    });
     await commit(t, s, [makeCard({ players: ["Luis Castillo"] })]);
     const [card] = await readCards(t, s.variantTypeId);
     expect(card.playerIds ?? []).toEqual([]);
@@ -470,24 +454,7 @@ describe("tidyNames.createPlayer — the same-name and exact-match rules at the 
         lastUpdated: Date.now(),
       }),
     );
-    await seedUnansweredName(t, {
-      scopeId: s.variantTypeId,
-      sportId: s.sportId,
-      kind: "player",
-      name: "Bo Jackson",
-      enrichment: {
-        wikidataId: "Q999",
-        existingCandidates: [{ playerId: bo, name: "Bo Jackson", careerSummary: "" }],
-      },
-    });
-    // The gate had auto-linked him from the set's history.
-    await t.run(async (ctx) => {
-      const row = (await ctx.db.query("tidyNames").collect())[0];
-      await ctx.db.patch(row._id, {
-        answer: { kind: "linkPlayer", playerId: bo, by: "auto", autoReason: "setHistory" },
-        answerGen: 1,
-      });
-    });
+    // The commit adopts the one exact match, as the set's history would have.
     await commit(t, s, [makeCard({ players: ["Bo Jackson"] })]);
     expect((await readCards(t, s.variantTypeId))[0].playerIds).toEqual([bo]);
 
@@ -498,9 +465,10 @@ describe("tidyNames.createPlayer — the same-name and exact-match rules at the 
         cardId: card._id,
         kind: "player",
         name: "Bo Jackson",
+        sportId: s.sportId,
         answer: { kind: "clear" },
       });
-    const { playerId } = await create(t, card._id, "Bo Jackson");
+    const { playerId } = await create(t, card._id, "Bo Jackson", { enrichment: { wikidataId: "Q999" } });
 
     const players = await allOf(t, "players");
     expect(players).toHaveLength(2);
@@ -508,7 +476,7 @@ describe("tidyNames.createPlayer — the same-name and exact-match rules at the 
     expect((await readCards(t, s.variantTypeId))[0].playerIds).toEqual([playerId]);
   });
 
-  test("a name with exactly one match nobody was shown is adopted at the commit: nothing is left to 'Add as new', and no duplicate exists", async () => {
+  test("a name with exactly one match is adopted at the commit: Add as new is refused until Change, and no duplicate exists", async () => {
     // was: "a create is NOT honoured when the single match was never shown".
     const t = newT();
     const s = await seedLeaf(t);
@@ -524,7 +492,7 @@ describe("tidyNames.createPlayer — the same-name and exact-match rules at the 
     const [card] = await readCards(t, s.variantTypeId);
     expect(card.playerIds).toEqual([bo]);
 
-    await expect(create(t, card._id, "Bo Jackson")).rejects.toThrow(/isn't on this card/);
+    await expect(create(t, card._id, "Bo Jackson")).rejects.toThrow(/already has an answer/);
     expect(await allOf(t, "players")).toHaveLength(1);
   });
 });
@@ -540,12 +508,6 @@ describe("tidyNames.createPlayer — NEO-463: a one-word name that is part of a 
         lastUpdated: Date.now(),
       }),
     );
-    await seedUnansweredName(t, {
-      scopeId: s.variantTypeId,
-      sportId: s.sportId,
-      kind: "player",
-      name: "Walker",
-    });
     await commit(t, s, [makeCard({ cardNumber: "1", players: ["Walker"] }), makeCard({ cardNumber: "2" })]);
     const cards = await readCards(t, s.variantTypeId);
     return { ...s, card: cards.find((c) => c.cardNumber === "1")! };
@@ -578,9 +540,9 @@ describe("tidyNames.createPlayer — NEO-463: a one-word name that is part of a 
   });
 });
 
-describe("tidyNames.createPlayer — NEO-313: the player is created under the row's sport", () => {
-  test("a row switched to another sport creates its NEW player under that sport", async () => {
-    // was: "a player-review row switched to another sport creates its NEW player under that sport".
+describe("tidyNames.createPlayer — NEO-313: the player is created under the question's sport (the Sport chip)", () => {
+  test("a question asked in another sport creates its NEW player under that sport", async () => {
+    // was: "a player-review row switched to another sport creates its NEW player under that sport"; the chip is no longer saved, the walk sends it.
     const t = newT();
     const s = await openCard(t, "Earl Campbell");
     const football = await t.run((ctx) =>
@@ -592,17 +554,7 @@ describe("tidyNames.createPlayer — NEO-313: the player is created under the ro
         lastUpdated: Date.now(),
       }),
     );
-    await t
-      .withIdentity(ADMIN)
-      .mutation(api.tidyNames.setNameSport, {
-        cardId: s.card._id,
-        kind: "player",
-        name: "Earl Campbell",
-        sportId: football,
-      });
-    await cancelScheduled(t);
-
-    const { playerId } = await create(t, s.card._id, "Earl Campbell");
+    const { playerId } = await create(t, s.card._id, "Earl Campbell", { sportId: football });
 
     expect((await playerRow(t, playerId))!.sportId).toBe(football);
   });
@@ -619,17 +571,7 @@ describe("tidyNames.createPlayer — NEO-313: the player is created under the ro
         lastUpdated: Date.now(),
       }),
     );
-    await t
-      .withIdentity(ADMIN)
-      .mutation(api.tidyNames.setNameSport, {
-        cardId: s.card._id,
-        kind: "player",
-        name: "Earl Campbell",
-        sportId: football,
-      });
-    await cancelScheduled(t);
-
-    const { playerId } = await create(t, s.card._id, "Earl Campbell", { addSetSport: true });
+    const { playerId } = await create(t, s.card._id, "Earl Campbell", { addSetSport: true, sportId: football });
 
     const player = (await playerRow(t, playerId))!;
     expect(player.sportId).toBe(football);

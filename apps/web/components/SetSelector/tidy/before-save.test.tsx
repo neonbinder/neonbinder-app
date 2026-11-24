@@ -2,7 +2,7 @@ import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { BeforeSaveProvider, createBeforeSaveRegistry, useBeforeSave } from "./before-save";
 
-function Hook({ active, hook }: { active: boolean; hook: () => Promise<boolean> }) {
+function Hook({ active, hook }: { active: boolean; hook: (wrote: (playerId: string) => void) => Promise<boolean> }) {
   useBeforeSave(active, hook);
   return null;
 }
@@ -25,6 +25,24 @@ describe("before-save registry (NEO-657)", () => {
     expect(await run()).toBe(true);
     expect(on).toHaveBeenCalledTimes(1);
     expect(off).not.toHaveBeenCalled();
+  });
+
+  it("collects the players a hook says it wrote", async () => {
+    const { registry, run } = createBeforeSaveRegistry();
+    render(
+      <BeforeSaveProvider value={registry}>
+        <Hook
+          active
+          hook={async (wrote) => {
+            wrote("p1");
+            return true;
+          }}
+        />
+      </BeforeSaveProvider>,
+    );
+    const wrote = new Set<string>();
+    expect(await run(wrote)).toBe(true);
+    expect([...wrote]).toEqual(["p1"]);
   });
 
   it("a hook that reports false stops the run", async () => {

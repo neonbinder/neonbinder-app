@@ -60,7 +60,7 @@ import {
   PLAYER_AMBIGUITY_SCAN_LIMIT,
 } from "../lib/players/name-limits";
 // NEO-254 — this file used to carry its own 1850 while
-// `entityReviewQueue.recordDecision` refused anything under 1869. Both guard
+// the review wizard refused anything under 1869. Both guard
 // `players.teamYears`, so a stint was storable through one editor and refused
 // by the other. One constant now; see lib/players/career-years.ts for why the
 // answer is 1869.
@@ -88,7 +88,6 @@ import { clampSearchQuery } from "./lib/searchQueryClamp";
 import { refreshDescriptionsAfterRename } from "./cardDescriptionFanOut";
 // NEO-528: the also-pictured index, for the sport-removal guard.
 import { cardSecondaryPlayerLinkPage } from "./cardSecondaryPlayers";
-import { recheckCareerGaps } from "./tidyCareerGap";
 // NEO-463: a one-word name that is a fuller-named player's first or last name.
 import {
   fragmentMatches,
@@ -2354,8 +2353,7 @@ async function careerLineFor(
  * Returns [] unless there are TWO OR MORE. One match is not a choice: the
  * commit prelude adopts it exactly as it always has, and putting a lone
  * candidate in front of the operator would turn every ordinary name into a
- * decision. Called by `entityReviewQueue.applyLookupResult`, which is where
- * the enrichment for a review row is written.
+ * decision. Used by the Tidy Up name lookup, which carries it to the tile.
  *
  * `careerSummary` is rendered HERE, on the server, from `teamYears` joined to
  * `teams`. The alternative — shipping ids and letting the wizard join — costs
@@ -2520,8 +2518,7 @@ export const MAX_CANDIDATES_FOR_IDS = 16;
  *    nothing about a pool of one.
  *
  * `name` is the checklist string the row is for, used only to say which alias
- * matched. Exported as a plain function, like its sibling, because its caller
- * (`entityReviewQueue.startBatch`) is a mutation.
+ * matched. Exported as a plain function, like its sibling, because it is also called from mutations.
  */
 export async function buildExistingPlayerCandidatesForIds(
   ctx: QueryCtx | MutationCtx,
@@ -3391,10 +3388,10 @@ export const applyEnrichmentInternal = internalMutation({
  * case where the stored answer is wrong. It therefore passes `force`. No
  * automatic caller may — see `wikidataPool.enqueueEnrichment`.
  *
- * Note what is NOT an exception: the entity-review wizard's preview lookup.
- * That runs on unresolved NAMES before any row exists (`runEntityReviewLookup`
- * writes only to `entityReviewQueue`), and `resolveUnknownsAndStartBatch`
- * queues a name only when `players.resolveNameForReview` reports a match count
+ * Note what is NOT an exception: the Tidy Up name lookup.
+ * That runs on unresolved NAMES before any row exists (`lookupTidyName`
+ * writes nothing), and `resolveChecklistEntities`
+ * raises a name only when `players.resolveNameForReview` reports a match count
  * other than exactly one — NEO-254 moved the gate off `findByNameAndSport`,
  * whose `player | null` answer could not distinguish "nothing matched" from
  * "several did". Neither outcome enriches an existing row. A "link" decision —
@@ -3458,8 +3455,8 @@ const PLAYER_MANAGEMENT_CAP = 500;
  * `savePlayerFields` call may write to a single player row.
  *
  * The same guard rail, for the same reason, as
- * `MAX_MANUAL_CAREER_TEAMS` / `MAX_EXCLUDED_CAREER_TEAM_NAMES` in
- * `convex/entityReviewQueue.ts` — and it was the gap those two left. That path
+ * `MAX_MANUAL_CAREER_TEAMS` / `MAX_EXCLUDED_CAREER_TEAM_NAMES` (retired with
+ * the review wizard) — and it was the gap those two left. That path
  * capped the wizard's route into `players.teamYears`; this editor is the OTHER
  * route into the same field and had no bound at all, so an unbounded array
  * reached the row through a per-stint validation loop that does a `ctx.db.get`
@@ -4359,12 +4356,9 @@ export const appendCareerStints = internalMutation({
  *   in the one canonical order (`sortTeamYears`) and stays within
  *   `MAX_PLAYER_TEAM_YEARS`. A team in a sport the player does not belong to, or
  *   a missing player or team, is `skipped`, never written.
- * - Then re-check the `careerGap` of the OPEN card (`cardId`): when the new
- *   stint now covers the card's team by the card's year (`careerCoversCardTeam`,
- *   J2: today's rule, not a [Y-1, Y] window) the card's `{ kind: "careerGap" }`
- *   check for this (player, team) is removed from `tidyChecks`. Then schedule the
- *   same re-check for the leaf's OTHER single-player cards for that player.
- * - `tidyChecks` writes never bump the card's `lastUpdated`. The player row's
+ * - Nothing is re-checked (NEO-656): a card's career gap is read live from the
+ *   player's stints (`careerCoverage.careerGaps`), so it leaves the card the
+ *   moment this stint covers it, on every card of the player. The player row's
  *   `lastUpdated` does bump (a career changed).
  * - NEO-307: a team creation that would clash with another team's alias is the
  *   caller's job (`teams.findOrCreate` returns the holder to link); the
@@ -4378,8 +4372,11 @@ export const addStint = mutation({
     teamId: v.id("teams"),
     fromYear: v.number(),
     toYear: v.optional(v.number()),
-    /** The open card; its `careerGap` check is re-evaluated after the write. */
-    cardId: v.id("cardChecklist"),
+    /**
+     * @deprecated NEO-656 — ignored. An SPA tab opened before the release still
+     * sends it; removed with the next schema tightening.
+     */
+    cardId: v.optional(v.id("cardChecklist")),
   },
   returns: v.object({
     added: v.number(),
@@ -4397,19 +4394,6 @@ export const addStint = mutation({
         ...(args.toYear !== undefined ? { toYear: args.toYear } : {}),
       },
     ]);
-    // A stint that was already there can still be what the card was waiting on.
-    if (result.added + result.existing > 0) {
-      const card = await ctx.db.get(args.cardId);
-      if (card) {
-        await recheckCareerGaps(ctx, card, args.playerId);
-        // The leaf's other cards for this player, paged and scheduled.
-        await ctx.scheduler.runAfter(0, internal.tidyCards.recheckCareerGapPage, {
-          leafId: card.selectorOptionId,
-          playerId: args.playerId,
-          cursor: null,
-        });
-      }
-    }
     return result;
   },
 });

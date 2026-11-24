@@ -591,3 +591,79 @@ export function onlyId(ids: ReadonlySet<string> | undefined): string | undefined
   if (!ids || ids.size !== 1) return undefined;
   return ids.values().next().value;
 }
+
+// ─── Proof for what a client carries (NEO-656) ─────────────────────────────
+
+/**
+ * NEO-656 — which of the gate's set-history links the SERVER can prove.
+ *
+ * A gate link comes back from the browser, so its `origin: "setHistory"` is a
+ * label, not a fact. The one thing that label buys is crossing sports (main
+ * kept a set-history player OR team of another sport), so the commit asks this
+ * before it lets one through. The same scan the gate ran (`scanSetHistory`) and
+ * the same rule it linked by (rule A / F: the set linked the printed name to
+ * EXACTLY ONE player, or to exactly one team, `onlyId`) must yield the link's
+ * own id. No name or alias match stands in for it: a nickname-printed history
+ * link has neither, and main kept it.
+ *
+ * An incomplete scan proves nothing (its maps are empty), so a capped set fails
+ * closed. Nothing is scanned when no link asks.
+ */
+export async function proveSetHistoryLinks<
+  L extends {
+    kind: "player" | "team";
+    name: string;
+    playerId?: Id<"players">;
+    teamId?: Id<"teams">;
+    origin: string;
+  },
+>(
+  ctx: Pick<ActionCtx, "runQuery">,
+  selectorOptionId: Id<"selectorOptions">,
+  links: ReadonlyArray<L>,
+): Promise<L[]> {
+  const asked = links.filter((link) => link.origin === "setHistory");
+  if (asked.length === 0) return [];
+  const history = await scanSetHistory(ctx, { selectorOptionId });
+  if (!history.complete) return [];
+  const teamKeys = asked.some((link) => link.kind === "team")
+    ? await setHistoryTeamKeys(ctx, history.teamIds)
+    : null;
+  return asked.filter((link) =>
+    link.kind === "player"
+      ? !!link.playerId &&
+        onlyId(history.playersByName.get(normalizePlayerName(link.name))) ===
+          (link.playerId as string)
+      : !!link.teamId &&
+        onlyId(teamKeys?.teamsByKey.get(normalizeTeamName(link.name))) ===
+          (link.teamId as string),
+  );
+}
+
+/**
+ * NEO-656 (N1) — does the server itself offer `playerId` for this printed
+ * name? Ported from what the walk's lookup was handed: the set's own history
+ * players for the name (`tidyLeafFacts` -> `historyPlayerIds`, every player the
+ * set linked it to) and rule E1's prior-year pick (the same product one year
+ * earlier linked the name to exactly one player). Both come from
+ * `scanSetHistory`, the scan the gate runs, so a pick the walk offered under
+ * another spelling than the card's is the same pick here. A scan that hit a cap
+ * offers nothing.
+ */
+export async function setHistoryOffersPlayer(
+  ctx: Pick<ActionCtx, "runQuery">,
+  selectorOptionId: Id<"selectorOptions">,
+  name: string,
+  playerId: Id<"players">,
+): Promise<boolean> {
+  const key = normalizePlayerName(name);
+  if (!key) return false;
+  const history = await scanSetHistory(ctx, { selectorOptionId });
+  if (history.complete && history.playersByName.get(key)?.has(playerId as string)) return true;
+  const priorProductId = await ctx.runQuery(internal.setHistory.findPriorYearProduct, {
+    selectorOptionId,
+  });
+  if (!priorProductId) return false;
+  const prior = await scanSetHistory(ctx, { selectorOptionId: priorProductId });
+  return prior.complete && onlyId(prior.playersByName.get(key)) === (playerId as string);
+}

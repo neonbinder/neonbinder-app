@@ -8,8 +8,7 @@
  *   1. the configuration — `retryActionsByDefault` and `WIKIDATA_POOL_RETRY`
  *      exactly — plus the arithmetic that justifies it, checked against every
  *      clock that watches these items (the per-attempt worst case, Convex's
- *      action limit, the workpool's recovery scan, and the review-row stale
- *      cron). A future edit to any number makes the matching invariant fail
+ *      action limit and the workpool's recovery scan). A future edit to any number makes the matching invariant fail
  *      with the reason it matters;
  *   2. which errors the pool will retry: a `WikidataUnavailableError` is NOT a
  *      `NonRetryableError`, so the workpool's `complete` retries it until
@@ -20,8 +19,8 @@
  *   4. the completion callbacks, which the workpool invokes only once retries
  *      are exhausted (`complete.ts`: `onComplete` runs only when it decides
  *      NOT to retry): a row enrichment logs `wikidata_{kind}_unavailable`
- *      with ids only; a review row is aged to "error" by the backstop and the
- *      line says the ladder gave up on Wikidata.
+ *      with ids only; the review-row completion (NEO-656) is kept one release
+ *      and does nothing.
  *
  * Root-level for the convex-test module-registry reason in
  * convex/wikidataEnrichTeam.test.ts's header.
@@ -33,13 +32,11 @@ import { getFunctionName } from "convex/server";
 import { isNonRetryableError, NonRetryableError, type RunResult } from "@convex-dev/workpool";
 import schema from "./schema";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
 import {
   WIKIDATA_MAX_PARALLELISM,
   WIKIDATA_POOL_RETRY,
   wikidataPool,
 } from "./wikidataPool";
-import { backstopEntityReviewRowImpl, ENTITY_REVIEW_STALE_MS } from "./entityReviewQueue";
 import {
   WIKIDATA_FAST_FAILURE_MS,
   WIKIDATA_FETCH_TIMEOUT_MS,
@@ -124,17 +121,14 @@ describe("wikidataPool retry configuration", () => {
     }
   });
 
-  test("the whole ladder, worst case, ends inside the review-row stale cron with room for queueing", () => {
-    // First start → final failure: five worst attempts plus the longest
-    // jitter on every backoff. A review row is aged by the cron 30 min after
-    // CREATION, so the ladder must leave real headroom for the row's wait
-    // for a slot; 10 min is the floor this pins.
+  test("the whole ladder, worst case, is bounded: five worst attempts plus the longest jitter on every backoff", () => {
+    // First start → final failure. (NEO-656: the review-row stale cron this was
+    // once measured against is gone; the arithmetic itself is what stays pinned.)
     const maxBackoffs = MAX_JITTER * backoffsMs().reduce((a, b) => a + b, 0);
     const worstTeam = WIKIDATA_POOL_RETRY.maxAttempts * worstAttemptMs("team") + maxBackoffs;
     const worstPlayer = WIKIDATA_POOL_RETRY.maxAttempts * worstAttemptMs("player") + maxBackoffs;
     expect(worstTeam).toBe(1_090 * SECOND);
     expect(worstPlayer).toBe(1_040 * SECOND);
-    expect(ENTITY_REVIEW_STALE_MS - worstTeam).toBeGreaterThanOrEqual(10 * MINUTE);
   });
 });
 
@@ -319,91 +313,19 @@ describe("onEnrichmentLookupComplete — the row stays bare, and now someone kno
   });
 });
 
-describe("a review row whose ladder never reached Wikidata", () => {
-  async function seedPendingRow(t: ReturnType<typeof convexTest>): Promise<Id<"entityReviewQueue">> {
-    return t.run(async (ctx) => {
-      const selectorOptionId = await ctx.db.insert("selectorOptions", {
-        level: "sport",
-        value: "Baseball",
-        platformData: {},
-        children: [],
-        lastUpdated: 1_700_000_000_000,
-      });
-      return ctx.db.insert("entityReviewQueue", {
-        selectorOptionId,
-        batchId: "batch-1",
-        createdByUserId: "user_review_001",
-        kind: "player",
-        name: "Harmon Killebrew",
-        sportId: selectorOptionId,
-        status: "pending",
-      });
-    });
-  }
-
-  test("goes to 'error' at the final attempt's completion, and the line says why — without the name", async () => {
+describe("onEntityReviewLookupComplete — kept for one release, and does nothing (NEO-656)", () => {
+  test("a work item queued before the deploy can still complete: it writes nothing, whatever context it carried", async () => {
     const t = convexTest(schema, modules);
-    const rowId = await seedPendingRow(t);
+    const before = await t.run((ctx) => ctx.db.query("selectorOptions").collect());
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    // Before the final attempt the workpool does not call onComplete at all,
-    // and the work item itself never writes on an unavailable attempt (pinned
-    // in convex/wikidataEntityReviewQueue.test.ts) — so up to here the row is
-    // still pending. This is the one call that settles it.
-    expect((await t.run((ctx) => ctx.db.get(rowId)))?.status).toBe("pending");
     await t.mutation(internal.wikidataPool.onEntityReviewLookupComplete, {
       workId: "work-1",
-      context: { rowId },
+      context: { rowId: "a-row-that-no-longer-has-a-table" },
       result: UNAVAILABLE("player"),
     });
 
-    expect((await t.run((ctx) => ctx.db.get(rowId)))?.status).toBe("error");
-    const lines = jsonLines(warn).filter((l) => l.msg === "entity_review_row_backstopped");
-    expect(lines).toEqual([
-      { msg: "entity_review_row_backstopped", rowId, resultKind: "failed", wikidataUnavailable: true },
-    ]);
-    expect(JSON.stringify(lines)).not.toContain("Killebrew");
-  });
-
-  test("a write failure's backstop is told apart from an unavailable one", async () => {
-    const t = convexTest(schema, modules);
-    const rowId = await seedPendingRow(t);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    await t.run((ctx) =>
-      backstopEntityReviewRowImpl(ctx, rowId, { kind: "failed", error: "Documents read from or written to ..." }),
-    );
-
-    expect(jsonLines(warn).find((l) => l.msg === "entity_review_row_backstopped")).toMatchObject({
-      wikidataUnavailable: false,
-    });
-  });
-
-  test("a row the stale cron already aged is left alone by a late backstop (the cron firing mid-ladder is harmless)", async () => {
-    const t = convexTest(schema, modules);
-    const rowId = await seedPendingRow(t);
-    await t.run((ctx) => ctx.db.patch(rowId, { status: "error" }));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    await t.run((ctx) => backstopEntityReviewRowImpl(ctx, rowId, UNAVAILABLE("player")));
-
-    expect((await t.run((ctx) => ctx.db.get(rowId)))?.status).toBe("error");
-    expect(jsonLines(warn).filter((l) => l.msg === "entity_review_row_backstopped")).toEqual([]);
-  });
-
-  test("…and a later attempt that DOES get an answer still lands on a cron-aged row", async () => {
-    const t = convexTest(schema, modules);
-    const rowId = await seedPendingRow(t);
-    await t.run((ctx) => ctx.db.patch(rowId, { status: "error" }));
-
-    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
-      id: rowId,
-      status: "ready",
-      enrichment: { wikidataId: "Q1585630", careerTeams: [] },
-    });
-
-    const row = await t.run((ctx) => ctx.db.get(rowId));
-    expect(row?.status).toBe("ready");
-    expect(row?.enrichment?.wikidataId).toBe("Q1585630");
+    expect(await t.run((ctx) => ctx.db.query("selectorOptions").collect())).toEqual(before);
+    expect(warn).not.toHaveBeenCalled();
   });
 });
