@@ -1263,6 +1263,24 @@ describe("ParallelGroupingModal — several rows at once", () => {
     expect(zoneOf(boxTitle(AQUA)).className).not.toContain("border-dashed");
   });
 
+  test("a suggested click-target box has the yellow inset cue; a plain target does not", () => {
+    // "… Mojo Refractors Gold" prefix-matches the target, so Mojo's box is
+    // suggested (yellow) while Gold's is not.
+    tree = [
+      ...mojoTree(),
+      { insert: { _id: "sugg", value: `${MOJO} Gold` }, parallels: [] },
+    ];
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    showTickedBoxes();
+    const suggested = zoneOf(boxTitle(MOJO)).className;
+    expect(suggested).toContain("border-dashed");
+    expect(suggested).toContain("shadow-[inset_0_0_0_3px_var(--notice-warn-rule)]");
+    const plain = zoneOf(boxTitle(GOLD)).className;
+    expect(plain).toContain("border-dashed");
+    expect(plain).not.toContain("shadow-[inset_0_0_0_3px_var(--notice-warn-rule)]");
+  });
+
   test("starting a drag does not change which boxes are rendered", () => {
     renderModal();
     fireEvent.click(tick(AQUA));
@@ -1704,6 +1722,58 @@ describe("ParallelGroupingModal — two panes, filter and jump", () => {
     expect(screen.getByRole("group", { name: boxTitle(BOWMAN) })).toBeTruthy();
     // The filter still governs the rest.
     expect(screen.queryByRole("group", { name: boxTitle(TRADED) })).toBeNull();
+  });
+
+  const switchInput = () =>
+    screen.getByRole("checkbox", { name: "Show selected rows' boxes" });
+  const emptyLine = (text: string) =>
+    screen.queryByText((_, el) => el?.tagName === "P" && el.textContent === text);
+
+  test("the selected-rows switch is described by a hint, and has no DOM id", () => {
+    renderModal();
+    const input = switchInput();
+    expect(input.getAttribute("id")).toBeNull();
+    const hintId = input.getAttribute("aria-describedby");
+    expect(hintId).toBeTruthy();
+    const hint = document.getElementById(hintId!)!;
+    expect(hint.textContent).toBe("Hides the drop boxes of selected rows.");
+    expect(hint.className).toContain("sr-only");
+    // The hint describes the switch; it is not part of its name.
+    expect(input.closest("label")!.contains(hint)).toBe(false);
+  });
+
+  test("no filter, every row selected, switch off: the empty line shows, and goes when the switch is on", () => {
+    // No insert has parallels, so every row is selectable.
+    tree = [
+      { insert: { _id: "traded", value: TRADED }, parallels: [] },
+      { insert: { _id: "bowman", value: BOWMAN }, parallels: [] },
+    ];
+    renderModal();
+    for (const name of [TRADED, BOWMAN]) fireEvent.click(tick(name));
+    expect(emptyLine("No parallels to show")).toBeTruthy();
+    fireEvent.click(switchInput());
+    expect(emptyLine("No parallels to show")).toBeNull();
+  });
+
+  test("a filter whose every match is selected, switch off: the empty line names the filter", () => {
+    renderModal();
+    fireEvent.click(tick(BOWMAN));
+    typeFilter("bowman");
+    expect(emptyLine('No parallels to show for "bowman"')).toBeTruthy();
+    fireEvent.click(switchInput());
+    expect(emptyLine('No parallels to show for "bowman"')).toBeNull();
+    expect(box(BOWMAN)).toBeTruthy();
+  });
+
+  test("no filter, nothing selected and no top-level inserts: no empty line", () => {
+    tree = [];
+    renderModal();
+    expect(emptyLine("No parallels to show")).toBeNull();
+  });
+
+  test("no filter and nothing selected with boxes on screen: no empty line", () => {
+    renderModal();
+    expect(emptyLine("No parallels to show")).toBeNull();
   });
 
   test("rows sit in the left pane and their boxes in the right, same order", () => {
