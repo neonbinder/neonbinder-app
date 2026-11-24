@@ -1493,13 +1493,6 @@ describe("CareerTeamEntry — loading a stint to edit (NEO-591)", () => {
     expect(document.activeElement).toBe(fromBox());
   });
 
-  it("NEO-657: autoFocusYears={false} fills the form from the load but leaves focus where it was", () => {
-    const { rerender } = render(entry({ autoFocusYears: false }));
-    rerender(entry({ autoFocusYears: false, load: load(1) }));
-    expect(fromBox().value).toBe("2019");
-    expect(document.activeElement).not.toBe(fromBox());
-  });
-
   it("leaves To year empty for an open-ended stint", () => {
     const { rerender } = render(entry({}));
     rerender(entry({ load: load(1, { toYear: undefined }) }));

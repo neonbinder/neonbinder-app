@@ -86,7 +86,6 @@ export default function AddStintEntry({
           onDone={close}
           {...(asPrefilled
             ? {
-                autoFocusYears: false,
                 load: {
                   token: 1,
                   name: prefill.name,

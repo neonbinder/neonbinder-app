@@ -88,14 +88,9 @@ describe("AddStintEntry (NEO-657)", () => {
     expect(onDraft).not.toHaveBeenCalled();
   });
 
-  it("the auto-opened prefilled form does not take focus", () => {
-    const outside = document.createElement("button");
-    document.body.appendChild(outside);
-    outside.focus();
+  it("the auto-opened prefilled form takes focus on From year", () => {
     mount({ prefill });
-    expect(screen.getByLabelText(/^From year/)).toBeTruthy();
-    expect(document.activeElement).toBe(outside);
-    outside.remove();
+    expect(document.activeElement).toBe(screen.getByLabelText(/^From year/));
   });
 
   it("the prefilled form is a named group", () => {

@@ -133,7 +133,6 @@ export default function CareerTeamEntry({
   label,
   disabled = false,
   knownTeamsOnly = false,
-  autoFocusYears = true,
   onDone,
   onDraftChange,
 }: {
@@ -193,13 +192,6 @@ export default function CareerTeamEntry({
    * removing the stint that was being edited does. Nothing happens on mount.
    */
   resetToken?: number;
-  /**
-   * NEO-657 — whether a `load` moves focus to From year (default true, as the
-   * edit chip needs). The auto-opened prefilled "+ Add stint" form passes
-   * false: it appears on its own, so it must not take focus from where the
-   * walk placed it.
-   */
-  autoFocusYears?: boolean;
   /**
    * NEO-574 — other teams the cards print for this player, as one-press
    * fills for the team and From year. Parent-filtered: a team already
@@ -634,8 +626,8 @@ export default function CareerTeamEntry({
 
   /* NEO-591 — the chip that was pressed is gone, so focus goes to the years. */
   useEffect(() => {
-    if (appliedLoad !== undefined && autoFocusYears) fromYearRef.current?.focus();
-  }, [appliedLoad, autoFocusYears]);
+    if (appliedLoad !== undefined) fromYearRef.current?.focus();
+  }, [appliedLoad]);
 
   /*
    * NEO-574 — if the parent answered the add with the NEXT prefill (the next
