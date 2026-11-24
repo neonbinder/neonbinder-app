@@ -1,0 +1,26 @@
+---
+name: neo656-linked-name-rows-and-edit-reask-sport
+description: NEO-656 J1 walk specs - a linked team is the card's line (no per-name row), the lone open name loses its button suffix ("Not a team"), and Edit on an NB-made player link re-asks in the set's sport (walk facts cover pending names only)
+metadata:
+  type: project
+---
+
+Learned rewriting the two "Linked for you" specs (2026-11-24):
+
+- **A linked team is the card's own line**, `group "Team <team>"` with `Edit <team>`, read from
+  `ctx.teams` (onCard). The per-name row (`TeamNameRow`) has the same group name, so prove "no
+  per-name row" by the group count being 1 plus the absence of the name row's own controls ("Which
+  team:", "Not a team"), and J1 by `getByText(/Linked for you/)` and `getByRole("note")` at 0.
+- **Button suffixes follow the count of OPEN names.** `Not a team${suffix}` / `Not a player…${suffix}`
+  carry " <printed>" only when the tile has several rows. Once a linked name stopped being a row, a
+  card with one linked + one unknown name shows plain "Not a team": scope it to the row's group and
+  use the exact bare name.
+- **Edit on a player link NB made (set history, Hall of Fame) re-asks in the SET's sport.** The row's
+  sport comes from `memory.defaultSportFor`, i.e. `tidyLeafFacts` gate items, which are computed once
+  at walk open and only for names still PENDING. A name linked at the commit has no gate item, so
+  after Edit the cross-sport player's home sport and the set-history suggestion are both gone (on main
+  the stored auto answer carried them). Reported as a product gap 2026-11-24; a spec asserting the
+  re-ask goes red at "Link to <name>".
+
+**How to apply:** any walk spec reading a linked row, pressing Not a team/Not a player on a mixed
+card, or pressing Edit on an automatic link. Related: [[neo656-tidy-walk-helpers-skip-apply-end-screen]].
