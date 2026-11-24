@@ -94,3 +94,5 @@
 - [Agent tool allowlists: transcript facts](agent-tool-allowlists-what-the-transcripts-show.md) — Handback always injected; unlisted tool = error; read-only agents can't Write memory; playwright-test MCP never loads
 - [Monitor caps at 30 min](monitor-watches-cap-at-30-minutes.md) — no persistent mode; each line wakes main; print on change, resume state across re-arms
 - [Marketplace ids are never Convex field names](marketplace-ids-are-never-convex-field-names.md) — non-ASCII keys throw client-side, unlogged; arrays of {id,label}; server accepts old shape (NEO-625)
+- [Removing a seen/ack needs a per-kind fix audit](removing-a-seen-ack-needs-a-per-kind-fix-audit.md) — newPlayerCareer has no clearing writer; spread-doc returns need projection (NEO-656)
+- [Live attention facts: bucket by player](live-attention-facts-bucket-by-player-not-by-card-reads.md) — careerGap live = fixed client buckets of no-card queries; a stored note can be a rule guard (teamFillOf) (NEO-656)
