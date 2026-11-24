@@ -1772,6 +1772,22 @@ describe("CareerTeamEntry — whose stint, and only teams that exist (NEO-591)",
       expect(old.textContent).toContain("Monterrey Sultanes");
     });
 
+    it("NEO-657: a staged team shows no era and the plain 'Use X' name", () => {
+      currentTeams = [];
+      renderEntry({ stagedNames: ["Padres Prospects"] });
+      typeName("Padres");
+      const option = screen.getByRole("option", { name: "Use Padres Prospects" });
+      expect(option.textContent).toBe("Padres Prospects");
+    });
+
+    it("NEO-657: a saved team with no yearsActive shows no era text and the plain name", () => {
+      currentTeams = [makeTeam("Monterrey Sultanes", "t-sultanes")];
+      renderEntry({ label: "Luis Rodriguez", knownTeamsOnly: true });
+      typeKnown("Monterrey");
+      const option = screen.getByRole("option", { name: "Use Monterrey Sultanes" });
+      expect(option.textContent).toBe("Monterrey Sultanes");
+    });
+
     it("takes the prefilled team once the search has found it", () => {
       currentTeams = [PADRES];
       const { onAdd } = renderEntry({

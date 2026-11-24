@@ -81,6 +81,9 @@ vi.mock("../../CareerTeamEntry", async (importOriginal) => ({
         >
           Edit the years stub
         </button>
+        <button type="button" onClick={() => onDraftChange?.(null)}>
+          Clear the form stub
+        </button>
         <button type="button" onClick={() => onDone?.()}>
           Close stub
         </button>
@@ -540,6 +543,42 @@ describe("CareerTile", () => {
         await act(async () => {
           await run();
         });
+        expect(mutation("players.addStint")).not.toHaveBeenCalled();
+      });
+
+      it("a stint for that team that ended before the year still counts (the career-gap rule ignores the end year), so the form stays closed", () => {
+        renderTile(
+          [newItem],
+          context({
+            players: [player({ stints: [{ teamId: "team-pad", teamName: "San Diego Padres", fromYear: 2018, toYear: 2020 }] })],
+          }),
+        );
+        expect(screen.queryByText(/Prefilled/)).toBeNull();
+      });
+
+      it("a stint for a different team does not block the prefill, even one spanning the year", () => {
+        renderTile(
+          [newItem],
+          context({
+            players: [player({ stints: [{ teamId: "team-tex", teamName: "Texas Rangers", fromYear: 2020, toYear: 2026 }] })],
+          }),
+        );
+        expect(screen.getByText("Prefilled San Diego Padres 2024-2024")).toBeTruthy();
+      });
+
+      it("a player with no new-player item (an existing player's gap) gets no prefilled form", () => {
+        renderTile([gapItem], context({ players: [player({ stints: [] })] }));
+        expect(screen.queryByText(/Prefilled/)).toBeNull();
+      });
+
+      it("Save & next after the form became unaddable adds nothing and lets the card move on", async () => {
+        const run = renderWithSave(context());
+        await click(screen.getByRole("button", { name: "Clear the form stub" }));
+        let ok = false;
+        await act(async () => {
+          ok = await run();
+        });
+        expect(ok).toBe(true);
         expect(mutation("players.addStint")).not.toHaveBeenCalled();
       });
 
