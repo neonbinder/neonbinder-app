@@ -98,9 +98,15 @@ export type WalkSitting = {
   passed: readonly string[];
   /** Every card shown, in the order shown, for Back. */
   trail: readonly string[];
+  /**
+   * The skipped cards "Review the N skipped" offered again and not yet left.
+   * Kept so a refresh during a review does not read as "No cards left" while
+   * they remain.
+   */
+  reviewing: readonly string[];
 };
 
-export const EMPTY_SITTING: WalkSitting = { passed: [], trail: [] };
+export const EMPTY_SITTING: WalkSitting = { passed: [], trail: [], reviewing: [] };
 
 /** The trail is capped; a leaf has at most ~1,000 cards and ids are short. */
 const TRAIL_MAX = 1200;
@@ -258,10 +264,15 @@ export function loadSitting(leafId: string): WalkSitting {
     if (!raw) return EMPTY_SITTING;
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null) return EMPTY_SITTING;
-    const { passed, trail } = parsed as { passed?: unknown; trail?: unknown };
+    const { passed, trail, reviewing } = parsed as {
+      passed?: unknown;
+      trail?: unknown;
+      reviewing?: unknown;
+    };
     return {
       passed: isIdList(passed) ? passed : [],
       trail: isIdList(trail) ? trail : [],
+      reviewing: isIdList(reviewing) ? reviewing : [],
     };
   } catch {
     return EMPTY_SITTING;

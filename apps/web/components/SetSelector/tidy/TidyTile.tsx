@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ExclamationTriangleIcon, EyeIcon } from "@heroicons/react/16/solid";
+import { useAnswered } from "./answered";
 
 /**
  * NEO-645 — the tile shell for the per-card Tidy Up walk.
@@ -220,6 +221,7 @@ export function ApplyToAllButton({
    */
   onApply: () => Promise<void | ApplyCounts>;
 }) {
+  const answered = useAnswered();
   const [busy, setBusy] = useState(false);
   // The words on the button when it was pressed: the caller's label counts the
   // cards on offer, and "Apply to all 0 cards" is no label for a button that
@@ -252,7 +254,13 @@ export function ApplyToAllButton({
     setOutcome(null);
     try {
       const result = await onApply();
-      if (alive.current) setOutcome({ at: count, kind: "done", text: applyOutcomeText(result) });
+      const text = applyOutcomeText(result);
+      if (alive.current) setOutcome({ at: count, kind: "done", text });
+      // A done apply is an answer like any other: focus moves on to Save &
+      // next (or the first pink tile) and the walk's live region says it. Not
+      // behind `alive`: a caller whose panel closes with the apply unmounts
+      // this button first, and the answer still stands.
+      answered(text);
     } catch {
       if (alive.current) setOutcome({ at: count, kind: "failed" });
     } finally {

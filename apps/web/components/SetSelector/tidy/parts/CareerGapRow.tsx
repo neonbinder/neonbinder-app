@@ -67,7 +67,7 @@ export default function CareerGapRow({
   return (
     <div role="group" aria-label={`Career ${player.name}`} className="grid gap-1.5">
       <p className="text-sm text-ink wrap-anywhere">
-        <span className="font-medium">{player.name}</span>{" "}
+        <span className="font-medium">{player.name}:</span>{" "}
         <span>{noCareer ? NO_CAREER_TEXT : noStintText(team?.name, setYear)}</span>
       </p>
       {player.stints.length > 0 && (

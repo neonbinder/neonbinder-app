@@ -277,7 +277,7 @@ function WalkDialog({
   // stay in `passed` (so Back to the end screen shows the same tally and the same
   // button); while one is in here it counts as open, wherever the walk is but the
   // end screen.
-  const [reviewing, setReviewing] = useState<readonly string[]>([]);
+  const [reviewing, setReviewing] = useState<readonly string[]>(initial.reviewing);
 
   // ── what the walk reads ─────────────────────────────────────────────────
   const memory = useWalkMemory();
@@ -315,7 +315,7 @@ function WalkDialog({
   // The card's names are asked about when it opens, and the next card's ahead
   // of it (one try each; the tile offers Try again).
   const upNextId = current
-    ? nextCardId(order, withPassed({ passed: openPassed, trail: [] }, current._id), current._id)
+    ? nextCardId(order, withPassed({ passed: openPassed, trail: [], reviewing: [] }, current._id), current._id)
     : null;
   const upNext = upNextId ? rowsById.get(upNextId) : undefined;
   useCardNameLookups(
@@ -339,7 +339,7 @@ function WalkDialog({
   const needsResolve =
     careerGapsReady && (location.kind === "first" || (location.kind === "card" && !current));
   const firstTarget = needsResolve
-    ? nextCardId(order, { passed: openPassed, trail: [] }, null)
+    ? nextCardId(order, { passed: openPassed, trail: [], reviewing: [] }, null)
     : null;
   // `entryKey` is a dependency on purpose: it changes with every committed
   // navigation, so if another writer ever puts `tidy=first` (or a stale id) back
@@ -357,18 +357,18 @@ function WalkDialog({
   // a card (the render-phase update React documents for "information from
   // previous renders"), so no effect chases the URL.
   if (currentId) {
-    const shown = withShown({ passed, trail }, currentId);
+    const shown = withShown({ passed, trail, reviewing }, currentId);
     if (shown.trail !== trail) setTrail(shown.trail);
   }
   useEffect(() => {
-    saveSitting(leafId, { passed, trail });
-  }, [leafId, passed, trail]);
+    saveSitting(leafId, { passed, trail, reviewing });
+  }, [leafId, passed, trail, reviewing]);
 
-  const left = cardsLeft(order, { passed: openPassed, trail: [] });
+  const left = cardsLeft(order, { passed: openPassed, trail: [], reviewing: [] });
   // By the card's level NOW (B20): pink is "not ready to list", blue alone is
   // "still to check", and a card fixed elsewhere is in neither.
-  const skipped = cardsSkipped(order, { passed, trail: [] });
-  const stillToCheck = cardsStillToCheck(order, { passed, trail: [] });
+  const skipped = cardsSkipped(order, { passed, trail: [], reviewing: [] });
+  const stillToCheck = cardsStillToCheck(order, { passed, trail: [], reviewing: [] });
   // Cards the sitting moved past that no longer need a person.
   const fixed = Math.max(0, passed.length - skipped - stillToCheck);
   const isDone = location.kind === "done";
@@ -377,7 +377,7 @@ function WalkDialog({
   /** Leave `fromId` going forward: to the next card still to walk, or the end. */
   const advance = useCallback(
     (fromId: string) => {
-      const sitting = withPassed({ passed: openPassed, trail }, fromId);
+      const sitting = withPassed({ passed: openPassed, trail, reviewing: [] }, fromId);
       setPassed((prev) => (prev.includes(fromId) ? prev : [...prev, fromId]));
       setReviewing((prev) => (prev.includes(fromId) ? prev.filter((id) => id !== fromId) : prev));
       const next = nextCardId(order, sitting, fromId);
@@ -462,7 +462,14 @@ function WalkDialog({
    * open until it is left again. The walk moves to the first: a push.
    */
   const reviewSkipped = () => {
-    const first = skippedIds[0];
+    // Pink first: the cards "not ready to list" are what the button counts, so
+    // a lower-numbered blue card must not be where the review opens. The rest
+    // follow in walk order.
+    const passedIds = new Set(skippedIds);
+    const firstPink = order.find(
+      ({ row, attention }) => passedIds.has(row._id as string) && attention.level === "fix",
+    );
+    const first = (firstPink?.row._id as string | undefined) ?? skippedIds[0];
     if (!first) return;
     // One transition for the state and the push (router navigation is a
     // transition; a sibling setState outside it would render the old URL first).
@@ -486,12 +493,12 @@ function WalkDialog({
       stepBack();
       return;
     }
-    const prev = previousCardId({ passed, trail }, currentId ?? null);
+    const prev = previousCardId({ passed, trail, reviewing }, currentId ?? null);
     if (prev) showCard(prev);
   };
 
   const canGoBack =
-    !saving && (canStepBack || previousCardId({ passed, trail }, currentId ?? null) !== null);
+    !saving && (canStepBack || previousCardId({ passed, trail, reviewing }, currentId ?? null) !== null);
 
   // ── keys ────────────────────────────────────────────────────────────────
   const inlineOpen = useInlineStackOpen();

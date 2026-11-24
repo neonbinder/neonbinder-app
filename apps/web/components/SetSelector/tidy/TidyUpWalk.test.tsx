@@ -5,7 +5,7 @@
  * tests: here each is a stub, and one of them registers an inline part so the
  * Escape ordering can be driven. Router, URL, history and the sitting are real.
  */
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createElement, useEffect, useRef, useState } from "react";
 import { MemoryRouter, useLocation, useSearchParams } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -959,6 +959,29 @@ describe("the end screen: Review the skipped (NEO-645 audit)", () => {
     for (let i = 0; i < 3; i++) fireEvent.click(button("Skip: not ready to list"));
     await waitFor(() => expect(url()).toBe("?tidy=done"));
     expect(screen.getByText("3 cards skipped, not ready to list")).toBeTruthy();
+  });
+
+  it("opens on the first pink card when a blue one with a lower number was passed too (C3)", async () => {
+    await skipAll([blue("a", "1"), pink("b", "2")]);
+    fireEvent.click(button("Review the skipped card"));
+    await waitFor(() => expect(url()).toBe("?tidy=b"));
+    // The blue card is still offered, after the pink one.
+    expect(screen.getByText("2 cards left")).toBeTruthy();
+    fireEvent.click(button("Skip: not ready to list"));
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+  });
+
+  it("keeps a review through a refresh: no 'No cards left' while cards remain (C6)", async () => {
+    const cards = [pink("a", "1"), pink("b", "2")];
+    await skipAll(cards);
+    fireEvent.click(button("Review the 2 skipped"));
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+    expect(screen.getByText("2 cards left")).toBeTruthy();
+    cleanup();
+    mount(cards, { search: "?tidy=a" });
+    await waitFor(() => expect(url()).toBe("?tidy=a"));
+    expect(screen.getByText("2 cards left")).toBeTruthy();
+    expect(screen.queryByText("No cards left")).toBeNull();
   });
 
   it("activated by keyboard, it lands focus on the first skipped card's header", async () => {

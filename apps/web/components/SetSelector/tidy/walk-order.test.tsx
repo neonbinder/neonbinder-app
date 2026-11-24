@@ -210,13 +210,18 @@ describe("sessionStorage", () => {
   beforeEach(() => window.sessionStorage.clear());
 
   it("round-trips a sitting per leaf", () => {
-    saveSitting("leaf1", { passed: ["a"], trail: ["a", "b"] });
-    expect(loadSitting("leaf1")).toEqual({ passed: ["a"], trail: ["a", "b"] });
+    saveSitting("leaf1", { passed: ["a"], trail: ["a", "b"], reviewing: ["a"] });
+    expect(loadSitting("leaf1")).toEqual({ passed: ["a"], trail: ["a", "b"], reviewing: ["a"] });
     expect(loadSitting("leaf2")).toEqual(EMPTY_SITTING);
   });
 
+  it("reads a sitting saved before reviews were kept as not reviewing", () => {
+    window.sessionStorage.setItem("nb:tidy-walk:leaf1", JSON.stringify({ passed: ["a"], trail: ["a"] }));
+    expect(loadSitting("leaf1")).toEqual({ passed: ["a"], trail: ["a"], reviewing: [] });
+  });
+
   it("starts a new sitting empty", () => {
-    saveSitting("leaf1", { passed: ["a"], trail: ["a"] });
+    saveSitting("leaf1", { passed: ["a"], trail: ["a"], reviewing: [] });
     resetSitting("leaf1");
     expect(loadSitting("leaf1")).toEqual(EMPTY_SITTING);
   });
