@@ -486,8 +486,8 @@ describe("deriveCardAttention — a card always has a name (Jason, 2026-11-23)",
     ).toEqual(["sourcesDisagree", "needsName", "teamName"]);
   });
 
-  test("it does not hold a parallel build (only unanswered names do)", () => {
-    expect(blocksParallelBuild(NAMELESS)).toBe(false);
+  test("it holds a parallel build (any pink item does, NEO-661)", () => {
+    expect(blocksParallelBuild(NAMELESS)).toBe(true);
   });
 });
 
