@@ -122,6 +122,37 @@ describe("AddStintEntry (NEO-657)", () => {
     );
   });
 
+  it("the prefill going away with focus in the form returns focus to '+ Add stint'", async () => {
+    const view = mount({ prefill });
+    const from = screen.getByLabelText(/^From year/);
+    from.focus();
+    expect(document.activeElement).toBe(from);
+    await act(async () => {
+      view.setPrefill(undefined);
+    });
+    expect(screen.queryByLabelText(/^From year/)).toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "+ Add stint for Jackson Merrill" }),
+    );
+  });
+
+  it("the prefill going away with focus elsewhere leaves focus alone", async () => {
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    try {
+      const view = mount({ prefill });
+      outside.focus();
+      expect(document.activeElement).toBe(outside);
+      await act(async () => {
+        view.setPrefill(undefined);
+      });
+      expect(screen.queryByLabelText(/^From year/)).toBeNull();
+      expect(document.activeElement).toBe(outside);
+    } finally {
+      outside.remove();
+    }
+  });
+
   it("a prefill arriving later opens the form; going away closes it", async () => {
     const view = mount();
     expect(screen.queryByLabelText(/^From year/)).toBeNull();

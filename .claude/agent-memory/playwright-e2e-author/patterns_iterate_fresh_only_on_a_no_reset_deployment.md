@@ -25,6 +25,6 @@ When the coordinator says the worktree deployment holds data and must not be res
 - **CareerTeamEntry shows no suggestion list when the box holds a team's whole name**
   (exact match). To assert an option's name, type part of it ("Seattle Mar").
 
-**Why:** NEO-657 lost a test user's rows to e2e-run's setup and burned names on reds before
-this recipe. **How to apply:** any fresh-only walk spec on a shared or no-reset deployment.
+**Why:** `e2e-run.mjs run` runs `setup`, which resets test user 0's rows on the target
+deployment; and every red run of a fresh-only spec uses up its names. **How to apply:** any fresh-only walk spec on a shared or no-reset deployment.
 Related: [[patterns_e2e_run_tool_in_practice]], [[patterns_rerun_a_fresh_only_spec_without_a_reseed]].

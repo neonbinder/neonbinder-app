@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import NeonButton from "../../../modules/NeonButton";
 import CareerTeamEntry, { type CareerTeamAdded } from "../../CareerTeamEntry";
@@ -53,25 +53,44 @@ export default function AddStintEntry({
   // made) opens it; one that goes away (the stint is written) closes it.
   const hasPrefill = prefill !== undefined;
   const [sawPrefill, setSawPrefill] = useState(hasPrefill);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const scopeRef = useRef<HTMLDivElement | null>(null);
+  // The form's element, as state, so a render can ask where focus is while the
+  // form is still mounted (a ref is not readable during render).
+  const [scopeEl, setScopeEl] = useState<HTMLDivElement | null>(null);
+  const attachScope = useCallback((el: HTMLDivElement | null) => {
+    scopeRef.current = el;
+    setScopeEl(el);
+  }, []);
+  // The prefill going away closes the form from outside, so close() never
+  // runs. If focus was inside the form (still mounted during this render), it
+  // would drop to <body>; count a ticket here and restore it to "+ Add stint"
+  // after the commit.
+  const [focusTicket, setFocusTicket] = useState(0);
   if (hasPrefill !== sawPrefill) {
     setSawPrefill(hasPrefill);
     setOpen(hasPrefill);
     setPrefilled(hasPrefill);
+    if (!hasPrefill && scopeEl?.contains(document.activeElement)) {
+      setFocusTicket(focusTicket + 1);
+    }
   }
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (focusTicket === 0) return;
+    requestAnimationFrame(() => buttonRef.current?.focus({ preventScroll: true }));
+  }, [focusTicket]);
   const close = () => {
     setOpen(false);
     setPrefilled(false);
     requestAnimationFrame(() => buttonRef.current?.focus({ preventScroll: true }));
   };
-  const scopeRef = useRef<HTMLDivElement | null>(null);
   useInlinePart(open, close, scopeRef);
 
   if (open) {
     const asPrefilled = prefilled && prefill !== undefined;
     return (
       <div
-        ref={scopeRef}
+        ref={attachScope}
         {...(asPrefilled
           ? { role: "group", "aria-label": `New stint for ${playerName}, prefilled from the card` }
           : {})}
