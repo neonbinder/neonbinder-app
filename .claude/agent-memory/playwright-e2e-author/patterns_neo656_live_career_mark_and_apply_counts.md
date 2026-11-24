@@ -21,5 +21,11 @@ After NEO-656 (2026-11-24) the walk's "N cards left" and the pill are live count
   `{ linked: waiting.length }`: the helper's line passes, the next `expectCardsLeft` goes red. That
   proves the spec checks the data, not the result line.
 
+- **Team era picks (B11).** After a link the printed name's row (`Team <printed>`) is gone; the
+  card's line is `group "Team <team>"` with `Edit <team>`. A pick onto a stint-less player turns
+  the card blue at once (Career "To check"): Skip it and expect `{ fixed: 0, stillToCheck: n }`.
+  Plants that redden both era specs: swap `onLink(candidate.teamId)` in `TeamCandidates.tsx` to the
+  mirrored index; and in `careerCoverage.careerGaps` guard `gaps.push` off (convex push, ~1.5 min).
+
 **How to apply:** rewriting any NEO-645 walk spec whose counts assumed fan-out or a sticky blue.
 Related: [[neo656-tidy-walk-helpers-skip-apply-end-screen]], [[patterns-walk-keeps-a-card-that-clears-on-screen]].

@@ -2,7 +2,8 @@
 // two eras a printed team name means, nothing links it. The card's Team tile is pink and ASKS
 // ("Which team: <printed>"), offering both existing eras as one-click links (newest first), with
 // the team search kept below as the fallback; the card then carries only the era the operator
-// picks, and that pick wears no "Linked for you" note.
+// picks. Once linked, the printed name keeps no row of its own: the Team tile shows the card's
+// team line with Edit (NEO-656 B11), and no "Linked for you" note (NEO-656 J1).
 //
 // The two-era club, minted as in tidy-up-team-name-on-two-eras-links-the-players-era-with-no-stop:
 // `Loc<token> Ath<token>` (1968–2024, the printed name is its own) and `Ath<token>` (2025–present,
@@ -18,6 +19,13 @@
 // each case (the one-click link in (a), the search in (b)), and the drawer proves the card carries
 // exactly that era. (The players' era against the year is the sibling spec named above; a silent
 // card abstaining is tidy-up-two-era-team-name-links-silently-when-a-card-with-no-career-abstains.)
+//
+// Pink/blue is live (NEO-656 J5: "it should read real data and display pink/blue as appropriate
+// depending on the current state of the data"). In (a) the picked era is not in the player's
+// (empty) career, so the card turns blue the moment the pick lands; the spec writes no career, so
+// it Skips the card (Save & next would add the default stint, D14) and the end screen counts it
+// "still to check". In (b) his stint on the newer era covers the 2025 card: nothing is left, Save
+// & next ends the walk "All tidy".
 //
 // Proven able to fail by a one-value counter-fixture (memory: career-team-link-fixture-and-counter-
 // fixture-proof): YEAR 2025 -> 2020 makes the older era the year's own pick (the newer one did not
@@ -37,12 +45,15 @@ import { usePastedChecklist } from "../../support/published-checklist";
 import { addCareerStint, addPlayerByHand, createTeamInCareerEditor, expectPlayersLoaded, teamChip } from "../../support/players";
 import { drillToCustom, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
+  EDIT,
   expectCardsLeft,
+  expectTidyEndScreen,
   finishTidyWalk,
   mustFixLine,
   pinkTile,
   saveAndNext,
   settleWalkAfterCommit,
+  skipCard,
   tidyCardHeader,
   tidyFooterButton,
   tidyTile,
@@ -86,7 +97,7 @@ async function syncAndExpectTheTeamAsked(
   // Edit: an answered row's "Edit <team>", NEO-645 C1), the tile pink and Save & next held while it is.
   await expect(row.getByText(/isn't linked to a team yet\.$/)).toHaveCount(0);
   await expect(row.getByRole("note")).toHaveCount(0);
-  await expect(row.getByRole("button", { name: /^Edit (?!cameo )/ })).toHaveCount(0);
+  await expect(tidyTile(page, "Team").getByRole("button", { name: EDIT })).toHaveCount(0);
   await expect(pinkTile(page, "Team")).toHaveCount(1);
   await expect(tidyTile(page, "Team")).toHaveAccessibleDescription(/To fix/);
   await expect(mustFixLine(page)).toBeVisible();
@@ -103,18 +114,20 @@ async function untickRemember(row: Locator, printed: string): Promise<void> {
 }
 
 /**
- * The row is answered with `picked` by the operator: the team named, its Edit offered, no "Linked
- * for you" note, nothing asked; the tile is no longer pink. Then Save & next to the end screen.
+ * The operator's pick landed: the Team tile's line for the card's team is named by `picked`
+ * ("Team <picked>", NEO-656 B11), with its Edit; nothing is asked any more (no "Which team:", no
+ * "Remember …" box: the printed name's row is gone), no "Linked for you" note (J1), and the tile is
+ * no longer pink.
  */
-async function expectPickedAndFinish(page: Page, row: Locator, picked: string): Promise<void> {
-  await expect(row.getByText(picked, { exact: true })).toBeVisible();
-  await expect(row.getByRole("button", { name: `Edit ${picked}`, exact: true, disabled: false })).toBeVisible();
-  await expect(row.getByText(/^Which team: /)).toHaveCount(0);
-  await expect(row.getByRole("note")).toHaveCount(0);
+async function expectPicked(page: Page, printed: string, picked: string): Promise<void> {
+  const team = tidyTile(page, "Team");
+  const line = team.getByRole("group", { name: `Team ${picked}`, exact: true });
+  await expect(line.getByText(picked, { exact: true })).toBeVisible();
+  await expect(line.getByRole("button", { name: `Edit ${picked}`, exact: true, disabled: false })).toBeVisible();
+  await expect(team.getByText(/^Which team: /)).toHaveCount(0);
+  await expect(team.getByRole("checkbox", { name: `Remember “${printed}” as a name for this team` })).toHaveCount(0);
+  await expect(team.getByRole("note")).toHaveCount(0);
   await expect(pinkTile(page, "Team")).toHaveCount(0);
-  await saveAndNext(page);
-  await expect(tidyWalk(page).getByText("All tidy. Nothing on this checklist needs you.")).toBeVisible();
-  await finishTidyWalk(page);
 }
 
 /** The committed card #1 carries `has` and not `hasNot`. */
@@ -192,7 +205,14 @@ test(
     });
     await untickRemember(rowNone, OLD);
     await rowNone.getByRole("button", { name: new RegExp(`^Link to ${escapeRe(OLD)} · 1968.2024$`) }).click();
-    await expectPickedAndFinish(page, rowNone, OLD);
+    await expectPicked(page, OLD, OLD);
+    // Live (J5): the era now on the card is not in his (empty) career, so the card turns blue and
+    // stays in the walk. Skip writes nothing; the end screen counts it by its live level.
+    await expect(tidyTile(page, "Career")).toHaveAccessibleDescription(/To check/);
+    await expectCardsLeft(page, 1);
+    await skipCard(page);
+    await expectTidyEndScreen(page, { fixed: 0, stillToCheck: 1 });
+    await finishTidyWalk(page);
     await expectCardTeam(page, OLD, NEW, "Card drawer, the operator's era (no stints)");
 
     // ── STEP 2 (b): stints on both eras. Asked; the operator finds the newer era by the search ──
@@ -212,7 +232,12 @@ test(
     await combo.fill(NEW);
     await expect(combo).toHaveValue(NEW);
     await page.getByRole("option", { name: new RegExp(`^${escapeRe(NEW)}`) }).click();
-    await expectPickedAndFinish(page, rowBoth, NEW);
+    await expectPicked(page, OLD, NEW);
+    // His 2025 stint on the newer era covers the card: nothing is pink or blue, so Save & next (no
+    // Career gap on screen, so no stint written) ends the walk with the card fixed.
+    await saveAndNext(page);
+    await expectTidyEndScreen(page, { fixed: 1 });
+    await finishTidyWalk(page);
     await expectCardTeam(page, NEW, OLD, "Card drawer, the operator's era (both eras)");
   },
 );
