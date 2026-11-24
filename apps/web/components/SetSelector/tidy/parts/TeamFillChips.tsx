@@ -3,9 +3,8 @@ import { CheckIcon } from "@heroicons/react/16/solid";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
-import { MAX_CARD_TEAMS, teamFillOf } from "../../../../convex/features/cardAttention";
+import { MAX_CARD_TEAMS } from "../../../../convex/features/cardAttention";
 import { idSetKey } from "../../../../convex/lib/teamFill";
-import { leagueShortName, teamDetailLine } from "../../../../lib/teams/team-detail";
 import { teamOptionLabel } from "../../../../lib/teams/team-era";
 import { teamFullName } from "../../../../lib/teams/team-name";
 import NeonButton from "../../../modules/NeonButton";
@@ -50,8 +49,10 @@ const EVIDENCE_MAX_PLAYERS = 32;
  *    label follows the pre-fill, never the current pick, so a toggle never
  *    changes it.
  *
- * Nothing is written until Save (`updateCard`, which sets the teams on the card
- * through the one writer) or "No team on this card" (`confirmCardNoTeam`).
+ * Clicking a team saves it (`updateCard`, which sets the teams on the card
+ * through the one writer), a chip, a team picked with Other team… or one made
+ * with + New team alike. "No team on this card" writes `confirmCardNoTeam`. A
+ * second team is added after the save, with the tile's "+ Another team".
  */
 export default function TeamFillChips({
   row,
@@ -104,23 +105,17 @@ export default function TeamFillChips({
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const confirmCardNoTeam = useMutation(api.cardChecklist.confirmCardNoTeam);
 
-  const [teamIds, setTeamIds] = useState<Array<Id<"teams">> | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
   const otherRef = useRef<HTMLButtonElement | null>(null);
   const newRef = useRef<HTMLButtonElement | null>(null);
-  const saveRef = useRef<HTMLButtonElement | null>(null);
   const searchScopeRef = useRef<HTMLDivElement | null>(null);
   const answered = useAnswered();
-  // Cancel and Esc hand focus back to "Other team…". A pick or a created team
-  // is NOT an answer yet (Save team is), so it goes to Save team instead: one
-  // more Enter there saves, where Other team… would only reopen the search.
+  // Cancel and Esc hand focus back to "Other team…".
   const closeSearch = () => {
     setSearchOpen(false);
     requestAnimationFrame(() => otherRef.current?.focus({ preventScroll: true }));
   };
-  const focusSave = () => requestAnimationFrame(() => saveRef.current?.focus({ preventScroll: true }));
-  const createdRef = useRef(false);
   useInlinePart(searchOpen, closeSearch, searchScopeRef);
 
   // Batch: the distinct team sets the checklist's OTHER cards of this player set carry.
@@ -131,8 +126,8 @@ export default function TeamFillChips({
     for (const card of leafCards) {
       if (card._id === row._id) continue;
       const teams = card.teamOnCardIds ?? [];
-      // A team NB filled itself is a guess, never evidence for the next card.
-      if (teams.length === 0 || teamFillOf(card) || idSetKey(card.playerIds ?? []) !== key) continue;
+      // A team on a card is the card's team, whoever wrote it (NEO-656, J8).
+      if (teams.length === 0 || idSetKey(card.playerIds ?? []) !== key) continue;
       const teamKey = idSetKey(teams);
       if (!sets.has(teamKey)) sets.set(teamKey, [...new Set(teams)]);
     }
@@ -212,25 +207,10 @@ export default function TeamFillChips({
   );
   const ready = !line.loading && bscSettled;
 
-  // Untouched, the chosen teams ARE the pre-fill; the first press makes them the operator's.
-  const chosen = useMemo(() => teamIds ?? (ready ? preselect : []), [teamIds, ready, preselect]);
-  const chosenSet = useMemo(() => new Set(chosen as unknown as string[]), [chosen]);
-  const atCap = chosen.length >= MAX_CARD_TEAMS;
-  const chipIds = useMemo(
-    () => new Set<string>([...marketplaceChips, ...careerChips].map((c) => c.teamId as string)),
-    [marketplaceChips, careerChips],
-  );
-  // Picked with Other team… or created here: not a chip, but chosen.
-  const extraIds = chosen.filter((id) => !chipIds.has(id as string));
-  const extraRows = useQuery(
-    api.teams.getManyByIds,
-    extraIds.length > 0 ? { ids: [...extraIds].sort() } : "skip",
-  );
-  // NEO-645 — a team picked with Other team… shows its league and years, so three
-  // "Baltimore Orioles" can be told apart once one is chosen.
-  const extraLeagues = useQuery(
-    api.leagues.list,
-    extraIds.length > 0 && sportId ? { sportId } : "skip",
+  // The pre-fill shows as the chosen chips; a click saves the team it names.
+  const chosenSet = useMemo(
+    () => new Set((ready ? preselect : []) as unknown as string[]),
+    [ready, preselect],
   );
 
   // The players' years with a team, as main's wizard printed them: one player's
@@ -243,21 +223,11 @@ export default function TeamFillChips({
       })),
     );
 
-  const toggle = (teamId: Id<"teams">) => {
-    if (chosenSet.has(teamId as string)) setTeamIds(chosen.filter((id) => id !== teamId));
-    else if (!atCap) setTeamIds([...chosen, teamId]);
-  };
-  const addChosen = (teamId: Id<"teams">) => {
-    if (chosenSet.has(teamId as string) || atCap) return;
-    setTeamIds([...chosen, teamId]);
-  };
-
   const disabled = write.busy ? true : undefined;
-  const canSave = chosen.length > 0 && !write.busy;
 
-  const save = async () => {
+  const save = async (teamId: Id<"teams">) => {
     const ok = await write.run(
-      () => updateCard({ id: row._id, teamOnCardIds: chosen, regenerateListing: true }),
+      () => updateCard({ id: row._id, teamOnCardIds: [teamId], regenerateListing: true }),
       "Couldn't save those teams. Try again.",
     );
     if (ok) answered();
@@ -279,16 +249,14 @@ export default function TeamFillChips({
 
   const renderChip = (chip: TeamChip, opts: { suffix?: string }) => {
     const on = chosenSet.has(chip.teamId as string);
-    const blocked = !on && atCap;
     return (
       <li key={chip.teamId as string} className="max-w-full">
         <button
           type="button"
-          aria-pressed={on}
-          aria-disabled={blocked || write.busy || undefined}
+          aria-disabled={write.busy || undefined}
           onClick={() => {
-            if (blocked || write.busy) return;
-            toggle(chip.teamId);
+            if (write.busy) return;
+            void save(chip.teamId);
           }}
           className={`hit-area-24 inline-flex max-w-full flex-col items-start gap-0 border px-2 py-0.5 text-left text-xs focus-outline ${
             opts.suffix ? "rounded-2xl" : "rounded-full"
@@ -296,10 +264,11 @@ export default function TeamFillChips({
             on
               ? "border-neon-green-text bg-neon-green/20 text-neon-green-text"
               : "border-control bg-raised text-ink-2 hover:border-neon-blue-text hover:text-neon-blue-text"
-          } ${blocked ? "opacity-40" : ""}`}
+          }`}
         >
           <span className="inline-flex items-center gap-1">
-            {/* The chosen mark that is not a colour (SC 1.4.1); aria-pressed says it to a reader. */}
+            {/* The preselected mark that is not a colour (SC 1.4.1); the line under the label
+                says it to a reader ("played here"). */}
             {on && <CheckIcon aria-hidden="true" className="h-3 w-3 shrink-0" />}
             {chip.label}
           </span>
@@ -374,32 +343,6 @@ export default function TeamFillChips({
         </p>
       )}
 
-      {extraIds.length > 0 && (
-        <ul className="flex flex-wrap gap-1.5" aria-label="Teams you added">
-          {extraIds.map((id) => {
-            const team = extraRows?.find((t) => t._id === id);
-            const league = team?.leagueId
-              ? extraLeagues?.find((l) => l._id === team.leagueId)
-              : undefined;
-            const detail = team ? teamDetailLine(league ? leagueShortName(league) : undefined, team.yearsActive) : "";
-            return renderChip(
-              {
-                teamId: id,
-                label: team ? teamFullName(team) : "Team",
-                playerNames: [],
-                },
-              { suffix: detail || undefined },
-            );
-          })}
-        </ul>
-      )}
-
-      {/* Mounted for the life of the chips, so reaching the limit is a change to a
-          live region already in the page, and a card that opens at it says nothing. */}
-      <p role="status" className="text-xs text-ink-2 empty:hidden">
-        {atCap ? `That is the limit of ${MAX_CARD_TEAMS} teams on one card. Remove one to add another.` : ""}
-      </p>
-
       {searchOpen && sportId ? (
         <div ref={searchScopeRef}>
           <EntityLinkSearch
@@ -407,9 +350,8 @@ export default function TeamFillChips({
             sportId={sportId}
             contextOptionId={leafId}
             onSelect={(id) => {
-              addChosen(id as Id<"teams">);
               setSearchOpen(false);
-              focusSave();
+              void save(id as Id<"teams">);
             }}
             onCancel={closeSearch}
           />
@@ -426,35 +368,14 @@ export default function TeamFillChips({
             creating ? `Creating team ${full}` : full ? `Create team ${full}` : "Create team"
           }
           disabled={write.busy}
-          onCreated={(teamId) => {
-            createdRef.current = true;
-            addChosen(teamId);
-          }}
+          onCreated={(teamId) => save(teamId)}
           onClose={() => {
             setNewOpen(false);
-            // A created team goes to Save team; Cancel and Esc go back to "+ New team".
-            const created = createdRef.current;
-            createdRef.current = false;
-            if (created) focusSave();
-            else requestAnimationFrame(() => newRef.current?.focus({ preventScroll: true }));
+            requestAnimationFrame(() => newRef.current?.focus({ preventScroll: true }));
           }}
         />
       ) : (
         <div className="flex flex-wrap items-center gap-2">
-          {/* Nothing chosen, nothing to save: the button appears with the first chip
-              (a press on a chip or a team picked with Other team… / New team). */}
-          {chosen.length > 0 && (
-            <NeonButton
-              ref={saveRef}
-              size="1"
-              aria-disabled={canSave ? undefined : true}
-              onClick={() => {
-                if (canSave) void save();
-              }}
-            >
-              {write.busy ? "Saving…" : chosen.length > 1 ? "Save teams" : "Save team"}
-            </NeonButton>
-          )}
           {sportId && !searchOpen && (
             <NeonButton
               ref={otherRef}

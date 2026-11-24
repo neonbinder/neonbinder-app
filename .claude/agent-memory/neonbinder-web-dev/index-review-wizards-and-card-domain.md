@@ -51,3 +51,4 @@ Entity-review, Tidy Up and walk flows, team/player resolution, card titles and d
 - [Port a retired-UI rule: audit every server fill site](reference_porting_a_rule_from_a_retired_ui_audit_every_server_fill_site.md) — tile, commit fill, answer-time fill, Apply to all each gate rule 8 separately (NEO-645 x NEO-639)
 - [Parallel commit chunks: defer the shared flush](reference_parallel_commit_chunks_defer_the_shared_flush.md) — find the one shared write, defer it to the caller, prove disjointness with a db Proxy; ties on sortOrder stay sequential
 - [Client-carried gate facts: sport from the doc](reference_client_carried_gate_facts_rederive_sport_from_the_doc.md) — re-check ids server-side; set-history links are cross-sport; recompute per-name facts, don't store
+- [Walk lookups in a keyed ref store](reference_walk_lookups_live_in_a_keyed_ref_store.md) — per-sitting results in a ref Map store keyed by the whole request; stale drops by key; root tsc filter

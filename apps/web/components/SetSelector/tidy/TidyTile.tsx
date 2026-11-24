@@ -153,7 +153,15 @@ export function TidyNote({ children }: { children: ReactNode }) {
 }
 
 /** What a bulk apply reports when the server counted: cards changed, cards left as they were. */
-export type ApplyCounts = { applied: number; skipped?: number };
+export type ApplyCounts = {
+  applied: number;
+  skipped?: number;
+  /**
+   * What the bulk write did, when "Applied to N cards." is not the line
+   * ("Linked", "Cleared": "Linked 12 more cards.").
+   */
+  verb?: string;
+};
 
 /**
  * The line an Apply-to-all leaves behind. No counts (`undefined`: the writes are
@@ -162,9 +170,10 @@ export type ApplyCounts = { applied: number; skipped?: number };
  */
 export function applyOutcomeText(result: void | ApplyCounts): string {
   if (!result) return "Applied.";
-  const { applied, skipped = 0 } = result;
+  const { applied, skipped = 0, verb } = result;
   if (applied === 0) return "No cards changed.";
-  const done = `Applied to ${applied} ${applied === 1 ? "card" : "cards"}.`;
+  const noun = applied === 1 ? "card" : "cards";
+  const done = verb ? `${verb} ${applied} more ${noun}.` : `Applied to ${applied} ${noun}.`;
   if (skipped === 0) return done;
   return `${done} ${skipped} left as ${skipped === 1 ? "it was" : "they were"}.`;
 }

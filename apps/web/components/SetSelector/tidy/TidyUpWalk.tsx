@@ -21,7 +21,6 @@ import { focusWithoutOpening } from "../../primitives/Autocomplete";
 import HintedLabel from "../HintedLabel";
 import WizardChrome from "../WizardChrome";
 import {
-  currentReviewKeys,
   deriveCardAttention,
   isAwaitingTeamLookup,
   needsTidyUp,
@@ -42,22 +41,31 @@ import SourcesDisagreeTile from "./tiles/SourcesDisagreeTile";
 import TeamTile from "./tiles/TeamTile";
 import TitleTile from "./tiles/TitleTile";
 import { useTidyKeys } from "./useTidyKeys";
-import { useOpenCardLookups } from "./useOpenCardLookups";
 import { TIDY_DONE, useTidyWalkUrl } from "./useTidyWalkUrl";
+import {
+  pendingNamesOf,
+  useCardNameLookups,
+  useLeafFacts,
+  useWalkMemory,
+  useWalkMemoryStore,
+  WalkMemoryProvider,
+} from "./walk-memory";
 import {
   cardsLeft,
   cardsLeftText,
   cardsSkipped,
   cardsSkippedText,
+  cardsStillToCheck,
+  cardsStillToCheckText,
   cardsTallyText,
   loadSitting,
   nextCardId,
-  pendingLookupKeys,
   previousCardId,
   saveSitting,
   walkOrder,
   withPassed,
   withShown,
+  type CareerGapsByCard,
 } from "./walk-order";
 
 /**
@@ -68,16 +76,25 @@ import {
  * (Match Cards ended); every tile saves the moment it is answered (J1), so
  * what is left for the walk is to look at each card and move on.
  *
- *   - **Save & next** writes "seen" for the card's blue items
- *     (`tidyCards.markReviewed`) and moves on. It is held while anything is
+ *   - **Save & next** adds the default stint for each career gap shown
+ *     (`tidyCards.saveCard`) and moves on. Nothing records that a blue item was
+ *     seen (NEO-656): the data decides what shows. It is held while anything is
  *     pink: the card cannot be listed without that answer.
  *   - **Skip: not ready to list** moves on with no write. The card stays
- *     flagged; the end screen counts it. Pink never blocks Skip.
+ *     flagged; the end screen counts it by what is still on it. Pink never
+ *     blocks Skip.
  *   - **Save for later** (Esc) closes the walk. Nothing rolls back.
  *   - **Back** steps to the card before, as it is now.
  *
  * The position is `?tidy=<cardId>` (`useTidyWalkUrl`), so a refresh lands on
  * the same card and the browser's Back walks back through the cards.
+ *
+ * ## What the walk remembers
+ *
+ * Only for the sitting, only in memory (`walk-memory.tsx`): the set's facts
+ * (asked once when the walk opens), each name's lookup (asked when its card
+ * opens, and the next card's names ahead of it), and what was answered on the
+ * open card. The card is the record of its names; nothing else is stored.
  *
  * ## The queue is derived, not held
  *
@@ -142,6 +159,13 @@ type WalkProps = {
   /** The checklist's live rows, ALL of them: the walk derives its own queue. */
   cards: readonly CardChecklistRow[];
   /**
+   * NEO-656: the career gaps read live for these cards (`useLeafCareerGaps`),
+   * by card id. Omitted: none (a walk rendered alone).
+   */
+  careerGaps?: CareerGapsByCard;
+  /** The gaps' first answer has arrived. The walk holds its first card until then. */
+  careerGapsReady?: boolean;
+  /**
    * A durable control to give focus back to. The pill that opens the walk
    * leaves the page when the count reaches zero, so the opener cannot be
    * trusted to survive the sitting.
@@ -152,10 +176,14 @@ type WalkProps = {
 };
 
 export default function TidyUpWalk(props: WalkProps) {
+  // One memory per open walk; it goes with the walk (never stored).
+  const memory = useWalkMemoryStore();
   return (
-    <InlineStackProvider>
-      <WalkDialog {...props} />
-    </InlineStackProvider>
+    <WalkMemoryProvider value={memory}>
+      <InlineStackProvider>
+        <WalkDialog {...props} />
+      </InlineStackProvider>
+    </WalkMemoryProvider>
   );
 }
 
@@ -191,6 +219,8 @@ export function cardHeaderLine(
   return rest ? `${number} · ${rest}` : number;
 }
 
+const NO_CAREER_GAPS: CareerGapsByCard = new Map();
+
 function WalkDialog({
   leafId,
   sportId,
@@ -201,6 +231,8 @@ function WalkDialog({
   setNoTeam = false,
   title,
   cards,
+  careerGaps = NO_CAREER_GAPS,
+  careerGapsReady = true,
   restoreFocusRef,
   onClose,
 }: WalkProps) {
@@ -234,14 +266,17 @@ function WalkDialog({
   const [reviewing, setReviewing] = useState<readonly string[]>([]);
 
   // ── what the walk reads ─────────────────────────────────────────────────
-  // Subscribed only while the walk is mounted (an index range, NEO-392).
-  const pending = useQuery(api.tidyNames.lookupsPending, { scopeId: leafId });
-  const pendingKeys = useMemo(() => pendingLookupKeys(pending), [pending]);
-  const order = useMemo(() => walkOrder(cards, pendingKeys), [cards, pendingKeys]);
+  const memory = useWalkMemory();
+  // The set's facts: asked once, held in memory (never stored).
+  useLeafFacts(memory, leafId);
+  const order = useMemo(() => walkOrder(cards, careerGaps), [cards, careerGaps]);
   const rowsById = useMemo(() => new Map(cards.map((c) => [c._id as string, c])), [cards]);
   const awaitingLookup = useMemo(() => cards.filter(isAwaitingTeamLookup).length, [cards]);
   // The end screen's lookup line must not say "nothing for you to do" while cards still need a person.
-  const needYouCount = useMemo(() => cards.filter((c) => needsTidyUp(c)).length, [cards]);
+  const needYouCount = useMemo(
+    () => cards.filter((c) => needsTidyUp(c, { careerGaps: careerGaps.get(c._id) })).length,
+    [cards, careerGaps],
+  );
 
   // What the walk counts as done: `passed`, less the skipped cards being
   // reviewed. The end screen reads `passed` whole, so Back to it restores it.
@@ -254,20 +289,41 @@ function WalkDialog({
   const current: CardChecklistRow | undefined =
     location.kind === "card" ? rowsById.get(location.cardId) : undefined;
   const currentId = current?._id as string | undefined;
-  const attention = current ? deriveCardAttention(current) : undefined;
+  const attention = current
+    ? deriveCardAttention(current, { careerGaps: careerGaps.get(current._id) })
+    : undefined;
 
   // One card's names, players and teams: subscribed for the open card only.
   const context = useQuery(
     api.tidyCards.cardContext,
     current ? { cardId: current._id } : "skip",
   );
-  // Names a migration left with no lookup get asked once when the card opens.
-  useOpenCardLookups(context);
+  // The card's names are asked about when it opens, and the next card's ahead
+  // of it (one try each; the tile offers Try again).
+  const upNextId = current
+    ? nextCardId(order, withPassed({ passed: openPassed, trail: [] }, current._id), current._id)
+    : null;
+  const upNext = upNextId ? rowsById.get(upNextId) : undefined;
+  useCardNameLookups(
+    memory,
+    sportId,
+    [current, upNext].flatMap((card) =>
+      card ? [{ id: card._id, names: pendingNamesOf(card) }] : [],
+    ),
+  );
+  // What the walk held for a card goes when the walk leaves it.
+  useEffect(() => {
+    if (!currentId) return;
+    return () => memory.leaveCard(currentId);
+  }, [memory, currentId]);
 
   // `first`, or an id that is not one of this checklist's cards (a stale or
   // pasted link): replace it with the first card still to walk. The id never
   // reaches a Convex argument unless a row of ours carries it.
-  const needsResolve = location.kind === "first" || (location.kind === "card" && !current);
+  // NEO-656: it also waits for the career gaps' first answer, so a card whose
+  // only blue item is a gap is in the order when the first card is picked.
+  const needsResolve =
+    careerGapsReady && (location.kind === "first" || (location.kind === "card" && !current));
   const firstTarget = needsResolve
     ? nextCardId(order, { passed: openPassed, trail: [] }, null)
     : null;
@@ -295,9 +351,12 @@ function WalkDialog({
   }, [leafId, passed, trail]);
 
   const left = cardsLeft(order, { passed: openPassed, trail: [] });
+  // By the card's level NOW (B20): pink is "not ready to list", blue alone is
+  // "still to check", and a card fixed elsewhere is in neither.
   const skipped = cardsSkipped(order, { passed, trail: [] });
-  // Cards the sitting moved past that no longer need a person; the rest are the skipped ones.
-  const fixed = Math.max(0, passed.length - skipped);
+  const stillToCheck = cardsStillToCheck(order, { passed, trail: [] });
+  // Cards the sitting moved past that no longer need a person.
+  const fixed = Math.max(0, passed.length - skipped - stillToCheck);
   const isDone = location.kind === "done";
 
   // ── moving ──────────────────────────────────────────────────────────────
@@ -313,7 +372,7 @@ function WalkDialog({
 
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
-  const markReviewed = useMutation(api.tidyCards.markReviewed);
+  const saveCard = useMutation(api.tidyCards.saveCard);
 
   const pinkCount = attention?.items.filter((i) => i.level === "fix").length ?? 0;
   const canSave = isDone || (!!current && pinkCount === 0 && !saving);
@@ -327,8 +386,15 @@ function WalkDialog({
     setSaving(true);
     setSaveFailed(false);
     const cardId = current._id;
+    // The career gaps shown take the default stint (main's); with none shown
+    // there is nothing to write.
+    const gaps = (attention?.items ?? []).flatMap((i) =>
+      i.kind === "careerGap"
+        ? [{ playerId: i.playerId as Id<"players">, teamId: i.teamId as Id<"teams"> }]
+        : [],
+    );
     try {
-      await markReviewed({ cardId, keys: currentReviewKeys(current) });
+      if (gaps.length > 0) await saveCard({ cardId, gaps });
     } catch {
       setSaveFailed(true);
       setSaving(false);
@@ -343,7 +409,7 @@ function WalkDialog({
     });
   };
 
-  // The skipped cards (passed, and still flagged), in walk order.
+  // The cards the sitting passed that are still flagged, in walk order.
   const skippedIds = useMemo(() => {
     const passedSet = new Set(passed);
     return order.filter(({ row }) => passedSet.has(row._id)).map(({ row }) => row._id as string);
@@ -612,15 +678,21 @@ function WalkDialog({
                 id={doneLineId}
                 role="status"
                 className={`mb-2 empty:hidden ${
-                  skipped > 0 ? "text-base font-semibold text-neon-pink-text" : "text-sm text-ink-2"
+                  skipped > 0
+                    ? "text-base font-semibold text-neon-pink-text"
+                    : stillToCheck > 0
+                      ? "text-base font-semibold text-neon-blue-text"
+                      : "text-sm text-ink-2"
                 }`}
               >
                 {isDone
                   ? skipped > 0
                     ? cardsSkippedText(skipped)
-                    : awaitingLookup === 0
-                      ? TIDY_ALL_CLEAR
-                      : ""
+                    : stillToCheck > 0
+                      ? cardsStillToCheckText(stillToCheck)
+                      : awaitingLookup === 0
+                        ? TIDY_ALL_CLEAR
+                        : ""
                   : ""}
               </p>
               {isDone ? (
@@ -633,7 +705,7 @@ function WalkDialog({
                 >
                   {passed.length > 0 && (
                     <p id={doneTallyId} className="text-sm text-ink">
-                      {cardsTallyText(fixed, skipped)}
+                      {cardsTallyText(fixed, skipped, stillToCheck)}
                     </p>
                   )}
                   {awaitingLookup > 0 && (

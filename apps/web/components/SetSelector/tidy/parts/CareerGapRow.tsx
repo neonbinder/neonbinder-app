@@ -4,7 +4,7 @@ import type { Id } from "../../../../convex/_generated/dataModel";
 import { defaultGapStint } from "../../../../convex/lib/careerGapStint";
 import NeonButton from "../../../modules/NeonButton";
 import { useAnswered } from "../answered";
-import type { TidyCardContext, TidyRow } from "../tile-types";
+import type { TidyCardContext } from "../tile-types";
 import AddStintEntry from "./AddStintEntry";
 import { NO_CAREER_TEXT, careerLineText, noStintText } from "./copy";
 import type { TidyWrite } from "./tidy-write";
@@ -17,15 +17,13 @@ type Ctx = NonNullable<TidyCardContext>;
  * not wrong, the career may just be short.
  *
  * The default is main's: "Add to career". Save & next with the gap still open
- * adds the stint from the set's year (`tidyCards.markReviewed`, the same stint
- * "Add to career" writes: `defaultGapStint`) and marks it seen. "Add to career"
- * writes it to the PLAYER now (`players.addStint`); "Keep as is" is the
- * operator's explicit way out and is stored at once (`tidyCards.keepCareerGap`),
- * so Save & next leaves the career alone. A wrong team is Change on the Team
- * tile, never here.
+ * adds the stint from the set's year (`tidyCards.saveCard`, the same stint "Add
+ * to career" writes: `defaultGapStint`). "Add to career" writes it to the
+ * PLAYER now (`players.addStint`). Nothing records that the gap was seen
+ * (NEO-656): it is blue for as long as the data holds it. A wrong team is
+ * Change on the Team tile, never here.
  */
 export default function CareerGapRow({
-  row,
   context,
   playerId,
   teamId,
@@ -34,7 +32,6 @@ export default function CareerGapRow({
   multi,
   write,
 }: {
-  row: TidyRow;
   context: Ctx;
   playerId: string;
   teamId: string;
@@ -44,7 +41,6 @@ export default function CareerGapRow({
   write: TidyWrite;
 }) {
   const addStint = useMutation(api.players.addStint);
-  const keepCareerGap = useMutation(api.tidyCards.keepCareerGap);
   const answered = useAnswered();
   const player = context.players.find((p) => p.playerId === playerId);
   const team = context.teams.find((t) => t.teamId === teamId);
@@ -62,26 +58,12 @@ export default function CareerGapRow({
           teamId: stint.teamId,
           fromYear: stint.fromYear,
           ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
-          cardId: row._id,
         }),
       "Couldn't add that stint. Try again.",
     );
     if (ok) answered();
     return ok;
   };
-  const keep = async () => {
-    const ok = await write.run(
-      () =>
-        keepCareerGap({
-          cardId: row._id,
-          playerId: player.playerId,
-          teamId: teamId as Id<"teams">,
-        }),
-      "Couldn't keep that. Try again.",
-    );
-    if (ok) answered();
-  };
-
   return (
     <div role="group" aria-label={`Career ${player.name}`} className="grid gap-1.5">
       <p className="text-sm text-ink wrap-anywhere">
@@ -115,16 +97,6 @@ export default function CareerGapRow({
             Add to career
           </NeonButton>
         )}
-        <NeonButton
-          size="1"
-          variant="secondary"
-          outline
-          aria-label={`Keep as is${suffix}`}
-          aria-disabled={disabled}
-          onClick={() => void keep()}
-        >
-          Keep as is
-        </NeonButton>
         <AddStintEntry
           playerName={player.name}
           sportId={player.sportId}

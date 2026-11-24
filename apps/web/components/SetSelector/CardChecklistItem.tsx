@@ -6,7 +6,7 @@ import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import { teamFullName } from "../../lib/teams/team-name";
 import type { Id } from "../../convex/_generated/dataModel";
 import CardAttentionBadge from "./CardAttentionBadge";
-import { deriveCardAttention } from "./card-attention";
+import { deriveCardAttention, type LiveCareerGap } from "./card-attention";
 import type { CardChecklistRow } from "./card-checklist-row";
 import { NO_TEAM_TEXT } from "./team-picker-labels";
 
@@ -48,8 +48,6 @@ type CardChecklistItemProps = {
     listingTitle?: string;
     listingTitleTruncated?: boolean;
     sourceDisagreements?: CardChecklistRow["sourceDisagreements"];
-    tidyChecks?: CardChecklistRow["tidyChecks"];
-    tidyReviewed?: CardChecklistRow["tidyReviewed"];
     attributes?: string[];
     isRookie?: boolean;
     isRelic?: boolean;
@@ -82,6 +80,9 @@ type CardChecklistItemProps = {
     bsc: Record<string, string>;
     sportlots: Record<string, string>;
   };
+  // NEO-656: the career gaps read live for this card (`useLeafCareerGaps`), so
+  // the badge counts the same blue items the pill and the walk do.
+  careerGaps?: readonly LiveCareerGap[];
   // NEO-25: whether this row is the one open in the detail panel.
   isSelected?: boolean;
   // NEO-25: open the card detail panel for this card. State is hoisted into
@@ -170,6 +171,7 @@ function badgeLabel(token: string): { label: string; cls: string } {
 export default function CardChecklistItem({
   card,
   sourceLabelMaps,
+  careerGaps,
   isSelected,
   onEdit,
   variationCount,
@@ -330,7 +332,7 @@ export default function CardChecklistItem({
   // run per row inside the virtualized list (three field reads), and deriving
   // it here rather than accepting it as a prop keeps the rule in exactly one
   // place for the row, the header count, the filter and the walker.
-  const attention = deriveCardAttention(card);
+  const attention = deriveCardAttention(card, { careerGaps });
 
   // NEO-272 — HOW A ROW NAMES ITSELF TO A SCREEN READER, in one place.
   //
