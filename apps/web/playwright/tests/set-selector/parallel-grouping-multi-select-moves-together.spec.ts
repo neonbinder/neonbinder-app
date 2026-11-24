@@ -16,6 +16,13 @@
 // or Space on the box itself places the selection there (its description
 // says so). The hidden-rows move is made with Enter; a second move with Space.
 //
+// NEO-660: a ticked row's own "Parallels of …" box leaves the right pane, so
+// only boxes that can take the selection are left, each in a dashed blue
+// outline; the "Show ticked rows' boxes" switch (off on every open, never
+// moved by a tick) brings the own boxes back with their "This row is
+// selected" hint. The switch is on through the filter steps, so it is the
+// filter, not the tick, that hides those boxes there.
+//
 // MINTED NAMES are single tokens from env.ATTEMPT_TOKEN (set `pgmulti<token>`;
 // inserts `<token> Aces` / `Bolt` / `Comet`: the token plus a distinct second
 // word, so "every word in any order" is still exercised). R7a: one per-attempt
@@ -24,7 +31,7 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 import { setBuilderReady, addCustomEntry, drillToCustom } from "../../support/set-builder";
 
 test(
-  "Group Parallels — two ticked rows move under one insert with a single press and a single Save, even while the filter hides them (NEO-300, NEO-472)",
+  "Group Parallels — two ticked rows move under one insert with a single press and a single Save, even while the filter hides them (NEO-300, NEO-472, NEO-660)",
   { tag: ["@set-selector", "@parallel-grouping"] },
   async ({ page, signIn, env }) => {
     const T = env.ATTEMPT_TOKEN;
@@ -51,6 +58,21 @@ test(
     await expect(dialog.getByText(/Drag inserts under a parent/)).toBeVisible();
     await expect(dialog.getByText("No changes yet")).toBeVisible();
 
+    // NEO-472: the rows on the left, one box per row on the right.
+    const inserts = dialog.getByRole("region", { name: "Inserts" });
+    const boxes = dialog.getByRole("region", { name: "Parallels by insert" });
+    const row = (name: string) => inserts.getByRole("group", { name, exact: true });
+    const boxOf = (name: string) => boxes.getByRole("group", { name: `Parallels of "${name}"`, exact: true });
+    // NEO-660: the switch heads the right pane, off on open. Nothing is
+    // ticked yet, so every row has its box.
+    const showTicked = boxes.getByRole("checkbox", { name: "Show ticked rows' boxes", exact: true });
+    // The input is visually hidden under its painted track, so a click lands
+    // where a user's does: on the label's visible words.
+    const flipShowTicked = () => boxes.getByText("Show ticked rows' boxes", { exact: true }).click();
+    await expect(showTicked).not.toBeChecked();
+    await expect(boxOf(bolt)).toBeVisible();
+    await expect(boxOf(comet)).toBeVisible();
+
     // Tick two rows; the target offers to take both at once.
     await dialog.getByRole("checkbox", { name: `Select ${bolt}` }).click();
     await dialog.getByRole("checkbox", { name: `Select ${comet}` }).click();
@@ -58,14 +80,30 @@ test(
     await expect(dialog.getByText("Click here to make the 2 selected rows parallels").first()).toBeVisible();
     await expectAccessible(page, { within: dialog, label: "Group Parallels dialog with two rows ticked" });
 
-    // NEO-472: the rows on the left, one box per row on the right.
-    const inserts = dialog.getByRole("region", { name: "Inserts" });
-    const boxes = dialog.getByRole("region", { name: "Parallels by insert" });
-    const row = (name: string) => inserts.getByRole("group", { name, exact: true });
-    const boxOf = (name: string) => boxes.getByRole("group", { name: `Parallels of "${name}"`, exact: true });
+    // NEO-660: with the switch off a ticked row's own box leaves the pane, and
+    // the box that can take the selection wears a dashed outline. Ticking
+    // never moves the switch; the top-level box stays.
     await expect(row(bolt)).toBeVisible();
+    await expect(boxOf(bolt)).toHaveCount(0);
+    await expect(boxOf(comet)).toHaveCount(0);
     await expect(boxOf(aces)).toBeVisible();
-    await expect(boxOf(bolt)).toBeVisible();
+    await expect(boxOf(aces)).toHaveAccessibleDescription(/^Click here to make the 2 selected rows parallels/);
+    await expect(boxOf(aces)).toHaveCSS("border-style", "dashed");
+    await expect(inserts.getByText("Top-level inserts", { exact: true })).toBeVisible();
+    await expect(showTicked).not.toBeChecked();
+
+    // Switched on, both own boxes come back with their own hint and a plain
+    // (solid) border: they are not targets. Aces keeps its dashed outline.
+    await flipShowTicked();
+    await expect(showTicked).toBeChecked();
+    for (const name of [bolt, comet]) {
+      await expect(boxOf(name)).toBeVisible();
+      await expect(boxOf(name)).toHaveAccessibleDescription("This row is selected. Untick it to drop the other row here.");
+      await expect(boxOf(name)).toHaveCSS("border-style", "solid");
+    }
+    await expect(boxOf(aces)).toHaveCSS("border-style", "dashed");
+    await expect(dialog.getByText("2 selected", { exact: true })).toBeVisible();
+    await expectAccessible(page, { within: dialog, label: "Group Parallels dialog showing the ticked rows' own boxes" });
 
     // The filter's count: shown beside the field at once, and announced by a
     // status of its own once typing pauses (500 ms). Once both have it, the
@@ -106,6 +144,13 @@ test(
     await expect(dialog.getByText("2 selected", { exact: true })).toBeVisible();
     await expect(filterCount("1 of 3 inserts")).toHaveCount(0);
 
+    // NEO-660: switched off again, the ticked rows' own boxes go; Aces' stays.
+    await flipShowTicked();
+    await expect(showTicked).not.toBeChecked();
+    await expect(boxOf(bolt)).toHaveCount(0);
+    await expect(boxOf(comet)).toHaveCount(0);
+    await expect(boxOf(aces)).toBeVisible();
+
     // Filtered again, Enter on Aces' box moves both hidden rows.
     await filter.fill(`aces ${T}`);
     await expect(dialog.getByText("2 selected (2 hidden by the filter)", { exact: true })).toBeVisible();
@@ -135,6 +180,9 @@ test(
     await expect(dialog.getByText("1 promotion, 0 demotions")).toBeVisible();
     await dialog.getByRole("checkbox", { name: `Select ${comet}` }).click();
     await expect(dialog.getByText("1 selected", { exact: true })).toBeVisible();
+    // NEO-660: a new tick leaves the switch off, so Comet's own box is gone.
+    await expect(showTicked).not.toBeChecked();
+    await expect(boxOf(comet)).toHaveCount(0);
     await placeByKey(boxOf(aces), " ");
     await expect(dialog.getByText("2 promotions, 0 demotions")).toBeVisible();
     await expect(boxOf(aces).getByRole("group", { name: comet, exact: true })).toBeVisible();

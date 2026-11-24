@@ -168,4 +168,5 @@
 - [Removed button, described field](patterns_removed_button_absence_and_described_field.md) — plant every client gate; describedby/focus asserts
 - [BSC team lane shared across shards](patterns_bsc_team_lane_is_shared_across_shards.md) — 1 slot, 1.7 s/card, FIFO deployment-wide; assert answered OR held back
 - [Foil × colour checklist spec shape](patterns_foil_colour_checklist_spec_shape.md) — NEO-616: City Designation walk tiles, answer-vs-save race, prefix-only pairing, titles dialog
+- [Show ticked boxes switch](patterns_group_parallels_show_ticked_boxes_switch.md) — NEO-660: ticked row's own box hidden; switch on before filter asserts
 - [Fresh-only on a no-reset deployment](patterns_iterate_fresh_only_on_a_no_reset_deployment.md) — e2e-run setup resets user 0; swap names to iterate; partial team name for the list
