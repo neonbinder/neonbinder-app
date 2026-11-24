@@ -55,5 +55,12 @@ After NEO-656 (2026-11-24) the walk's "N cards left" and the pill are live count
 - **Retired purple fill note (J6):** prove the absence with `tile.getByRole("note")` count 0 beside
   the filled team's group; plant a `<p role="note">` under TeamTile's unrowed team line.
 
+- **Walk opens on a commit whose only stop is a live career gap (BUG-1).** `useLeafCareerGaps`
+  must report `ready` only when `answer` (not the held copy) answers the CURRENT pairs. Plant:
+  `answer !== undefined` -> `held !== undefined` in its return; both set-history-printed-team and
+  two-era-silent specs go red in `settleWalkAfterCommit` with "the Tidy Up walk is open" (use that
+  exact text as `--expect`; the spec's own `expect(opened)` message is never reached).
+  After the walk, Skip the gap card: end `{ fixed: 0, stillToCheck: 1 }` + pill name "1 needs you".
+
 **How to apply:** rewriting any NEO-645 walk spec whose counts assumed fan-out or a sticky blue.
 Related: [[neo656-tidy-walk-helpers-skip-apply-end-screen]], [[patterns-walk-keeps-a-card-that-clears-on-screen]].

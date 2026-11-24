@@ -127,7 +127,7 @@
 - [Spent fresh-only run](patterns_probe_the_rest_of_a_spent_fresh_only_run.md) — throwaway probe reopens by pill
 - [Career tile fixtures](patterns_career_tile_fixtures.md) — NEO-645 gap at commit; old Career check carry-over
 - [Career-team link](patterns_career_team_link_fixture_and_counter_fixture_proof.md) — rule 6b; counter-fixture proof
-- [Set-history link](patterns_set_history_link_with_no_walk_stop.md) — notes only in walk tiles
+- [Set-history link](patterns_set_history_link_with_no_walk_stop.md) — two-card no-stop proof; notes gone (J1)
 - [Match Cards after commit-first](patterns_match_cards_specs_after_commit_first.md) — Cancel is the pre-save exit
 - [Team fill tier](patterns_team_fill_career_tier_fixture.md) — 70-char team; negative stints
 - [Team-era on the walk](patterns_team_era_specs_on_the_walk.md) — NEO-602 auto link vs keep
@@ -172,3 +172,4 @@
 - [NEO-656 linked rows, Edit sport](patterns_neo656_linked_name_rows_and_edit_reask_sport.md) — card team line, bare "Not a team", Edit re-asks in own sport (reopenName)
 - [NEO-656 re-fetch, catalogue skip](patterns_neo656_refetch_asks_again_and_catalogue_career_skip.md) — ruled-out name pink again; Skip Career tiles on catalogue players
 - [NEO-656 Career tile after J6](patterns_neo656_career_tile_specs_after_j6.md) — Team Change closes gap, sibling cleared by Save & next, untick own team; plants
+- [NEO-656 mixed end screen, team link](patterns_neo656_end_screen_mixed_and_team_link_apply.md) — pink+blue end screen reopens both; link #12, #13 pink, Apply 6
