@@ -2,23 +2,22 @@
 // Pre-Production Proofs Lazer Red" (44 BuySportsCards cards, none of which the marketplace gives a
 // team) is fetched once, after the SET answers No Team.
 //
-// R1: the ONE feature is that a set's No Team reaches the cards a fetch commits beneath it, and
-// stops where a card already has a claim:
-//   - the cards commit No Team (their rows read "No Team", no row is flagged "no team on this card
-//     yet", and the Tidy Up walk, when something else on the cards opens it, asks nothing about a
-//     team), and the one card the publisher's checklist gives a team keeps it, never the set's
-//     No Team (rule 8: a claim in the data holds the guess back);
-//   - the same answer reaches a PARALLEL built from the set's Base: its copies of two teamless
-//     Base cards (made before the set answered, so they carry no stamp) read No Team, and BSC's
-//     per-card "no team" answer is what settles them (the lookup holds the stamp back until it
-//     answers, rule 8; a copy still queued on the shared lane reads no team and is not flagged),
-//     never a team.
+// R1: the ONE feature is that a set's No Team reaches the cards beneath it, and stops where a card
+// already has a claim or the operator has not said so:
+//   - the cards a fetch commits are born No Team (their rows read "No Team", no row is flagged "no
+//     team on this card yet", and the Tidy Up walk, when something else on the cards opens it, asks
+//     nothing about a team), and the one card the publisher's checklist gives a team keeps it, never
+//     the set's No Team (rule 8: a claim in the data holds the guess back);
+//   - two Base cards made BEFORE the set answered stay teamless (the panel only offers to mark
+//     them), and a teamless card is pink, so it holds the set's parallels back (NEO-661, Jason
+//     2026-11-24: "if there is anything that would cause a pink box we should hold the parallels
+//     back"): the build refuses the first parallel, by name, and copies nothing;
+//   - once the operator marks them No Team (the panel's offer), the build copies them and the
+//     copies read No Team: they carry the source card's stamp (the queued-lane path a copy of an
+//     unstamped card used to take is unit-covered in `convex/parallelChecklistBuild.noTeam.test.ts`).
 //
 // NEO-645: Match Cards' Confirm IS the commit, and the walk opens after it only when a card needs
-// a person. The pre-NEO-645 spec also fetched once BEFORE the set answered, to read the old
-// wizard's set-team hint, and cancelled; that hint is gone with the wizard, and a fetch can no
-// longer end before it saves, so that phase is gone too. The walk, when it opens, is closed with
-// "Save for later (Esc)", which writes nothing.
+// a person. The walk, when it opens, is closed with "Save for later (Esc)", which writes nothing.
 //
 // SOLE WRITER (R7a, SET-REGISTRY.md "Leaf Vivid"): this spec alone writes Leaf Vivid. It commits
 // the Proof checklist, so it is FRESH-ONLY (GUIDE "Fresh-only specs"): a second run on the same
@@ -60,7 +59,7 @@ const BASE_CARDS = ["Derek Curiel", "Kenedy Corona"];
 const FIRST_PARALLEL = "Animated Autographs Pre-Production Proofs Clear Green";
 
 test(
-  "Set-level No Team on a real Leaf set — fetched cards commit No Team, the walk asks nothing about their team, and a card the checklist gives a team keeps it (NEO-556)",
+  "Set-level No Team on a real Leaf set — fetched cards commit No Team and a checklist's team is kept; teamless Base cards hold the parallels back until they are marked No Team, then the copies read No Team (NEO-556, NEO-661)",
   { tag: ["@smoke", "@set-selector"] },
   async ({ page, signIn, env }) => {
     const panel = page.getByRole("region", { name: "Set attributes panel" });
@@ -78,7 +77,9 @@ test(
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
 
     // ── STEP 0: two cards in the set's Base, made while the set has no answer, so they are
-    // teamless and carry no stamp. (Opening Base cancels its mapping picker: a one-marketplace set.)
+    // teamless and carry no stamp, with no BSC card to look a team up from: pink until the
+    // operator answers them (STEP 5). (Opening Base cancels its mapping picker: a one-marketplace
+    // set.)
     await drillToBaseVariant(page, env, TARGET);
     // The precondition of a FIRST run on this seed (fresh-only): a re-run fails here, by name.
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
@@ -197,20 +198,79 @@ test(
     await search.fill("");
     await expectAccessible(page, { label: "Leaf Vivid Proof checklist, cards born No Team" });
 
-    // ── STEP 4: the set's parallels, built from Base (stopped after the first). A copy of a Base
-    // card the set's answer never touched is born under the parallel's own No Team once BSC's
-    // per-card lookup, which holds the stamp back, answers that it names no team.
+    // ── STEP 4: the set's parallels, built from Base, while Base still holds its two teamless
+    // cards. A pink card holds every parallel back (NEO-661): the server refuses the build before
+    // anything is fetched or written, so the run's first line names the parallel and the reason,
+    // and "Stop after this one" ends a run that built nothing (46 refusals would outlast a 7 s
+    // wait; the operator stops it). No marketplace is asked, so these are our own 7 s.
+    const parallelsSection = page.getByRole("region", { name: "Parallels of Base" });
+    const buildAll = page.getByRole("button", { name: /^Build [0-9]+ parallels from Base$/ });
+    const stop = page.getByRole("button", { name: "Stop after this one" });
+    const ledgerLine = (text: string | RegExp) => parallelsSection.getByRole("listitem").filter({ hasText: text });
+    await drillToSet(page, env, TARGET);
+    await pick(page, "Variant Types", "Parallel", { search: false });
+    await buildAll.click();
+    // Every parallel is empty on a fresh seed, so the run starts at once (no "Replace and build").
+    await expect(stop).toBeVisible();
+    await stop.click();
+    await expect(
+      ledgerLine(
+        `${FIRST_PARALLEL} — Blocked — the checklist it's built from still has cards that need fixing — tidy those up first`,
+      ),
+      "a teamless Base card holds the first parallel back, by name (NEO-661)",
+    ).toBeVisible();
+    // Nothing was copied: the stopped run built none of them, and no line reads Built.
+    await expect(page.getByRole("heading", { name: /^Base parallels — stopped after 0 of [0-9]+$/ })).toBeVisible();
+    await expect(ledgerLine(/ — Built /)).toHaveCount(0);
+    await expectAccessible(page, { label: "Base parallels refused while Base has teamless cards" });
+
+    // ── STEP 5: the operator answers Base's two teamless cards through the set's offer. The
+    // run's ledger names Base and the two it marked (the Proof row's cards are already No Team or
+    // keep the checklist's team, so they are not counted). Base is the run's first checklist; the
+    // walk then goes on through the set's ninety-odd others (the parallels, all empty), longer than
+    // one 7 s step (35 of 92 at 7 s, measured 2026-11-24), so the operator stops it once Base is
+    // done, as "Stop marking cards" offers.
+    await drillToSet(page, env, TARGET);
+    await expect(panel.getByRole("heading", { name: `Attributes for ${TARGET.set} (Set)` })).toBeVisible();
+    await expect(edit.or(hide)).toBeVisible();
+    if (await edit.isVisible()) await edit.click();
+    const offer = panel.getByRole("button", { name: "Mark 2 teamless cards No Team" });
+    await expect(offer).toBeVisible();
+    await offer.click();
+    const mark = page.getByRole("dialog", { name: "Mark 2 cards No Team?" });
+    await expect(mark).toBeVisible();
+    await mark.getByRole("button", { name: "Yes, mark them No Team" }).click();
+    const markRun = page.getByRole("region", {
+      name: /^(Marking teamless cards No Team: checklist [0-9]+ of [0-9]+|Marked 2 cards No Team)$/,
+    });
+    await expect(markRun.getByRole("listitem").filter({ hasText: "Base — marked 2 cards No Team" })).toBeVisible();
+    const stopMarking = page.getByRole("button", { name: "Stop marking cards" });
+    const dismissMarking = page.getByRole("button", { name: "Dismiss the No Team run" });
+    await expect(stopMarking.or(dismissMarking)).toBeVisible();
+    if (await stopMarking.isVisible()) {
+      await stopMarking.click();
+      await expect(
+        page.getByRole("heading", {
+          name: "Stopped, like you asked. So far: marked 2 cards No Team. Run it again to finish; cards already done are skipped.",
+        }),
+      ).toBeVisible();
+    } else {
+      await expect(page.getByRole("heading", { name: "Marked 2 cards No Team" })).toBeVisible();
+    }
+    await dismissMarking.click();
+    await expect(dismissMarking).toBeHidden();
+
+    // ── STEP 6: the build again (stopped after the first). Base has no pink card now, so the
+    // first parallel is built from it, and its copies carry the Base cards' No Team.
     // NEO-645: a copy's title carries the card's name (a real card name always goes in the title),
     // and "2026 Leaf Vivid <the parallel's name>" is already 69 characters, so both Clear Green
     // copies run over 80 and the build stops on the Card titles dialog, which names them. "Not
     // now" closes it and keeps the titles as they are (nothing was edited, so no confirm).
-    await drillToSet(page, env, TARGET);
     await pick(page, "Variant Types", "Parallel", { search: false });
-    await page.getByRole("button", { name: /^Build [0-9]+ parallels from Base$/ }).click();
-    const replace = page.getByRole("button", { name: "Replace and build" });
-    await expect(replace.or(page.getByRole("button", { name: "Stop after this one" })).first()).toBeVisible();
-    if (await replace.isVisible()) await replace.click();
-    await page.getByRole("button", { name: "Stop after this one" }).click();
+    await buildAll.click();
+    // STEP 4 wrote nothing, so every parallel is still empty: the run starts at once.
+    await expect(stop).toBeVisible();
+    await stop.click();
     // The build fetches each parallel's checklist from BSC before writing it, and the screen shows
     // "Waiting on BuySportsCards…" meanwhile: BSC's time plus 7 s of our own (GUIDE hard rule 3).
     await expectAfterMarketplace(
@@ -218,9 +278,7 @@ test(
       page.getByRole("heading", { name: /^Base parallels — stopped after [1-9][0-9]* of [0-9]+/ }),
       { platform: "BuySportsCards", what: "the parallels build stopping" },
     );
-    await expect(
-      page.getByText(new RegExp(`^${FIRST_PARALLEL} — Built ${BASE_CARDS.length} cards?`)),
-    ).toBeVisible();
+    await expect(ledgerLine(`${FIRST_PARALLEL} — Built ${BASE_CARDS.length} card`)).toBeVisible();
     const titles = page.getByRole("dialog", { name: "Card titles" });
     await expect(titles).toBeVisible();
     for (const player of BASE_CARDS) {
@@ -232,23 +290,13 @@ test(
     await expect(titles).toBeHidden();
     await expectAccessible(page, { label: "Base parallels build stopped, set under No Team" });
 
+    // Both copies read No Team (the stamp came with the copy), and neither is flagged teamless.
+    // Both rows are on screen (a two-card checklist), so each missing mark is a real absence.
     await columnOption(page, "Parallels", FIRST_PARALLEL).click();
-    // The copies' lookups ride the background BSC team lane (convex/bscTeamPool.ts): ONE slot for
-    // the whole deployment, 1.7 s a card, first in first out across every test user. In CI the
-    // other shards' commits queue cards ahead of these two (merge-queue run 45273919105: seven
-    // items ahead, so the copies were answered 18-21 s after the build, past this step's 7 s; on
-    // an idle lane they answer in about 4 s). So a copy is EITHER answered, its row reading No
-    // Team, OR still on the lane: its row carries no team at all (the name runs straight into its
-    // BSC badge) and is not flagged, which the attention rule allows only while the lookup is owed
-    // (`isAwaitingTeamLookup`). Never a team, in either branch. Both copies are on screen (two
-    // rows), so a missing mark is a real absence.
+    await expect(page.getByText("Cards (2)")).toBeVisible();
     for (const player of BASE_CARDS) {
-      const heldBack = page.getByText(new RegExp(`#NNO[^#]*${escapeRe(player)}\\s*BSC`));
-      await expect(rowSays(player, "No Team").or(heldBack).first()).toBeVisible();
+      await expect(rowSays(player, "No Team")).toBeVisible();
       await expect(flaggedNoTeam(player)).toHaveCount(0);
-      // Which branch ran goes into the report (a read for the record, never an assert's branch).
-      const queued = await heldBack.isVisible();
-      test.info().annotations.push({ type: "bsc-team-lane", description: `${player}: ${queued ? "still queued" : "answered"}` });
     }
     await expectAccessible(page, { label: "Built parallel, copies No Team" });
   },
