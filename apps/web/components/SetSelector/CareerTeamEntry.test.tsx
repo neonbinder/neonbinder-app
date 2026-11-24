@@ -79,8 +79,8 @@ vi.mock("convex/react", () => ({
 
 import CareerTeamEntry, { UNKNOWN_TEAM_AMBIGUOUS, UNKNOWN_TEAM_TEXT } from "./CareerTeamEntry";
 
-function makeTeam(name: string, id: string) {
-  return { _id: id, name };
+function makeTeam(name: string, id: string, yearsActive?: { from: number; to?: number }) {
+  return { _id: id, name, ...(yearsActive ? { yearsActive } : {}) };
 }
 
 function renderEntry(
@@ -1756,6 +1756,20 @@ describe("CareerTeamEntry — whose stint, and only teams that exist (NEO-591)",
       fireEvent.click(rows[1]);
       fireEvent.click(addButton());
       expect(onAdd).toHaveBeenCalledWith({ name: "Winnipeg Jets", fromYear: 2016, teamId: "t-jets-new" });
+    });
+
+    it("NEO-657: two saved teams with one name show their eras, in the visible row and the option's name", () => {
+      currentTeams = [
+        makeTeam("Monterrey Sultanes", "t-sultanes-old", { from: 1939, to: 1999 }),
+        makeTeam("Monterrey Sultanes", "t-sultanes-new", { from: 2005 }),
+      ];
+      renderEntry({ label: "Luis Rodriguez", knownTeamsOnly: true });
+      typeKnown("Monterrey");
+      const old = screen.getByRole("option", { name: "Use Monterrey Sultanes · 1939–1999" });
+      const current = screen.getByRole("option", { name: "Use Monterrey Sultanes · 2005–present" });
+      expect(old.textContent).toContain("1939–1999");
+      expect(current.textContent).toContain("2005–present");
+      expect(old.textContent).toContain("Monterrey Sultanes");
     });
 
     it("takes the prefilled team once the search has found it", () => {

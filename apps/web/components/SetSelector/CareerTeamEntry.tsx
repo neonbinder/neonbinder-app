@@ -7,6 +7,7 @@ import {
   rankTeamCandidates,
 } from "../../convex/lib/entityNearMatch";
 import { teamFullName } from "../../lib/teams/team-name";
+import { eraLabel, teamOptionLabel } from "../../lib/teams/team-era";
 import { Input } from "../primitives/Input";
 import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
 import {
@@ -448,16 +449,28 @@ export default function CareerTeamEntry({
     const staged = stagedNames
       .filter((n) => nameMatchesQuery(n, q))
       .sort(rank)
-      .map((n) => ({ key: `staged:${n}`, name: n, staged: true }));
+      .map((n) => ({
+        key: `staged:${n}`,
+        name: n,
+        staged: true,
+        teamId: undefined,
+        yearsActive: undefined,
+      }));
 
     const saved = (freshSearched ?? [])
       // NEO-236: the FULL name. A suggestion is something the operator can
       // pick to LINK to, and "Padres" does not identify the row it belongs to.
-      .map((t) => ({ _id: t._id, name: teamFullName(t) }))
+      .map((t) => ({ _id: t._id, name: teamFullName(t), yearsActive: t.yearsActive }))
       // Dropping a saved team already offered as staged: the same name twice,
       // once tagged and once not, reads as two different teams.
       .filter((t) => !stagedKeys.has(normalizeEntityName(t.name)))
-      .map((t) => ({ key: `team:${t._id}`, name: t.name, staged: false, teamId: t._id }));
+      .map((t) => ({
+        key: `team:${t._id}`,
+        name: t.name,
+        staged: false,
+        teamId: t._id,
+        yearsActive: t.yearsActive,
+      }));
 
     return [...staged, ...saved].slice(0, MAX_SUGGESTIONS);
   }, [stagedNames, freshSearched, trimmedName]);
@@ -895,7 +908,14 @@ export default function CareerTeamEntry({
                    * it dedupes them against the saved half. It just no longer
                    * says anything.
                    */
-                  aria-label={`Use ${s.name}`}
+                  /*
+                   * NEO-657 — a saved team's era is part of its name here:
+                   * two rows can share one full name ("Monterrey Sultanes"),
+                   * and the era is what tells them apart, on screen and to a
+                   * screen reader. A staged name has no era, so it reads as
+                   * before.
+                   */
+                  aria-label={`Use ${teamOptionLabel(s.name, s.yearsActive)}`}
                   onMouseEnter={() => setHighlightIdx(idx)}
                   onClick={() => pickSuggestion(s.name, s.teamId)}
                   className={`flex w-full items-center gap-2 px-2 py-1 text-left text-sm ${
@@ -904,7 +924,18 @@ export default function CareerTeamEntry({
                       : "hover:bg-hover text-ink-2"
                   }`}
                 >
-                  <span className="flex-1 truncate">{s.name}</span>
+                  <span className="min-w-0 flex-1 wrap-anywhere">
+                    {s.name}
+                    {s.yearsActive && (
+                      <span
+                        className={`ml-2 font-mono text-[10px] tabular-nums ${
+                          idx === highlightIdx ? "text-ink-2" : "text-ink-3"
+                        }`}
+                      >
+                        {eraLabel(s.yearsActive)}
+                      </span>
+                    )}
+                  </span>
                 </button>
               </li>
             ))}
