@@ -40,6 +40,10 @@
 //   TIE  `Mtpt<token>`  `MTB<token>X` 2025-2027 and `MTC<token>X` 2026-2026 (two in 2026)
 // Four quick-added teamless cards linked to them in the form's PlayerPicker: #961 SOLO, #962 TIE,
 // #963 SOLO, #964 SOLO (quick-add never fills a team, so each is pink "no team on this card yet").
+// No card name beyond the player's own (NEO-656 J5, blue is live): with a minted card name the title
+// "2026 Topps mtp-… Base Mtpcard… Mtps… #961" has no room for the minted team, so a saved team turns
+// the card blue "listing title was cut short" and no Save & next clears it. Without one the title
+// keeps the team on every worker and token length (assessListingTitle, computed offline).
 // The walk visits them in number order. All four are DELETED at the end; the set (left at No Team),
 // its rows, the players and the teams stand. Per attempt because the pill and the walk are exact.
 // Names are single tokens ending in a letter, so no attempt's token prefixes another's. Not
@@ -146,7 +150,6 @@ test(
       await addCardViaForm(page, {
         cardNumber: card.number,
         playerName: card.player,
-        cardName: `Mtpcard${T}`,
         beforeSubmit: async () => {
           await page.getByRole("button", { name: "Add a player to the new card" }).click();
           const findPlayer = page.getByRole("textbox", { name: "Find a player for the new card" });

@@ -173,3 +173,4 @@
 - [NEO-656 re-fetch, catalogue skip](patterns_neo656_refetch_asks_again_and_catalogue_career_skip.md) — ruled-out name pink again; Skip Career tiles on catalogue players
 - [NEO-656 Career tile after J6](patterns_neo656_career_tile_specs_after_j6.md) — Team Change closes gap, sibling cleared by Save & next, untick own team; plants
 - [NEO-656 mixed end screen, team link](patterns_neo656_end_screen_mixed_and_team_link_apply.md) — pink+blue end screen reopens both; link #12, #13 pink, Apply 6
+- [NEO-656 minted team cut](patterns_neo656_minted_team_cut_from_title_turns_card_blue.md) — minted card name + team cut the title: live blue; drop cardName; preselect plants
