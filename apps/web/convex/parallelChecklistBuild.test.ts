@@ -543,6 +543,40 @@ describe("buildParallelChecklist — the happy path", () => {
     expect(copies[0].platformData.bsc).toEqual({ ref: "bsc-ref-1", src: "b0" });
   });
 
+  test("a marketplace's bare number links the card but never replaces a lettered one (NEO-616, rule 7)", async () => {
+    // Wrapper rule 7 (Jason, 2026-11-18): letters over digits; a side that
+    // stripped the prefix "just took the lazy way".
+    const t = convexTest(schema, modules);
+    const { sport, insert } = await seedTree(t);
+    const parallelId = await seedParallel(t, insert);
+    const griffey = await insertPlayer(t, sport, "Ken Griffey Jr.");
+    await insertCard(t, insert, {
+      cardNumber: "89B-1",
+      cardName: "Ken Griffey Jr.",
+      playerIds: [griffey],
+      playerLinks: [{ playerId: griffey, nameOnCard: "Ken Griffey Jr." }],
+    });
+    bscState.cards = [
+      {
+        cardNumber: "1",
+        cardName: "Ken Griffey Jr.",
+        players: ["Ken Griffey Jr."],
+        platformRef: "bsc-ref-1",
+        sourceBscSetSlug: "anime-kanji",
+      },
+    ];
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
+
+    expect(result.status).toBe("built");
+    const copies = await cardsOn(t, parallelId);
+    expect(copies).toHaveLength(1);
+    expect(copies[0].cardNumber).toBe("89B-1");
+    expect(copies[0].platformData.bsc).toEqual({ ref: "bsc-ref-1", src: "b0" });
+  });
+
   test("imageUrls is never copied onto the parallel's new row", async () => {
     const t = convexTest(schema, modules);
     const { insert } = await seedTree(t);

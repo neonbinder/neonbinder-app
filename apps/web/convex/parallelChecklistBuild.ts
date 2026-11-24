@@ -2790,10 +2790,16 @@ export const buildParallelChecklist = action({
       };
       const bscNumber = prefixNumberOn("bsc");
       const slNumber = prefixNumberOn("sportlots");
-      const ownNumber =
+      const candidateNumber =
         bscNumber !== undefined && slNumber !== undefined
           ? preferCardNumber(bscNumber, slNumber)
           : (bscNumber ?? slNumber ?? checklistFacts.get(card._id)?.cardNumber);
+      // Wrapper rule 7 (Jason, 2026-11-18): letters over digits. A side that
+      // printed a bare "1" (SportLots strips prefixes) never replaces the
+      // source's lettered "89B-1"; a lettered "T88-12" does replace a bare "12".
+      const preferredNumber =
+        candidateNumber !== undefined ? preferCardNumber(candidateNumber, card.cardNumber) : undefined;
+      const ownNumber = preferredNumber !== card.cardNumber ? preferredNumber : undefined;
       // J2 — only when a side was asked; an unlinked copy takes every card.
       if (!bsc && !sl && toFetch.length > 0) {
         listPush(lists.leftOff, label);
