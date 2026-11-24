@@ -23,12 +23,14 @@ import {
   BLOCKED_SCANS,
   BLOCKED_TOO_MANY_CARDS,
   BLOCKED_UNLINKED_OVER_LINKED_CARDS,
+  BLOCKED_SOURCE_NOT_TIDY,
   MAX_INSERT_CARDS_FOR_BUILD,
   blockedAllPaused,
   blockedIdsUnreachable,
   blockedSidePaused,
 } from "./parallelChecklistBuild";
 import { insertTestCard } from "../lib/testing/card-row";
+import { teamRowFields } from "./lib/teamRow";
 import { captureBscTeamLane } from "../lib/testing/bsc-team-lane";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
@@ -130,6 +132,13 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
 });
+
+function armFake() {
+  vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
+  vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+  vi.stubEnv("TESTING_RESET_SECRET", "armed");
+  vi.stubEnv("CONVEX_CLOUD_URL", "https://happy-otter-123.convex.cloud");
+}
 
 // ---------------------------------------------------------------------------
 // Fixture: sport → year → setName(Bowman) → variantType(Insert, tagged
@@ -519,7 +528,8 @@ describe("buildParallelChecklist — the happy path", () => {
     expect(copy).not.toHaveProperty("imageUrls");
   });
 
-  test("a build queues nothing but the BSC team lookups its copies owe (NEO-556)", async () => {
+  test("a build queues nothing but the BSC team lookups its copies owe (NEO-556); on the fake each is queued for the building operator", async () => {
+    armFake();
     const t = convexTest(schema, modules);
     // The lane's component is not mounted here: the enqueue lands in a list.
     const lane = captureBscTeamLane();
@@ -549,10 +559,36 @@ describe("buildParallelChecklist — the happy path", () => {
       const one = copies.find((c) => c.cardNumber === "1")!;
       const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
       expect(scheduled.map((s) => s.name)).toEqual(["bscTeamPool:enqueueBscTeamChecks"]);
-      expect(scheduled[0].args).toEqual([{ cardChecklistIds: [one._id] }]);
+      // NEO-628: queued for the operator who built (the action's verified subject).
+      expect(scheduled[0].args).toEqual([{ cardChecklistIds: [one._id], queuedBy: ADMIN.subject }]);
       // It reached the lane. (Filtered: another test's late job can land in
       // the same spy, and convex-test ids repeat across instances.)
       expect(lane.some((l) => l.item.cardChecklistId === one._id)).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  test("NEO-628 N2: on real BSC the build's scheduled enqueue carries no queuedBy", async () => {
+    const t = convexTest(schema, modules);
+    const lane = captureBscTeamLane();
+    try {
+      const { insert } = await seedTree(t);
+      const parallelId = await seedParallel(t, insert);
+      await insertCard(t, insert, { cardNumber: "1", cardName: "Team Card" });
+      bscState.cards = [{ cardNumber: "1", cardName: "Team Card", platformRef: "bsc-1" }];
+
+      await t
+        .withIdentity(ADMIN)
+        .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
+      await drainScheduled(t);
+
+      const copies = await cardsOn(t, parallelId);
+      const one = copies.find((c) => c.cardNumber === "1")!;
+      const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+      expect(scheduled.map((s) => s.name)).toEqual(["bscTeamPool:enqueueBscTeamChecks"]);
+      expect(scheduled[0].args).toEqual([{ cardChecklistIds: [one._id] }]);
+      expect(lane.some((l) => l.item.cardChecklistId === one._id && !("queuedBy" in l.item))).toBe(true);
     } finally {
       vi.restoreAllMocks();
     }
@@ -750,15 +786,25 @@ describe("buildParallelChecklist — earlierLinksMissing / stillListedNotRelinke
     const t = convexTest(schema, modules);
     const { insert } = await seedTree(t);
     const parallelId = await seedParallel(t, insert);
+    // A team card (a team and no players); the team is LINKED, so the source is
+    // tidy and the build runs (a pending team name would be refused, NEO-645 J3).
+    const yankees = await t.run(async (ctx) => {
+      const sportId = (await ctx.db.get(insert))!.parentId as Id<"selectorOptions">;
+      return ctx.db.insert("teams", {
+        ...teamRowFields({ location: "New York", name: "Yankees" }),
+        sportId,
+        lastUpdated: SENTINEL,
+      });
+    });
     await insertCard(t, insert, {
       cardNumber: "1",
       cardName: "Team Card",
-      pendingTeamNames: ["Yankees"],
+      teamOnCardIds: [yankees],
     });
     await insertCard(t, parallelId, {
       cardNumber: "1",
       cardName: "Team Card",
-      pendingTeamNames: ["Yankees"],
+      teamOnCardIds: [yankees],
       platformData: { bsc: { ref: "bsc-old-ref", src: "b0" } },
     });
     // Two BSC candidates for number "1" — an unresolvable guess, so the
@@ -1041,6 +1087,43 @@ describe("buildParallelChecklist — blocks write nothing", () => {
 
     expect(result.status).toBe("blocked");
     expect(result.blockedReason).toBe(BLOCKED_UNLINKED_OVER_LINKED_CARDS);
+    expect((await cardsOn(t, parallelId)).map((c) => c._id)).toEqual([oldCard]);
+    expect(bscState.calls).toHaveLength(0);
+    expect(slState.calls).toHaveLength(0);
+  });
+
+  // NEO-645 (J3, Q4): the parallel copies its source, so the source must be tidy.
+  // The refusal comes before anything is deleted or fetched.
+  test.each([
+    ["a player name still waiting", { pendingPlayerNames: ["S. Ohtani"] }],
+    ["a team name still waiting", { pendingTeamNames: ["Yankees"] }],
+    [
+      "sources that disagree and nobody has chosen",
+      {
+        sourceDisagreements: [
+          {
+            field: "players" as const,
+            values: [
+              { value: ["A One"], sources: ["bsc" as const] },
+              { value: ["A Two"], sources: ["checklist" as const] },
+            ],
+          },
+        ],
+      },
+    ],
+  ])("a source with %s blocks the build, nothing changes (NEO-645 J3)", async (_label, extra) => {
+    const t = convexTest(schema, modules);
+    const { insert } = await seedTree(t);
+    const parallelId = await seedParallel(t, insert);
+    await insertCard(t, insert, { cardNumber: "1", cardName: "Someone", ...extra });
+    const oldCard = await insertCard(t, parallelId, { cardNumber: "1", cardName: "Someone" });
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
+
+    expect(result.status).toBe("blocked");
+    expect(result.blockedReason).toBe(BLOCKED_SOURCE_NOT_TIDY);
     expect((await cardsOn(t, parallelId)).map((c) => c._id)).toEqual([oldCard]);
     expect(bscState.calls).toHaveLength(0);
     expect(slState.calls).toHaveLength(0);

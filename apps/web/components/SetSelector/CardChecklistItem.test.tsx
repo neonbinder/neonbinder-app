@@ -388,7 +388,7 @@ describe("CardChecklistItem — NEO-102 attention mark", () => {
 // ---------------------------------------------------------------------------
 // NEO-208 — unresolved typed team names in the sub-line
 //
-// `pendingTeamNames` was read by `deriveCardAttention` and rendered NOWHERE:
+// `pendingTeamNames` was read by `deriveLegacyCardAttention` and rendered NOWHERE:
 // a row could carry a team name that appeared on no screen while its badge
 // stayed off, which read to the operator as the name having been dropped.
 //
@@ -465,7 +465,7 @@ describe("CardChecklistItem — NEO-208 pending team names", () => {
     // the link. One badge, the truthful one.
     renderItem({ card: makeCard({ pendingTeamNames: ["Savannah Bananas"] }) });
     const badge = screen.getByLabelText(/needs attention/);
-    expect(badge.getAttribute("aria-label")).toMatch(/not yet linked to a player or team/);
+    expect(badge.getAttribute("aria-label")).toMatch(/team name not yet linked/);
     expect(badge.getAttribute("aria-label")).not.toMatch(/no team on this card/);
   });
 
@@ -478,7 +478,7 @@ describe("CardChecklistItem — NEO-208 pending team names", () => {
     // A stale row: `updateCard` only retires `pendingTeamNames` when it
     // itself writes a non-empty `teamOnCardIds` — a link made some other way
     // (a direct write, a resolve pass that predates that clear) can leave both
-    // fields on the same row. `deriveCardAttention` does not flag this row
+    // fields on the same row. `deriveLegacyCardAttention` does not flag this row
     // (see cardChecklist.noTeam.test.ts), but the render loop here is
     // unconditional — it appends every entry in `pendingTeamNames` regardless
     // of `teamOnCardIds` — so the stale name stays visible rather than being

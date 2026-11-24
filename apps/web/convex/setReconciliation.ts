@@ -120,6 +120,7 @@ import {
   setRowChecklistSections,
 } from "./lib/publishedChecklistSections";
 import { classifySections } from "../lib/checklists/classify-sections";
+import { foldNameForCompare } from "../lib/entities/normalize-name";
 
 /**
  * A sentinel thrown to short-circuit a side's fetch block WITHOUT its catch
@@ -230,8 +231,10 @@ function singularize(tok: string): string {
 }
 
 function normalizeForMatch(s: string): string {
-  const base = s
-    .toLowerCase()
+  // NEO-643: the shared comparison fold first (stray backslash/zero-width junk
+  // deleted, accents off, lowercase, a hyphen a space), so "B\eisbol" and "Béisbol" agree. Without
+  // it the `[^\w\s]` strip below would delete the "é" outright and leave "bisbol".
+  const base = foldNameForCompare(s)
     .trim()
     .replace(/[^\w\s]/g, "")
     .replace(/\s+/g, " ");
@@ -827,14 +830,13 @@ export const variantSyncChecklistContext = internalQuery({
 
 /**
  * A section name or a target label folded for section matching: accents off
- * ("Exposé" = "expose"), `normalizeForMatch`, then a plural fold on every
+ * ("Exposé" = "expose", via the shared `foldNameForCompare` inside `normalizeForMatch`), then a plural fold on every
  * token longer than three letters ("Ballparks" = "Ballpark", "Legends" =
  * "Legend"). Both sides fold the same way, so "Series" against "Series"
  * still agrees.
  */
 function foldSectionText(s: string): string {
-  const plain = s.normalize("NFD").replace(/[̀-ͯ]/g, "");
-  return normalizeForMatch(plain)
+  return normalizeForMatch(s)
     .split(" ")
     .filter(Boolean)
     .map((tok) => (tok.length > 3 && tok.endsWith("s") && !tok.endsWith("ss") ? tok.slice(0, -1) : tok))

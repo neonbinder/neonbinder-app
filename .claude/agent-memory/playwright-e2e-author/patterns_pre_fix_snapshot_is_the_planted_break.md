@@ -13,7 +13,7 @@ on a hand-made break.
   two scratch folders; symlink the worktree's `node_modules` and `.env.local`
   into each; in each snapshot's `vite.config.ts` only: `hmr: false`,
   `resolve.preserveSymlinks: true`, a scratch `cacheDir`
-  ([[probe-vite-from-a-head-snapshot]]).
+  ([[patterns_probe_vite_from_a_head_snapshot]]).
 - Serve one at a time on the ticket port, and run Playwright from the WORKTREE
   (your edited spec) with `--output` in the scratchpad. Check which snapshot is
   listening (`lsof -a -p <pid> -d cwd`) before each run.
@@ -28,4 +28,4 @@ NEO-625 example: the pre-fix bundle red at `reconcile toBeHidden` with the alert
 "Couldn't save these sets. Nothing was changed ..." beside "Save 3 sets", which
 is the production symptom; the fix bundle green.
 
-Related: [[plant-product-breaks-in-a-head-snapshot]], [[a-green-suite-can-mean-the-test-stopped-testing]]
+Related: [[patterns_plant_product_breaks_in_a_head_snapshot]], a green suite can mean the test stopped testing

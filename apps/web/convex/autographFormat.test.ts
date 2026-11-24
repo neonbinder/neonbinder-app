@@ -377,6 +377,100 @@ describe("cascadeAutographFormatPage — the bounded walk", () => {
   });
 });
 
+describe("the cascade and the listing text (NEO-645 T4)", () => {
+  const TYPED = "Typed by hand, out of date";
+
+  async function leafWithTwoAutos(t: T) {
+    const { sportId, leafId } = await seedLeaf(t);
+    const griffey = await seedPlayer(t, sportId, "Ken Griffey Jr.");
+    const make = (n: string, extra: Partial<Doc<"cardChecklist">> = {}) =>
+      seedCard(t, leafId, n, {
+        attributes: ["AU"],
+        playerIds: [griffey],
+        playerLinks: [{ playerId: griffey, nameOnCard: "Ken Griffey Jr." }],
+        features: { autographed: "None" },
+        listingTitle: TYPED,
+        listingDescription: "Typed by hand",
+        ...extra,
+      });
+    const one = await make("1");
+    const two = await make("2");
+    // Not an auto: the cascade writes nothing here, so nothing is rebuilt.
+    const plain = await make("3", { attributes: ["RC"] });
+    return { leafId, one, two, plain };
+  }
+
+  test("with the walk's flag, each card it fills has its title and description rebuilt, a typed one included", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId, one, two, plain } = await leafWithTwoAutos(t);
+    await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: leafId,
+      value: "On Card",
+      regenerateListing: true,
+    });
+    await drainScheduled(t);
+    for (const id of [one, two]) {
+      const row = (await get(t, id))!;
+      expect(row.features?.autographed).toBe("On Card");
+      expect(row.listingTitle).not.toBe(TYPED);
+      expect(row.listingTitle).toContain("Griffey");
+      expect(row.listingTitle).toContain("AUTO");
+      expect(row.listingDescription).not.toBe("Typed by hand");
+      expect(row.listingDescription).toContain("Ken Griffey Jr.");
+    }
+    const untouched = (await get(t, plain))!;
+    expect(untouched.listingTitle).toBe(TYPED);
+    expect(untouched.listingDescription).toBe("Typed by hand");
+  });
+
+  test("without the flag the cascade fills the format and leaves the text alone", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId, one, two } = await leafWithTwoAutos(t);
+    await t.withIdentity(ADMIN).mutation(api.autographFormat.setAutographFormat, {
+      selectorOptionId: leafId,
+      value: "On Card",
+    });
+    await drainScheduled(t);
+    for (const id of [one, two]) {
+      const row = (await get(t, id))!;
+      expect(row.features?.autographed).toBe("On Card");
+      expect(row.listingTitle).toBe(TYPED);
+      expect(row.listingDescription).toBe("Typed by hand");
+    }
+  });
+
+  test("the page bound is 40 when each fill rebuilds text, 150 when it does not", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedLeaf(t, {
+      features: { autographed: "None", autographFormat: "On Card" },
+    });
+    for (let i = 1; i <= 41; i++) await seedCard(t, leafId, String(i), { attributes: ["AU"] });
+    const regenerating = await t.mutation(internal.autographFormat.cascadeAutographFormatPage, {
+      selectorOptionId: leafId,
+      format: "On Card",
+      regenerateListing: true,
+    });
+    expect(regenerating).toMatchObject({ done: false, formatted: 40 });
+    const rest = await t.mutation(internal.autographFormat.cascadeAutographFormatPage, {
+      selectorOptionId: leafId,
+      format: "On Card",
+      regenerateListing: true,
+      after: regenerating.after!,
+    });
+    expect(rest).toMatchObject({ done: true, formatted: 1 });
+    // The same 41 cards without the flag fit one page.
+    const other = await seedLeaf(t, {
+      features: { autographed: "None", autographFormat: "On Card" },
+    });
+    for (let i = 1; i <= 41; i++) await seedCard(t, other.leafId, String(i), { attributes: ["AU"] });
+    const plain = await t.mutation(internal.autographFormat.cascadeAutographFormatPage, {
+      selectorOptionId: other.leafId,
+      format: "On Card",
+    });
+    expect(plain).toMatchObject({ done: true, formatted: 41 });
+  });
+});
+
 describe("the generic feature doors refuse autographFormat (NEO-345)", () => {
   test("setSelectorOptionFeature refuses a set and a clear, pointing at setAutographFormat", async () => {
     const t = convexTest(schema, modules);

@@ -26,6 +26,7 @@ import {
   type IncomingItem,
   type MatchableRow,
 } from "./selectorSyncMatch";
+import { sameTitleWord, variantTypeKindFromTitle } from "./variantRole";
 import { SL_ALL_BRANDS_BRAND_ID, isSlAllBrandsBrandId } from "./slBrandAxis";
 
 type Row = MatchableRow<string> & { level: string };
@@ -232,6 +233,143 @@ describe("planSelectorSync tiers", () => {
     });
     // Upstream believes these are one set; NB has two. Merging rows is not a
     // decision a sync gets to make, and picking one would move a link silently.
+    expect(plan.outcomes[0].kind).toBe("withheld");
+  });
+});
+
+describe("planSelectorSync name tier — NEO-643, stored rows are not backfilled", () => {
+  // Incoming labels are cleansed at ingest; a row stored before that still
+  // carries its junk. The tier compares both sides cleansed, so the second
+  // marketplace id attaches instead of a twin being minted.
+  test("selectorValueKey itself is unchanged: it is a stored key", () => {
+    expect(selectorValueKey("B\\eisbol")).not.toBe(selectorValueKey("Beisbol"));
+    expect(selectorValueKey("Re\u0301my")).not.toBe(selectorValueKey("R\u00E9my"));
+    expect(selectorValueKey("Topps  Chrome")).not.toBe(selectorValueKey("Topps Chrome"));
+    expect(selectorValueKey("Topps-Chrome")).not.toBe(selectorValueKey("Topps Chrome"));
+  });
+
+  test.each([
+    ["a stored backslash", "B\\eisbol", "Beisbol"],
+    ["a stored decomposed accent", "Re\u0301my", "R\u00E9my"],
+    ["a stored double space", "Topps  Chrome", "Topps Chrome"],
+    ["a stored zero-width space", "Top\u200Bps", "Topps"],
+    ["a stored soft hyphen, cased differently", "Top\u00ADps", "TOPPS"],
+    // NEO-643, Jason 2026-11-21: a hyphen matches a space everywhere.
+    ["a stored hyphen against an incoming space", "Topps-Chrome", "Topps Chrome"],
+    ["a stored space against an incoming hyphen", "Topps Chrome", "Topps-Chrome"],
+    ["a stored en dash against an incoming hyphen", "Topps\u2013Chrome", "Topps-Chrome"],
+    ["a stored spaced hyphen against an incoming space", "Topps - Chrome", "Topps Chrome"],
+  ])("%s still name-matches the cleansed incoming label and attaches the id", (_why, stored, incoming) => {
+    const a = row("a", stored);
+    const plan = planSelectorSync({
+      existing: [a],
+      items: [item(incoming, { bsc: "bsc-1" })],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 2 });
+  });
+
+  test("the match is additive: a row linked on the other side takes the new id", () => {
+    const a = row("a", "B\\eisbol", { platformData: { sportlots: { s0: "77" } } });
+    const plan = planSelectorSync({
+      existing: [a],
+      items: [item("Beisbol", { bsc: "bsc-1" })],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 2 });
+  });
+
+  test("exactly-one guard: a hyphen twin and a spaced twin already stored are withheld", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "Topps-Chrome"), row("b", "Topps Chrome")],
+      items: [item("Topps Chrome", { bsc: "bsc-1" })],
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+  });
+
+  test("exactly-one guard, existing side: two stored rows that fold together are withheld", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "B\\eisbol"), row("b", "Beisbol")],
+      items: [item("Beisbol", { bsc: "bsc-1" })],
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+  });
+
+  test("exactly-one guard, incoming side: two labels that fold to one stored row are withheld", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "B\\eisbol")],
+      items: [item("Beisbol", { bsc: "bsc-1" }), item("BEISBOL", { bsc: "bsc-2" })],
+    });
+    expect(plan.outcomes.map((o) => o.kind)).toEqual(["withheld", "withheld"]);
+  });
+
+  test("a different name is still a different name", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "B\\eisbol")],
+      items: [item("Beisball", { bsc: "bsc-1" })],
+    });
+    expect(plan.outcomes[0].kind).toBe("insert");
+  });
+
+  test("a row linked to a different live id is still withheld, not re-linked", () => {
+    const a = row("a", "B\\eisbol", { platformData: { bsc: { b0: "live-id" } } });
+    const plan = planSelectorSync({
+      existing: [a],
+      items: [item("Beisbol", { bsc: "other-id" })],
+      // upstream still lists the id the row holds, so it is live
+      returnedIds: { bsc: ["live-id", "other-id"] },
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+  });
+
+  test("the word rule (variant types) sees both sides cleansed too", () => {
+    const sameWord = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+    const plan = planSelectorSync({
+      existing: [row("a", "Insert\u200B")],
+      items: [item("Insert", { bsc: "bsc-1" })],
+      sameName: sameWord,
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 2 });
+  });
+
+  test("the word rule reads a dash between characters as a space (variant types)", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "Rated-Rookie", { level: "variantType" })],
+      items: [item("Rated Rookie", { bsc: "bsc-1" })],
+      sameName: sameTitleWord,
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 2 });
+  });
+
+  test("a dash at the edge of a variant-type title never turns it into a kind word", () => {
+    // "Base-" is no kind; folding its edge dash would make it the word "Base"
+    // and attach the Base type's id to a row that is not the Base.
+    expect(variantTypeKindFromTitle("Base-")).toBeUndefined();
+    expect(variantTypeKindFromTitle("Base")).toBe("base");
+    for (const stored of ["Base-", "-Base", "Base \u2013", "Inserts-", "\u2014Parallel"]) {
+      const word = stored.replace(/[-\u2013\u2014\s]/g, "");
+      const plan = planSelectorSync({
+        existing: [row("a", stored, { level: "variantType" })],
+        items: [item(word, { bsc: "bsc-1" })],
+        sameName: sameTitleWord,
+      });
+      expect(plan.outcomes[0].kind, stored).toBe("insert");
+    }
+  });
+
+  test("a dash inside a kind word's title makes no kind word either", () => {
+    expect(variantTypeKindFromTitle("Base-Set")).toBeUndefined();
+    const plan = planSelectorSync({
+      existing: [row("a", "Base", { level: "variantType" })],
+      items: [item("Base-Set", { bsc: "bsc-1" })],
+      sameName: sameTitleWord,
+    });
+    expect(plan.outcomes[0].kind).toBe("insert");
+  });
+
+  test("an id-less checklist line still sees a stored namesake through the cleanse", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "B\\eisbol")],
+      items: [{ value: "Beisbol", ids: {}, identityOnly: true, checklistOnly: true }],
+    });
     expect(plan.outcomes[0].kind).toBe("withheld");
   });
 });

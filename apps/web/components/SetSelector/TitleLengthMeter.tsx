@@ -1,10 +1,5 @@
 import type { ReactNode } from "react";
-import {
-  ASPECT_VALUE_MAX,
-  LISTING_TITLE_MAX,
-  LISTING_TITLE_MOBILE_CLIP,
-  LISTING_TITLE_SEARCH_CLIP,
-} from "../../convex/features/listingLimits";
+import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
 
 /**
  * NEO-101 — the length readout for a marketplace-capped field, shared by the
@@ -15,13 +10,13 @@ import {
  * The same question ("does this title fit?") is asked in two places that look
  * nothing alike: a right-anchored drawer the operator edits a whole card in,
  * and a one-card-at-a-time dialog that exists only because the title does NOT
- * fit. If the two disagreed about where amber starts, or worded the over-cap
- * message differently, the walker would be teaching an operator a rule the
- * drawer then contradicts. So the bands, the wording and the colour roles live
- * here once and both surfaces render the same two pieces:
+ * fit. If the two disagreed about the over-cap message, the walker would be
+ * teaching an operator a rule the drawer then contradicts. So the cap, the
+ * wording and the colour roles live here once and both surfaces render the
+ * same two pieces:
  *
- *   - {@link TitleLengthMeter} — `62/80 · may clip in search`, in the field's
- *     label row, ABOVE the input;
+ *   - {@link TitleLengthMeter} — `62/80` (`84/80 · 4 over` past the cap), in
+ *     the field's label row, ABOVE the input;
  *   - {@link TitleLengthAlert} — the over-cap `role="alert"`, BELOW the input.
  *
  * They are two components rather than one because they render either side of
@@ -30,10 +25,9 @@ import {
  *
  * ## Colour is never the only signal
  *
- * Every band that is not "fine" carries words: `may clip on mobile`,
- * `may clip in search`, and a full sentence in the alert. The colours below are
- * the app's existing roles — grey is neutral, the danger notice ink is over
- * the cap — plus two warm steps between them.
+ * Past the cap the counter carries words (`4 over`) and the alert is a full
+ * sentence. The colours below are the app's existing roles: grey is neutral,
+ * neon pink is over the cap.
  *
  * ## One set of roles, every surface (NEO-356, NEO-535)
  *
@@ -48,17 +42,17 @@ import {
  * 4.5:1 on a graphite card (NEO-356), so the old 4.4:1 worry is gone. There used to be a `surface` prop choosing between two maps that
  * differed only in that tone; NEO-535 folded them into one.
  *
- * ## The bands are display truncation, not rules
+ * ## One rule, no soft bands
  *
  * Only `LISTING_TITLE_MAX` is a rule — eBay rejects an over-length title at
- * listing time (error 70), it does not trim it. 55 and 70 are where eBay's own
- * search results clip a title for a reader; a title past them still lists fine.
- * That is why they warn and only the cap blocks. See
- * convex/features/listingLimits.ts for the sourcing.
+ * listing time (error 70), it does not trim it. There is no warning below the
+ * cap: NEO-645 removed the "may clip in search" band (Jason, 2026-11-23: using
+ * the full 80 characters is best for search), so a title of 1 to 80 characters
+ * shows a plain `N/80`.
  */
 
-/** Which band a length falls in. Ordered least to most serious. */
-export type TitleLengthTone = "ok" | "mobile" | "search" | "over";
+/** Where a length falls: within the cap, or over it. */
+export type TitleLengthTone = "ok" | "over";
 
 export type TitleLengthState = {
   tone: TitleLengthTone;
@@ -66,10 +60,10 @@ export type TitleLengthState = {
   over: boolean;
   /** How many characters past the cap. 0 when within it. */
   overBy: number;
-  /** Short phrase for the counter row. `null` in the "ok" band. */
+  /** Short phrase for the counter row ("4 over"). `null` within the cap. */
   hint: string | null;
   /**
-   * The over-cap FACT, without advice: "84 characters — 4 over the
+   * The over-cap FACT, without advice: "84 characters, 4 over the
    * 80-character limit." `null` unless over the cap. The advice that follows it
    * differs per field (the title blocks a save, an aspect value only warns), so
    * it is the alert component's to add, not this function's.
@@ -77,13 +71,14 @@ export type TitleLengthState = {
   alert: string | null;
 };
 
-/** One tone per band, the same on every surface (see the header note). */
+/** One tone per state, the same on every surface (see the header note). */
 const TONE_CLASS: Record<TitleLengthTone, string> = {
   ok: "text-ink-3",
-  mobile: "text-notice-warn-ink",
-  search: "text-neon-orange-text",
   over: "text-neon-pink-text",
 };
+
+/** The advisory note's ink ({@link TitleFieldNote}); not a length state. */
+const NOTE_CLASS = "text-notice-warn-ink";
 
 /**
  * NEO-606 — the whole field, not just the note under it, says "too long".
@@ -110,18 +105,10 @@ export function overFieldProps(over: boolean): { "data-over"?: "true" } {
   return over ? { "data-over": "true" } : {};
 }
 
-/**
- * Classify a length against a cap.
- *
- * `soft` opts into the display-truncation bands, which belong to the listing
- * TITLE only: an eBay aspect value is not shown in search results, so there is
- * nothing for a "may clip" warning to mean on the variation field — it has a
- * hard cap and nothing else.
- */
+/** Classify a length against a cap: within it, or over it. */
 export function titleLengthState(
   length: number,
   max: number = LISTING_TITLE_MAX,
-  soft = false,
 ): TitleLengthState {
   if (length > max) {
     const overBy = length - max;
@@ -130,25 +117,7 @@ export function titleLengthState(
       over: true,
       overBy,
       hint: `${overBy} over`,
-      alert: `${length} characters — ${overBy} over the ${max}-character limit.`,
-    };
-  }
-  if (soft && length >= LISTING_TITLE_SEARCH_CLIP) {
-    return {
-      tone: "search",
-      over: false,
-      overBy: 0,
-      hint: "may clip in search",
-      alert: null,
-    };
-  }
-  if (soft && length >= LISTING_TITLE_MOBILE_CLIP) {
-    return {
-      tone: "mobile",
-      over: false,
-      overBy: 0,
-      hint: "may clip on mobile",
-      alert: null,
+      alert: `${length} characters, ${overBy} over the ${max}-character limit.`,
     };
   }
   return { tone: "ok", over: false, overBy: 0, hint: null, alert: null };
@@ -158,7 +127,7 @@ export function titleLengthState(
 export { ASPECT_VALUE_MAX, LISTING_TITLE_MAX };
 
 /**
- * `62/80 · may clip in search` — the counter for a field's label row.
+ * `62/80` — the counter for a field's label row (`84/80 · 4 over` past the cap).
  *
  * Rendered as plain text, not a live region: it updates on every keystroke, and
  * an assertive readout of a character count while someone is typing is noise.
@@ -168,13 +137,11 @@ export { ASPECT_VALUE_MAX, LISTING_TITLE_MAX };
 export function TitleLengthMeter({
   length,
   max = LISTING_TITLE_MAX,
-  soft = false,
 }: {
   length: number;
   max?: number;
-  soft?: boolean;
 }) {
-  const state = titleLengthState(length, max, soft);
+  const state = titleLengthState(length, max);
   return (
     <span className={`flex items-center gap-1 tabular-nums ${TONE_CLASS[state.tone]}`}>
       <span>
@@ -198,8 +165,7 @@ export function TitleLengthMeter({
  * The over-cap message, below the input.
  *
  * Renders nothing at all within the cap — an always-present region that
- * switched text would announce on every band change, including the two that are
- * advisory.
+ * switched text would announce on every change.
  *
  * `blocking` picks both the advice and the politeness. The listing title blocks
  * the save, so it is `role="alert"` and says so. An aspect value does NOT block
@@ -241,9 +207,8 @@ export function TitleLengthAlert({
 
 /**
  * The advisory note used for `listingTitleTruncated` and for the walker's
- * per-item reasons. Same type scale and colour as the counter's soft bands, so
- * "this needs a look" reads as one voice wherever it appears.
+ * per-item reasons: "this needs a look", in one voice wherever it appears.
  */
 export function TitleFieldNote({ children }: { children: ReactNode }) {
-  return <p className={`mt-1 text-xs ${TONE_CLASS.mobile}`}>{children}</p>;
+  return <p className={`mt-1 text-xs ${NOTE_CLASS}`}>{children}</p>;
 }

@@ -36,8 +36,14 @@
 //   Both are renamed back at the end. The arithmetic (`calc` of the builder over
 //   the 29 BA- cards of fixtures/checklists/2026-bowman-insert-anime.csv) is
 //   in the comment at LONG_PARALLEL and CARRY_PARALLEL.
+//   NEO-645 (a card's own name is always in its title) leaves it unchanged:
+//   every Anime card is named for its player, and a name that only says the
+//   players again adds nothing (`cardSubjectName`), so each copy's title is the
+//   player card's as before (re-checked offline with `assessListingTitle`, the
+//   player's name passed as the card name: same titles, 29 failing on
+//   CARRY_PARALLEL before BA-3's carry, none on BLACK).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
   columnHeading,
   columnOption,
@@ -50,8 +56,8 @@ import {
   syncChecklistButton,
 } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
-import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
-import { advanceToSave, confirmSaveButton, reviewWizard } from "../../support/wizard";
+import { CHECKLISTS, savedLine, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
+import { needsYouPill, settleWalkAfterCommit, tidyForTheParallelBuild, tidyWalk } from "../../support/tidy-walk";
 import type { Page } from "@playwright/test";
 
 const BOWMAN = { sport: "Baseball", year: "2026", manufacturer: "Bowman", set: "Bowman" };
@@ -267,48 +273,22 @@ test(
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanAnime2026);
     await syncChecklistButton(page).click();
 
-    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
-    // with SportLots paused or live. The cards come from BSC (and SportLots, paired, when it is
-    // live): GUIDE R5's marketplace wait, measured time plus 7 s, never a flat ceiling.
-    const matchCards = matchCardsDialog(page);
-    await expectAfterMarketplace(page, matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }), {
-      platform: "BuySportsCards",
-      what: "the Anime fetch's Match Cards",
-    });
-    await expect(matchCards.getByRole("heading", { name: "Match Cards — Anime" })).toBeVisible();
-    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog" });
-    // Proves the teams line while the dialog is open, keeps any card the file leaves out, confirms.
-    await confirmChecklistMatchCards(page, { facts, what: "the Anime fetch" });
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources. NEO-640: the file is
+    // BSC's own 36 cards, each paired by its number at 100%, so Match Cards is skipped with
+    // SportLots paused or live. The helper waits on the fetch (GUIDE R5's marketplace wait,
+    // measured time plus 7 s) and proves the saved line with its reason and the teams line.
+    await settleChecklistFetch(page, env, { facts, what: "the Anime fetch" });
 
-    // Either new names need review, or the cards save straight away. Since
-    // NEO-335 the wizard ("Tidy up <year> <set> <variant>" since NEO-497) has THREE shapes: names to decide
-    // (footer "Skip remaining names (N)"), or every name known and the open
-    // question is a teamless card or a trimmed title (it opens on that step with
-    // "Next (Enter)"). Same branch below: past the names, advanceToSave leaves
-    // the teams / titles steps on their defaults and stops on the Save step.
-    const wizard = reviewWizard(page);
-    const saved = page.getByText(/Saved [0-9]+ cards/);
-    // Live, the wizard opens after the pairing's Confirm (the flow's 60 s); paused, once the
-    // Match Cards is confirmed above: our own queueing, measured 1.8 s at most on the #487 merge-group run (GUIDE), the standard 7 s.
-    await expectStepWithSportLots(page, wizard.or(saved).first(), env, { liveMs: 60_000, what: "the tidy-up dialog or the save", statusLine: false });
-    if (await wizard.isVisible()) {
-      await expectAccessible(page, { within: wizard, label: "Tidy-up wizard" });
-      // The footer's first action says which shape opened (it paints with the batch).
-      const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
-      await expect(
-        skipRemaining.or(wizard.getByRole("button", { name: "Next (Enter)", exact: true })).or(confirmSaveButton(page)),
-      ).toBeVisible();
-      if (await skipRemaining.isVisible()) {
-        await skipRemaining.click();
-        // The lookups behind the batch settle here (the flow's 60 s, unchanged).
-        await expect(
-          wizard.getByRole("button", { name: "Next (Enter)", exact: true }).or(confirmSaveButton(page)),
-        ).toBeVisible({ timeout: 60_000 });
-      }
-      await advanceToSave(page);
-      await confirmSaveButton(page).click();
+    // NEO-645 C5: the cards SAVE first, then the Tidy Up walk opens on its own when a card needs
+    // a person.
+    const saved = savedLine(page, facts.rows);
+    if (await settleWalkAfterCommit(page, saved)) {
+      await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk after the Anime save" });
+      // J3: the parallels copy Anime's cards, so they are built only once no card has a name
+      // waiting. The walk answers them as the old wizard's save did (players and teams added
+      // as new, the same-name pick's top candidate), and the build starts on its own.
+      await tidyForTheParallelBuild(page);
     }
-    await expect(page.getByText(/Saved [1-9][0-9]* cards?/)).toBeVisible();
 
     // The build of Kanji's cards from Anime reports itself, then lands.
     await expect(
@@ -321,10 +301,18 @@ test(
     // visibly holding it (the marketplace rule, GUIDE).
     const titlesDialog = page.getByRole("dialog", { name: "Card titles" });
     const titleRow = (number: string) => titlesDialog.getByRole("textbox", { name: new RegExp(`^Title for #${escapeRe(number)} `) });
-    await expectAfterMarketplace(page, titlesDialog, {
+    // NEO-645: the build starts the moment the walk answers Anime's last name, so it can end
+    // while the walk is still open. The dialog never opens over another one: the door then says
+    // the titles are waiting, and its button opens them. Either way the dialog opens (R2).
+    const titlesWaiting = page.getByText(/^Card titles are waiting\. Press Fix [1-9][0-9]* card titles? when you're ready\.$/).first();
+    await expectAfterMarketplace(page, titlesDialog.or(titlesWaiting).first(), {
       platform: "BuySportsCards",
       what: "the Card titles dialog after the Anime parallels build",
     });
+    if (await titlesWaiting.isVisible()) {
+      await page.getByRole("button", { name: /^Fix [1-9][0-9]* card titles?$/ }).click();
+    }
+    await expect(titlesDialog).toBeVisible();
     // It lists the one parallel whose names were made too long, not the other three.
     const sections = titlesDialog.getByRole("heading", { level: 3 });
     await expect(sections).toHaveCount(1);
@@ -432,9 +420,9 @@ test(
     // the plain text where the door was, and the ticker's live line (exactly
     // one of them a status). A positive first: a negative passes on a page
     // that never drew (GUIDE, "negative asserts").
-    const savedLine = `Saved ${left} titles.`;
-    await expect(page.getByRole("status").filter({ hasText: savedLine })).toHaveCount(1);
-    await expect(page.getByText(savedLine)).toHaveCount(2);
+    const titlesSaved = `Saved ${left} titles.`;
+    await expect(page.getByRole("status").filter({ hasText: titlesSaved })).toHaveCount(1);
+    await expect(page.getByText(titlesSaved)).toHaveCount(2);
     await expect(builtLine).toBeVisible();
     await expect(builtLine).not.toContainText(fixClause);
     await expect(page.getByRole("button", { name: /^Fix [0-9]+ card titles?$/ })).toHaveCount(0);
@@ -500,7 +488,7 @@ test(
     const cardTitle = page.getByRole("textbox", { name: "Card title", exact: true });
     const doneEditing = page.getByRole("button", { name: "Done editing card" });
     const search = page.getByRole("searchbox", { name: "Search cards" });
-    const needYou = page.getByRole("button", { name: /^[0-9]+ needs? you$/ });
+    const needYou = needsYouPill(page);
     const fixCardTitles = page.getByRole("button", { name: "Fix card titles", exact: true });
 
     await openParallel(LONG_PARALLEL);

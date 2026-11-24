@@ -44,6 +44,7 @@ type How =
   | "created" // review row, create, born in his sport
   | "linked" // review row, link to an existing player
   | "linkedUnloaded" // linked, but the client has not read his sport yet
+  | "newCareer" // the career check's "New player named X": born in the SET's sport (NEO-591)
   | "resolved" // no row: resolved before the sitting (fetch's teamlessPlayerNames)
   | "undecided" // review row with no decision
   | "skipped"; // review row ruled "not a person"
@@ -67,6 +68,14 @@ type Case = {
 };
 
 const p = (name: string, how: How, teamless = true): Person => ({ name, how, teamless });
+
+/**
+ * The set's sport is one sport: every career-created player on a card is born
+ * in it, so their `teamless` must agree. The first one names it.
+ */
+function setSportTeamless(c: Pick<Case, "people">): boolean {
+  return c.people.find((x) => x.how === "newCareer")?.teamless ?? false;
+}
 
 let seq = 0;
 const norm = normalizeEntityName;
@@ -96,6 +105,9 @@ function clientInputs(c: Case) {
         break;
       case "undecided":
         rows.push({ _id: id, kind: "player", name: person.name, decision: null });
+        break;
+      case "newCareer":
+        // No review row: the career step answered it, on the card.
         break;
       case "skipped":
         rows.push({ _id: id, kind: "player", name: person.name, decision: { action: "skip" } });
@@ -129,6 +141,13 @@ function clientInputs(c: Case) {
     cardNumber: "1",
     cardName: "Card 1",
     players: c.people.map((x) => x.name),
+    ...(c.people.some((x) => x.how === "newCareer")
+      ? {
+          newPlayerByName: c.people
+            .filter((x) => x.how === "newCareer")
+            .map((x) => ({ name: x.name, ref: `np-${x.name}` })),
+        }
+      : {}),
     ...(c.teams ? { teams: c.teams } : {}),
     ...(c.rawTeamName !== undefined ? { rawTeamName: c.rawTeamName } : {}),
     ...(c.bsc ? { platformData: { bsc: { ref: "ref-1" } } } : {}),
@@ -136,6 +155,8 @@ function clientInputs(c: Case) {
   };
   const stored = storedPeople(undefined, undefined, undefined, defaultWire, {
     teamlessSportIds: [NONE],
+    // The host passes the set's sport whenever it has one.
+    setSportId: c.people.some((x) => x.how === "newCareer") && !setSportTeamless(c) ? BALL : NONE,
     playerSportIds,
     teamlessPlayerNames: resolvedNames,
     existingIndexes: c.existing ? [0] : [],
@@ -169,11 +190,14 @@ function serverStamps(c: Case): boolean {
   if (c.existing) return false; // the re-sync branch reads stored bookkeeping
   const named = c.people.length > 0;
   const bornIds = c.people
-    .filter((x) => x.how === "created" || x.how === "linked" || x.how === "linkedUnloaded" || x.how === "resolved")
+    .filter((x) => x.how === "created" || x.how === "linked" || x.how === "linkedUnloaded" || x.how === "resolved" || x.how === "newCareer")
     .map((x) => `id_${x.name}`);
   if (!named && c.defaultPlayer) bornIds.push("id_default");
   const truth = new Map<string, boolean>();
-  for (const x of c.people) truth.set(`id_${x.name}`, x.teamless);
+  // A career-created player's stored row carries the set's sport.
+  for (const x of c.people) {
+    truth.set(`id_${x.name}`, x.how === "newCareer" ? setSportTeamless(c) : x.teamless);
+  }
   if (c.defaultPlayer) truth.set("id_default", c.defaultPlayer.teamless);
   const pendingPlayerNameCount = c.people.filter((x) => x.how === "undecided").length;
   const vouched = sportDefaultNoTeam({
@@ -207,6 +231,11 @@ const TABLE: Array<Case & { client: boolean; server: boolean }> = [
   { name: "a linked teamless player", people: [p("A", "linked")], client: true, server: true },
   { name: "a name resolved before the sitting", people: [p("A", "resolved")], client: true, server: true },
   { name: "two teamless people", people: [p("A", "created"), p("B", "linked")], client: true, server: true },
+  { name: "a career-created player in a teamless set sport (NEO-591)", people: [p("A", "newCareer")], client: true, server: true },
+  { name: "a career-created player in a set sport with teams", people: [p("A", "newCareer", false)], client: false, server: false },
+  { name: "a career-created player beside a teamless linked one", people: [p("A", "newCareer"), p("B", "linked")], client: true, server: true },
+  { name: "a career-created player beside a teams-sport linked one", people: [p("A", "newCareer"), p("B", "linked", false)], client: false, server: false },
+  { name: "a career-created player with a listing team still claimed", people: [p("A", "newCareer")], teams: ["Cubs"], client: false, server: false },
   { name: "created player in a sport with teams", people: [p("A", "created", false)], client: false, server: false },
   { name: "mixed card", people: [p("A", "created"), p("B", "created", false)], client: false, server: false },
   { name: "linked player, sport not loaded: client asks, server stamps", people: [p("A", "linkedUnloaded")], client: false, server: true },
@@ -249,7 +278,7 @@ describe("client rule against server rule: one table", () => {
 });
 
 describe("client never skips a card the server would not stamp: every combination", () => {
-  const HOWS: How[] = ["created", "linked", "linkedUnloaded", "resolved", "undecided", "skipped"];
+  const HOWS: How[] = ["created", "linked", "linkedUnloaded", "resolved", "newCareer", "undecided", "skipped"];
   const persons: Person[] = [];
   for (const how of HOWS) {
     persons.push(p("A", how, true));
@@ -258,7 +287,11 @@ describe("client never skips a card the server would not stamp: every combinatio
   const personSets: Person[][] = [[]];
   for (const a of persons) personSets.push([a]);
   for (const a of persons) {
-    for (const b of persons) personSets.push([a, { ...b, name: "B" }]);
+    for (const b of persons) {
+      // One set, one sport: two career-created players cannot disagree on it.
+      if (a.how === "newCareer" && b.how === "newCareer" && a.teamless !== b.teamless) continue;
+      personSets.push([a, { ...b, name: "B" }]);
+    }
   }
 
   const lookups: Lookup[] = [undefined, "answered", "failed", "checklist"];
@@ -281,14 +314,18 @@ describe("client never skips a card the server would not stamp: every combinatio
     { teamless: true, loaded: false },
   ];
 
-  test("no combination has the client skipping where the server would not stamp", () => {
+  // One test per team-lookup state: the sweep is ~150k real calls into both
+  // rules, and each slice is independent, so a failure also names its lookup.
+  test.each(lookups.map((lookup) => [lookup ?? "none", lookup] as const))(
+    "no combination has the client skipping where the server would not stamp (team lookup: %s)",
+    (_label, lookup) => {
     let total = 0;
     let both = 0;
     let clientOnlyAsks = 0;
     const violations: string[] = [];
     for (const people of personSets) {
       for (const bsc of [false, true]) {
-        for (const teamLookup of lookups) {
+        for (const teamLookup of [lookup]) {
           for (const shape of teamShapes) {
             for (const raw of raws) {
               for (const defaultPlayer of defaults) {
@@ -318,8 +355,9 @@ describe("client never skips a card the server would not stamp: every combinatio
     }
     expect(violations.slice(0, 3)).toEqual([]);
     // The sweep reaches both agreeing stamps and client-asks-more.
-    expect(total).toBeGreaterThan(5000);
+    expect(total).toBeGreaterThan(1000);
     expect(both).toBeGreaterThan(0);
     expect(clientOnlyAsks).toBeGreaterThan(0);
-  });
+    },
+  );
 });

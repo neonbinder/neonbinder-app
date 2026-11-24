@@ -12,7 +12,11 @@ import {
   type TitleAttentionItem,
   type TitleContext,
 } from "../../convex/features/listingInputs";
-import type { ListingCardInputs, ListingTeamSplit } from "../../convex/features/generateListing";
+import {
+  titleDescription,
+  type ListingCardInputs,
+  type ListingTeamSplit,
+} from "../../convex/features/generateListing";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
@@ -67,6 +71,12 @@ export interface PreviewCardForTitles {
    * player's own name, so this does too (`TitleNameSources.playerNameById`).
    */
   playerIdByName?: ReadonlyArray<{ name: string; playerId: string }>;
+  /**
+   * NEO-591 — a printed name the operator gave a NEW player in the career
+   * step. The commit titles the card with that player's name, which is on the
+   * wizard side (`TitleNameSources.newPlayerNameByRef`), not on the card.
+   */
+  newPlayerByName?: ReadonlyArray<{ name: string; ref: string }>;
   attributes?: string[];
   isRookie?: boolean;
   isRelic?: boolean;
@@ -125,6 +135,8 @@ export interface TitleNameSources {
   teamNameById?: ReadonlyMap<string, string>;
   /** NEO-574 — Player id → name, for the players a career-step relink picked. */
   playerNameById?: ReadonlyMap<string, string>;
+  /** NEO-591 — Ref → name, for the players the career step creates (as typed, cleaned). */
+  newPlayerNameByRef?: ReadonlyMap<string, string>;
   /**
    * NEO-606 — the Location / Name of the teams in the two maps above (and any
    * the operator picked), so a title can give a team's location up before the
@@ -138,6 +150,7 @@ const norm = (raw: string): string => normalizeEntityName(raw.trim());
 interface NameIndex {
   player: (printed: string) => string | null;
   playerById: (id: string) => string | null;
+  newPlayerByRef: (ref: string) => string | null;
   team: (printed: string) => string | null;
   teamById: (id: string) => string | null;
   /**
@@ -209,6 +222,9 @@ function nameIndex(context: TitleContext, sources: TitleNameSources | undefined)
     playerById(id) {
       return sources?.playerNameById?.get(id) ?? null;
     },
+    newPlayerByRef(ref) {
+      return sources?.newPlayerNameByRef?.get(ref) ?? null;
+    },
   };
 }
 
@@ -240,7 +256,12 @@ function cardNames(
     // player's, as the commit writes it. A relinked player whose name has not
     // arrived yet falls back to the printed name's own reading.
     const relinked = card.playerIdByName?.find((r) => norm(r.name) === norm(p));
-    const name = (relinked && index.playerById(relinked.playerId)) || index.player(p);
+    // NEO-591 — and a name given to a NEW player is that player's, as typed.
+    const created = card.newPlayerByName?.find((r) => norm(r.name) === norm(p));
+    const name =
+      (created && index.newPlayerByRef(created.ref)) ||
+      (relinked && index.playerById(relinked.playerId)) ||
+      index.player(p);
     if (name) playerNames.push(name);
   }
   // NEO-528 — a new card whose listing names nobody is born with the row's
@@ -343,7 +364,7 @@ export interface TitleReviewOptions {
    * NEO-535 — the "Set name in titles" box draft, ALREADY CHECKED
    * (`validShortName`) and only when the operator edited the box. Passed to
    * the builder as-is, as the leaf's whole description; the builder decides
-   * which cards it rewrites (those over the cap or short a first name), so
+   * which cards it rewrites (those whose title shows "Left out to fit"), so
    * the titles shown and the titles kept are the ones the server will
    * generate with it. It never changes which cards are on the step.
    */
@@ -622,6 +643,96 @@ export function titleGroupKey(
 ): string {
   const baseline = withoutVariation(leftOutOfTitle(inputs, title), overCapVariation);
   return `left:${baseline.filter((e) => !isOwnEntry(e, ownWords)).join("\u0000")}`;
+}
+
+/**
+ * NEO-637 — `text` with the run of `oldName` swapped for `newName`, the rest
+ * of the words kept as typed. Case is ignored when finding the run; the
+ * replacement is `newName` as written. The run is the one at the start of the
+ * title (a set name opens a title); failing that, the only one. Undefined when
+ * `oldName` is not in `text` as whole words, is blank, or is in it more than
+ * once with none at the start: which copy is the set name is a guess, so the
+ * caller tries something else or rebuilds instead.
+ */
+export function swapSetNameInTitle(
+  text: string,
+  oldName: string,
+  newName: string,
+): string | undefined {
+  const old = oldName.trim();
+  if (!old) return undefined;
+  const lower = text.toLowerCase();
+  const want = old.toLowerCase();
+  const isWordChar = (ch: string | undefined) => !!ch && /[\p{L}\p{N}]/u.test(ch);
+  const runs: number[] = [];
+  for (let at = lower.indexOf(want); at >= 0; at = lower.indexOf(want, at + 1)) {
+    const end = at + want.length;
+    // Whole words only: "Score" is not found inside "Scorecard".
+    if (isWordChar(text[at - 1]) && isWordChar(old[0])) continue;
+    if (isWordChar(text[end]) && isWordChar(old[old.length - 1])) continue;
+    runs.push(at);
+  }
+  const opening = text.length - text.trimStart().length;
+  const at = runs.includes(opening) ? opening : runs.length === 1 ? runs[0] : undefined;
+  if (at === undefined) return undefined;
+  return oneLine(`${text.slice(0, at)}${newName.trim()}${text.slice(at + want.length)}`);
+}
+
+/**
+ * NEO-637 — what the "Set name in titles" box does to the operator's own
+ * (hand-edited) titles when the set name in effect changes from `oldName` to
+ * `newName`. `groups` are the lists as the operator saw them BEFORE the
+ * change, so "shows the yellow line" is read off what was on screen: the
+ * group's shared line or the row's own.
+ *
+ *  - a hand edit whose row shows the line gets the new set name: only the old
+ *    set-name text inside it is swapped, the rest of the edit is kept; when
+ *    the old text is not in the edit (or is in it twice, none at the start),
+ *    the builder's own description is tried as the old text, and when that is
+ *    not found either the edit is dropped and the title is the generated one
+ *    (built with the new set name);
+ *  - a hand edit whose row shows no line is left exactly as it is. With
+ *    `lineRows` (the rows that showed a line when the current box edit began)
+ *    that is judged once for the whole edit: halfway through typing, the box
+ *    phrase is no longer whole in a title that carries it, which would show a
+ *    line that was never there;
+ *  - a draft that is blank, or just the generated title, is no hand edit: the
+ *    row follows the generated title and the draft is left alone.
+ *
+ * Rows with no hand edit need nothing here: their generated title is built
+ * with the new set name by the builder's own rule (`assessListingTitle`).
+ * Always returns a fresh array.
+ */
+export function retitleDraftsForSetName(
+  drafts: ReadonlyArray<TitleAnswer | undefined>,
+  groups: readonly TitleGroup[],
+  oldName: string,
+  newName: string,
+  lineRows?: ReadonlySet<number>,
+): Array<TitleAnswer | undefined> {
+  if (oldName.trim() === newName.trim()) return [...drafts];
+  const next = [...drafts];
+  for (const group of groups) {
+    for (const row of group.cards) {
+      const draft = drafts[row.index]?.listingTitle;
+      if (draft === undefined || !draft.trim() || draft.trim() === row.title) continue;
+      const showsLine = lineRows
+        ? lineRows.has(row.index)
+        : group.leftOut.length > 0 || row.leftOut.length > 0;
+      if (!showsLine) continue;
+      // The box text in effect first; failing that, the builder's own
+      // description, which is the set-name text a title carries when no box
+      // applied to it when it was generated.
+      const swapped =
+        swapSetNameInTitle(draft, oldName, newName) ??
+        swapSetNameInTitle(draft, titleDescription(row.inputs), newName);
+      const answer: TitleAnswer = { ...next[row.index] };
+      if (swapped === undefined) delete answer.listingTitle;
+      else answer.listingTitle = swapped;
+      next[row.index] = Object.keys(answer).length > 0 ? answer : undefined;
+    }
+  }
+  return next;
 }
 
 /** Where an operator's title draft stands against the generated title. */

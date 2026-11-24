@@ -1,7 +1,6 @@
 /**
  * NEO-335 Phase 2 — the shared "Tidy up …" header. NEO-497 — its title names
- * the set ("Tidy up 2024 Topps Chrome"); a Base variant type leaves its row out
- * (NEO-616: only that row; no name is ever trimmed).
+ * the set ("Tidy up 2024 Topps Chrome"), never with a trailing "Base".
  * NEO-467 — its only progress indicator is the bar.
  */
 import { render, screen } from "@testing-library/react";
@@ -14,8 +13,16 @@ import WizardChrome, {
   WIZARD_PROGRESS_LABEL,
   WIZARD_TITLE,
 } from "./WizardChrome";
-import { STEP_SUBTITLE, type WizardStepKind } from "./entity-review-steps";
 import { contrastRatio, tokenHex } from "../../src/theme/tokens";
+
+/** The screen types the Tidy Up walk and other hosts put on the subtitle line. */
+const STEP_SUBTITLE: Readonly<Record<string, string>> = {
+  team: "New team",
+  player: "New player",
+  teams: "Cards with no team",
+  titles: "Card titles",
+  save: "Ready to save",
+};
 
 const fill = () => document.querySelector<HTMLElement>("[data-rail-fill]")!;
 const bar = () => screen.getByRole("progressbar", { name: WIZARD_PROGRESS_LABEL });
@@ -132,7 +139,7 @@ describe("WizardChrome", () => {
     expect(bar().getAttribute("aria-valuetext")).toBe("Ready to save");
   });
 
-  it.each(Object.entries(STEP_SUBTITLE) as Array<[WizardStepKind, string]>)(
+  it.each(Object.entries(STEP_SUBTITLE))(
     "shows the %s subtitle on the line below",
     (_kind, subtitle) => {
       render(<WizardChrome done={1} planned={2} subtitle={subtitle} />);
@@ -176,6 +183,13 @@ describe("WizardChrome", () => {
     expect(fill().className).toContain("motion-reduce:transition-none");
   });
 
+  it("shares the body's side padding, so the title and the cards have one left edge", () => {
+    render(<WizardChrome titleId="t-id" done={1} planned={2} subtitle="2 cards left" />);
+    const padded = screen.getByRole("heading", { level: 2 }).parentElement!;
+    expect(padded.className).toContain("px-5");
+    expect(padded.className).not.toContain("px-6");
+  });
+
   it("renders children under the subtitle row", () => {
     render(
       <WizardChrome done={1} planned={2} subtitle="Cards with no team">
@@ -195,25 +209,35 @@ describe("tidyUpTitle (NEO-497)", () => {
     );
   });
 
-  it("never trims a word from a name, 'Base' included (NEO-616)", () => {
-    // The Base checklist leaves its variant out; the function trims nothing.
-    expect(tidyUpTitle({ year: "2026", setName: "Donruss Unleashed" })).toBe(
+  it("drops a trailing whole word 'Base', case-folded", () => {
+    expect(tidyUpTitle({ year: "2026", setName: "Donruss Unleashed", variant: "Base" })).toBe(
       "Tidy up 2026 Donruss Unleashed",
     );
-    expect(tidyUpTitle({ year: "2026", setName: "Donruss Unleashed", variant: "Base" })).toBe(
-      "Tidy up 2026 Donruss Unleashed Base",
-    );
     expect(tidyUpTitle({ year: "2026", setName: "Donruss Unleashed", variant: "base" })).toBe(
-      "Tidy up 2026 Donruss Unleashed base",
+      "Tidy up 2026 Donruss Unleashed",
     );
-    expect(tidyUpTitle({ year: "2024", setName: "Topps Base" })).toBe("Tidy up 2024 Topps Base");
-    expect(tidyUpTitle({ year: "2026", setName: "Pro Set Metal", variant: "1989 Pro Set Base" })).toBe(
-      "Tidy up 2026 Pro Set Metal 1989 Pro Set Base",
+    expect(tidyUpTitle({ year: "2026", setName: "Donruss Unleashed", variant: "BASE " })).toBe(
+      "Tidy up 2026 Donruss Unleashed",
+    );
+    // A set's own name ending in Base loses it too: the rule reads the joined name.
+    expect(tidyUpTitle({ year: "2024", setName: "Topps Base" })).toBe("Tidy up 2024 Topps");
+  });
+
+  it("leaves 'Base' alone when it is not the last whole word", () => {
+    expect(tidyUpTitle({ year: "2024", setName: "Topps Chrome", variant: "Baseball" })).toBe(
+      "Tidy up 2024 Topps Chrome Baseball",
+    );
+    expect(tidyUpTitle({ year: "2024", setName: "Topps Chrome", variant: "Base Set Gold" })).toBe(
+      "Tidy up 2024 Topps Chrome Base Set Gold",
+    );
+    expect(tidyUpTitle({ year: "2024", setName: "Topps Chrome", variant: "Rebase" })).toBe(
+      "Tidy up 2024 Topps Chrome Rebase",
     );
   });
 
-  it("falls back to 'Tidy up this set' when every part is blank", () => {
-    expect(tidyUpTitle({ year: " ", setName: "", variant: " " })).toBe(WIZARD_TITLE);
+  it("falls back to 'Tidy up this set' when 'Base' is all there is", () => {
+    expect(tidyUpTitle({ variant: "Base" })).toBe(WIZARD_TITLE);
+    expect(tidyUpTitle({ year: " ", setName: "", variant: " base " })).toBe(WIZARD_TITLE);
   });
 
   it("skips the year when the set name already opens with it as its own word", () => {
@@ -254,61 +278,9 @@ describe("tidyUpTitleFromChain (NEO-497)", () => {
     { level: "setName", value: "Topps Chrome" },
   ];
 
-  it("reads the year and set by level, never the manufacturer, and drops a Base variant type leaf", () => {
+  it("reads the year and set by level, never the manufacturer, and drops a Base leaf", () => {
     expect(tidyUpTitleFromChain([...chain, { level: "variantType", value: "Base" }])).toBe(
       "Tidy up 2024 Topps Chrome",
-    );
-  });
-
-  it("reads a Base variant type by its kind: plural, any case, spaced", () => {
-    for (const value of ["Bases", "base", " BASE "]) {
-      expect(tidyUpTitleFromChain([...chain, { level: "variantType", value }])).toBe(
-        "Tidy up 2024 Topps Chrome",
-      );
-    }
-  });
-
-  it("keeps a variant type that only contains the word Base (it has no kind)", () => {
-    expect(tidyUpTitleFromChain([...chain, { level: "variantType", value: "Base Parallels" }])).toBe(
-      "Tidy up 2024 Topps Chrome Base Parallels",
-    );
-  });
-
-  it("keeps a set whose own name ends in Base, with or without a Base leaf (NEO-616)", () => {
-    const topps = chain.map((row) => (row.level === "setName" ? { ...row, value: "Topps Base" } : row));
-    expect(tidyUpTitleFromChain(topps)).toBe("Tidy up 2024 Topps Base");
-    expect(tidyUpTitleFromChain([...topps, { level: "variantType", value: "Base" }])).toBe(
-      "Tidy up 2024 Topps Base",
-    );
-  });
-
-  it("keeps an insert whose name ends in Base whole (NEO-616: 1989 Pro Set Base)", () => {
-    const proSet = [
-      { level: "sport", value: "Football" },
-      { level: "year", value: "2026" },
-      { level: "manufacturer", value: "Pro Set" },
-      { level: "setName", value: "Pro Set Metal" },
-      { level: "variantType", value: "Inserts" },
-    ];
-    expect(tidyUpTitleFromChain([...proSet, { level: "insert", value: "1989 Pro Set Base" }])).toBe(
-      "Tidy up 2026 Pro Set Metal 1989 Pro Set Base",
-    );
-  });
-
-  it("keeps a parallel's whole name, even one that ends in Base (NEO-616)", () => {
-    const insert = [
-      ...chain,
-      { level: "variantType", value: "Insert" },
-      { level: "insert", value: "Future Stars" },
-    ];
-    expect(tidyUpTitleFromChain([...insert, { level: "parallel", value: "Gold" }])).toBe(
-      "Tidy up 2024 Topps Chrome Future Stars Gold",
-    );
-    expect(tidyUpTitleFromChain([...insert, { level: "parallel", value: "Gold Base" }])).toBe(
-      "Tidy up 2024 Topps Chrome Future Stars Gold Base",
-    );
-    expect(tidyUpTitleFromChain([...insert, { level: "parallel", value: "Base" }])).toBe(
-      "Tidy up 2024 Topps Chrome Future Stars Base",
     );
   });
 
@@ -322,14 +294,14 @@ describe("tidyUpTitleFromChain (NEO-497)", () => {
     ).toBe("Tidy up 2024 Topps Chrome Future Stars");
   });
 
-  it("keeps an insert-level row called Base: only the variant type is the Base (NEO-616)", () => {
+  it("drops an insert-level Base leaf the same way (a Base row under Insert)", () => {
     expect(
       tidyUpTitleFromChain([
         ...chain,
         { level: "variantType", value: "Insert" },
         { level: "insert", value: "Base" },
       ]),
-    ).toBe("Tidy up 2024 Topps Chrome Base");
+    ).toBe("Tidy up 2024 Topps Chrome");
   });
 
   it("names an insert leaf by its own value, never the variant type", () => {

@@ -30,7 +30,7 @@ Review rules from NEO-546 (GitHub merge queue behind a repo variable; the PR run
 - "Unknown → skip teardown" is acceptable when a later event (close) always tears down regardless. It needs a visible warning, because a systematic read failure (token scope) turns it into a silent leak on every dequeue.
 
 **9. Changing the red-handling rule (NEO-545 delta).**
-- The verdict-action text lives in four places: CLAUDE.md, pr-queue, and the EJECTED bullets in pr-watch and pr-close. A rule change that edits only the first two leaves pr-watch saying "fix, push, re-enqueue" to the session that actually acts on the verdict. Grep all four.
+- The verdict-action text lives in three places: CLAUDE.md, pr-queue, and the EJECTED bullet in pr-close (pr-watch was retired in NEO-648). A rule change that edits only the first two leaves pr-close saying something else to the session that acts on the verdict. Grep all three.
 - In a bullet list read top to bottom, a gate bullet (wait for Preview Cleanup) placed AFTER the action bullet (re-enqueue unchanged) is skipped. Put every gate in the one checklist bullet that precedes all actions.
 - "Any commit after the audit round gets a delta audit" collides with the turn's own main merge. Say which merges count: a clean main merge does not; a hand-resolved conflict does, and its resolution is exactly where workflow/.claude/ drift hides.
 

@@ -32,6 +32,9 @@ import { sortTeamYears } from "../../lib/players/team-tenure";
 // below is where an EXTERNAL string first becomes something we call an id, so
 // it is the right place to decide whether it is one.
 import { isWikidataQid } from "../../lib/players/wikidata-id";
+// NEO-643 — a label Wikidata hands back is cleansed before it is written into
+// enrichment. QIDs, IRIs and page titles are keys and never pass through it.
+import { cleanseExternalName } from "../../lib/entities/cleanse-name";
 // NEO-236: every outward-facing lookup (ESPN's displayName, Wikidata's label)
 // is keyed on the COMPOSED full name, never on the stored nickname.
 import { teamFullName } from "../../lib/teams/team-name";
@@ -348,7 +351,11 @@ async function sparqlAttempt(url: string): Promise<SparqlAttemptOutcome> {
  */
 let emptySearchReaskBackoffMs = WIKIDATA_RETRY_BACKOFF_MS;
 
-/** Test seam only. Pass `undefined` to restore the production pause. */
+/**
+ * Test seam only. Pass `undefined` to restore the production pause. It also
+ * governs the transport-failure retry pause in `runSparql`, which uses the same
+ * `WIKIDATA_RETRY_BACKOFF_MS` in production.
+ */
 export function __setEmptySearchReaskBackoffForTests(ms: number | undefined): void {
   emptySearchReaskBackoffMs = ms ?? WIKIDATA_RETRY_BACKOFF_MS;
 }
@@ -412,7 +419,7 @@ async function runSparqlWithMeta(
       // Structured, and deliberately WITHOUT the query: the existing lines
       // never carry it, and a query embeds operator-typed names.
       console.warn(JSON.stringify({ msg: "wikidata_sparql_retry", reason: outcome.reason }));
-      await sleep(WIKIDATA_RETRY_BACKOFF_MS);
+      await sleep(emptySearchReaskBackoffMs);
       continue;
     }
     if (trace) {
@@ -569,9 +576,9 @@ const LABEL_SERVICE = `SERVICE wikibase:label { bd:serviceParam wikibase:languag
  * instead of a `Create Q1215892` pill.
  */
 function labelValue(binding?: SparqlBinding): string | undefined {
-  const value = binding?.value;
-  if (value === undefined) return undefined;
-  return isWikidataQid(value) ? undefined : value;
+  if (binding?.value === undefined) return undefined;
+  const value = cleanseExternalName(binding.value);
+  return !value || isWikidataQid(value) ? undefined : value;
 }
 
 /**
@@ -1409,6 +1416,8 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
     // guard against a malformed response, not an expected branch.
     const teamWdId = row.team ? qidFromIri(row.team.value) : undefined;
     if (row.team && row.teamLabel && teamWdId) {
+      // NEO-643: the label is a name NB will store and show; cleansed once.
+      const teamLabel = cleanseExternalName(row.teamLabel.value);
       const stintKey = `${teamWdId}|${row.start?.value ?? ""}|${row.end?.value ?? ""}`;
       const teamSportQid = row.teamSport ? qidFromIri(row.teamSport.value) : undefined;
       if (
@@ -1419,7 +1428,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
         if (!parkedOutsideSport.has(stintKey)) {
           parkedOutsideSport.set(stintKey, {
             teamWdId,
-            teamLabel: row.teamLabel.value,
+            teamLabel,
             // `membershipIsOutsidePlayerSport` answered true, so it is a QID.
             teamSportQid: teamSportQid as string,
           });
@@ -1438,7 +1447,8 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
         // NEO-235: hoisted ABOVE the dated/undated split — an unlabelled team
         // is unusable in `undatedCareerTeams` for exactly the same reason it is
         // unusable as a stint (the operator would be shown "Q127635").
-        const labelLooksLikeQid = isWikidataQid(row.teamLabel.value);
+        // A label with nothing left after the cleanse is no label at all.
+        const labelLooksLikeQid = !teamLabel || isWikidataQid(teamLabel);
         if (labelLooksLikeQid) {
           // NEO-208: structured for the same reason as the no-match log
           // above — `name` is operator input.
@@ -1457,7 +1467,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
           const match = classifyMembership({ start: row.start, end: row.end });
           if (match?.kind === "stint") {
             careerTeams.push({
-              name: row.teamLabel.value,
+              name: teamLabel,
               fromYear: match.fromYear,
               toYear: match.toYear,
               // NEO-236: `teamWdId` is already proven non-null by the guard
@@ -1465,7 +1475,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
               wikidataId: teamWdId,
             });
           } else if (match?.kind === "undated") {
-            undatedByTeamQid.set(teamWdId, row.teamLabel.value);
+            undatedByTeamQid.set(teamWdId, teamLabel);
           }
         }
       }
@@ -1483,7 +1493,11 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
     // keep the first non-empty answer. Guarded on "still undefined" rather
     // than assigned unconditionally so a later row (where an OPTIONAL happened
     // to bind nothing) cannot blank a value an earlier row supplied.
-    if (description === undefined && row.descr?.value) description = row.descr.value;
+    if (description === undefined && row.descr?.value) {
+      // NEO-643: display text. An all-junk description stays undefined so a
+      // later row can still supply one.
+      description = cleanseExternalName(row.descr.value) || undefined;
+    }
     if (birthYear === undefined) birthYear = yearFromBinding(row.dob);
     if (enwikiTitle === undefined && row.title?.value) enwikiTitle = row.title.value;
   }
@@ -2403,6 +2417,120 @@ export async function runEntityReviewLookupImpl(
 }
 
 /**
+ * NEO-645 — one `tidyNames` row's Wikidata lookup, the work item that replaced
+ * `runEntityReviewLookup` for the per-card Tidy Up walk.
+ *
+ * Same contract as `runEntityReviewLookupImpl` (NEO-99/294/301): the LOOKUP is
+ * caught and decided as a payload, the WRITE is outside the catch under
+ * `runWithOccRetry`, an unreachable Wikidata writes nothing and throws so the
+ * pool retries, and a team's partial ESPN answer is written `ready` before the
+ * retry throw. What differs:
+ *
+ *  - the row is read through `tidyNames.getForLookup`, which also returns the
+ *    `lookupGen` the enqueue carried; `tidyNames.applyLookupResult` drops the
+ *    write when the row's generation or sport moved on (a sport switch or a
+ *    second request asked a different question) or when it was answered;
+ *  - only the keys `tidyNameEnrichmentValidator` stores survive
+ *    (`pickEnrichment`); a lookup field with no column is dropped, never a
+ *    runtime refusal on every function that returns the row;
+ *  - a league has no row here: Tidy Up never stages one.
+ *
+ * Ids, kinds and counts only in logs, never the name.
+ */
+export async function runTidyNameLookupImpl(
+  ctx: EntityReviewLookupCtx,
+  args: { tidyNameId: Id<"tidyNames">; gen: number },
+  occRetry: OccRetryOptions = {},
+): Promise<null> {
+  const row = await ctx.runQuery(internal.tidyNames.getForLookup, { id: args.tidyNameId });
+  if (!row) return null;
+  // A newer request owns this row now.
+  if (row.lookupGen !== args.gen) return null;
+
+  let payload: { status: "ready" | "error"; enrichment?: Record<string, unknown> };
+  const trace = newLookupTrace();
+  try {
+    const sportCtx = await ctx.runQuery(internal.selectorOptions.getSportEnrichmentContext, {
+      sportId: row.sportId,
+    });
+    const result = !sportCtx
+      ? null
+      : row.kind === "player"
+        ? await lookupPlayerEnrichment(row.name, sportCtx, trace)
+        : await lookupTeamEnrichment(row.name, sportCtx, undefined, trace);
+    // A lookup that FINISHED and found nothing (Wikidata answered with no
+    // match, or the sport has no Wikidata mapping so nothing was asked) is
+    // `ready` with no enrichment: the answer is "nothing to enrich", which is
+    // not a failure, and the Player tile's "Add as new player" works from exactly that row. A
+    // lookup that could not complete (a transport failure, an unreadable
+    // answer, a thrown error) stays `error`.
+    const failed = trace.transportFailed || trace.unavailable;
+    payload = result
+      ? { status: "ready", enrichment: reviewEnrichmentFor(row.kind, result) }
+      : failed
+        ? { status: "error" }
+        : { status: "ready" };
+    if (!result && !failed) {
+      console.log(
+        JSON.stringify({
+          msg: "tidy_name_lookup_no_match",
+          tidyNameId: args.tidyNameId,
+          kind: row.kind,
+          sportContext: Boolean(sportCtx),
+        }),
+      );
+    }
+  } catch (error) {
+    console.error(`[tidy-name-lookup] lookup for ${args.tidyNameId} failed:`, error);
+    payload = { status: "error" };
+  }
+
+  const writePartialThenRetry =
+    trace.unavailable && row.kind === "team" && payload.status === "ready";
+  if (trace.unavailable && !writePartialThenRetry) {
+    throwIfUnavailable(row.kind, args.tidyNameId, trace);
+  }
+
+  try {
+    await runWithOccRetry(
+      () =>
+        ctx.runMutation(internal.tidyNames.applyLookupResult, {
+          id: args.tidyNameId,
+          gen: args.gen,
+          status: payload.status,
+          ...(payload.enrichment ? { enrichment: payload.enrichment } : {}),
+          sportId: row.sportId,
+        }),
+      occRetry,
+    );
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        msg: "tidy_name_lookup_write_failed",
+        tidyNameId: args.tidyNameId,
+        kind: row.kind,
+        attempted: payload.status,
+        occConflict: isOccConflict(error),
+        attempts: occRetry.attempts ?? OCC_RETRY_ATTEMPTS,
+      }),
+    );
+    if (writePartialThenRetry) throwIfUnavailable(row.kind, args.tidyNameId, trace);
+    throw new NonRetryableError(
+      error instanceof Error ? error.message : String(error),
+      { cause: error },
+    );
+  }
+  if (writePartialThenRetry) throwIfUnavailable(row.kind, args.tidyNameId, trace);
+  return null;
+}
+
+export const runTidyNameLookup = internalAction({
+  args: { tidyNameId: v.id("tidyNames"), gen: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => runTidyNameLookupImpl(ctx, args),
+});
+
+/**
  * NEO-240 — what a league lookup can answer.
  *
  * `wikidataId` is non-optional: this whole object only exists once a QID
@@ -2543,7 +2671,9 @@ export async function lookupLeagueEnrichmentLive(
 
   return {
     wikidataId: qid,
-    abbreviation: row?.shortName?.value,
+    abbreviation: row?.shortName?.value
+      ? cleanseExternalName(row.shortName.value) || undefined
+      : undefined,
     yearsActive: fromYear !== undefined ? { from: fromYear, to: toYear } : undefined,
     country: labelValue(row?.countryLabel),
   };

@@ -13,6 +13,8 @@
  * answers null with two candidates.
  */
 
+import type { Doc } from "./_generated/dataModel";
+import { tidyRowAsReviewRow } from "./lib/tidyAnswerDecisions";
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -42,6 +44,14 @@ type T = ReturnType<typeof convexTest>;
 type Sel = Id<"selectorOptions">;
 
 const live: T[] = [];
+/**
+ * NEO-645 — the gate's name rows are `tidyNames` rows; read each the way the
+ * commit prelude reads it (the old queue shape: `decision`, `enrichment`, ...).
+ */
+async function tidyReviewRows(ctx: { db: { query: (t: "tidyNames") => { collect: () => Promise<Doc<"tidyNames">[]> } } }) {
+  return (await ctx.db.query("tidyNames").collect()).map((row) => tidyRowAsReviewRow(row));
+}
+
 function newT(): T {
   const t = convexTest(schema, modules);
   live.push(t);
@@ -139,10 +149,9 @@ async function gate(
   });
 }
 
-async function teamRows(t: T, batchId: string | undefined) {
-  if (!batchId) return [];
-  return (await t.run((ctx) => ctx.db.query("entityReviewQueue").collect())).filter(
-    (r) => r.batchId === batchId && r.kind === "team",
+async function teamRows(t: T, _fromGate?: unknown) {
+  return (await t.run((ctx) => tidyReviewRows(ctx))).filter(
+    (r) => r.kind === "team",
   );
 }
 

@@ -10,6 +10,7 @@ import {
   contrastRatio,
   cssColorToHex,
   SURFACE_ROLES,
+  surfaceHex,
   TEXT_NEVER_ON,
   tokenHex,
   TOKENS,
@@ -293,6 +294,47 @@ describe("the danger notice is neon pink, never red or salmon (NEO-606)", () => 
   }
 });
 
+describe("a checked team chip's quiet text (NEO-639)", () => {
+  // The Teams step's checked team chip paints `bg-neon-green/10` over the
+  // `raised` sheet. A chip outside the pre-fill carries its players' years in
+  // `text-ink-3`, and it keeps them when the operator ticks it (the label is
+  // decided by the default, not the tick), so ink-3 has to read on the CHECKED
+  // ground too. Measured at the time: 4.65:1 dark, 6.90:1 light.
+  const px = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const over = (fg: string, alpha: number, bg: string) =>
+    `#${px(fg)
+      .map((c, i) => Math.round(alpha * c + (1 - alpha) * px(bg)[i]).toString(16).padStart(2, "0"))
+      .join("")}`;
+
+  for (const mode of ["dark", "light"] as const) {
+    it(`${mode}: ink-3 reads 4.5:1 on neon-green/10 over raised`, () => {
+      const ground = over(tokenHex("neon-green", mode), 0.1, tokenHex("raised", mode));
+      const ratio = contrastRatio(tokenHex("ink-3", mode), ground);
+      expect({ mode, ground, ok: ratio >= 4.5, ratio }).toEqual({ mode, ground, ok: true, ratio });
+    });
+  }
+});
+
+describe("a pressed team chip's quiet text on the Tidy Up Team tile (NEO-639, NEO-645)", () => {
+  // The walk's chip paints `bg-neon-green/20` over the `raised` sheet when it is
+  // pressed. The years a chip carries (`ink-2`) keep their text when the operator
+  // ticks the chip (the label follows the pre-fill, not the tick), so ink-2 has to
+  // read on the PRESSED ground too, and not only on the unpressed `raised` one.
+  const px = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const over = (fg: string, alpha: number, bg: string) =>
+    `#${px(fg)
+      .map((c, i) => Math.round(alpha * c + (1 - alpha) * px(bg)[i]).toString(16).padStart(2, "0"))
+      .join("")}`;
+
+  for (const mode of ["dark", "light"] as const) {
+    it(`${mode}: ink-2 reads 4.5:1 on neon-green/20 over raised`, () => {
+      const ground = over(tokenHex("neon-green", mode), 0.2, tokenHex("raised", mode));
+      const ratio = contrastRatio(tokenHex("ink-2", mode), ground);
+      expect({ mode, ground, ok: ratio >= 4.5, ratio }).toEqual({ mode, ground, ok: true, ratio });
+    });
+  }
+});
+
 describe("adversarial: every text and ink role, both modes", () => {
   const roles = (re: RegExp) => (Object.keys(TOKENS.dark) as TokenRole[]).filter((r) => re.test(r));
   const TEXT = roles(/(-text|^ink(-[23])?|^notice-.*-ink)$/) as TextRole[];
@@ -423,4 +465,116 @@ describe("shadow-offset's hairline (Jason, 2026-10-22)", () => {
     expect(selectors.length).toBeGreaterThan(0);
     expect(selectors.filter((l) => !l.includes('[data-theme="light"]'))).toEqual([]);
   });
+});
+
+/**
+ * NEO-645: `TidyNote` paints `text-neon-purple-text` on `bg-neon-purple/10`, and
+ * it sits inside the walk's tiles (the panel, a tile's own blue or pink wash, or
+ * the plain raised card). axe flagged it in dark at 4.2:1; the role is held to
+ * 4.5:1 on every one of those grounds, in both modes.
+ */
+describe("the purple note reads on every tile ground", () => {
+  const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const over = (top: string, alpha: number, ground: string) => {
+    const t = rgb(top);
+    const g = rgb(ground);
+    return `#${t.map((c, i) => Math.round(alpha * c + (1 - alpha) * g[i]).toString(16).padStart(2, "0")).join("")}`;
+  };
+  const fills = { blue: "#00c2ff", pink: "#ff2e9a" } as const;
+
+  for (const mode of ["dark", "light"] as const) {
+    const panel = surfaceHex("raised-deep", mode);
+    const grounds: Record<string, string> = {
+      "plain tile": surfaceHex("raised", mode),
+      "blue tile": mode === "dark" ? over(fills.blue, 0.1, panel) : "#ffffff",
+      "pink tile": mode === "dark" ? over(fills.pink, 0.1, panel) : "#ffffff",
+    };
+    for (const [name, ground] of Object.entries(grounds)) {
+      it(`${mode}: on the ${name}`, () => {
+        const note = over(tokenHex("neon-purple", mode), 0.1, ground);
+        expect(contrastRatio(tokenHex("neon-purple-text", mode), note)).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+  }
+});
+
+/**
+ * NEO-645: the highlighted row of `EntityLinkSearch`'s results is `bg-neon-green/20`
+ * over whatever the search sits on: the panel, or a tile's plain, blue or pink
+ * ground (the Player and Team tiles open it inline). The name is
+ * `neon-green-text`; the sport badge and the career line beside it are quiet
+ * text on that same wash. axe flagged them in dark, where `ink-3` (a hint
+ * colour for the plain panel) slips under 4.5:1 on a tinted tile, so the
+ * highlighted row paints `ink-2`. Both roles are held to 4.5:1 on every ground
+ * the row can have, in both modes.
+ */
+describe("the player search's highlighted row reads on its green wash", () => {
+  const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const over = (top: string, alpha: number, ground: string) => {
+    const t = rgb(top);
+    const g = rgb(ground);
+    return `#${t.map((c, i) => Math.round(alpha * c + (1 - alpha) * g[i]).toString(16).padStart(2, "0")).join("")}`;
+  };
+  const fills = { blue: "#00c2ff", pink: "#ff2e9a" } as const;
+
+  for (const mode of ["dark", "light"] as const) {
+    const panel = surfaceHex("raised-deep", mode);
+    const tiles: Record<string, string> = {
+      panel,
+      "plain tile": surfaceHex("raised", mode),
+      "blue tile": mode === "dark" ? over(fills.blue, 0.1, panel) : "#ffffff",
+      "pink tile": mode === "dark" ? over(fills.pink, 0.1, panel) : "#ffffff",
+    };
+    for (const [name, tile] of Object.entries(tiles)) {
+      const highlighted = over(tokenHex("neon-green", mode), 0.2, tile);
+      it(`${mode}: ink-2 on the highlighted row over the ${name}`, () => {
+        expect(contrastRatio(tokenHex("ink-2", mode), highlighted)).toBeGreaterThanOrEqual(4.5);
+      });
+      it(`${mode}: neon-green-text on the highlighted row over the ${name}`, () => {
+        expect(contrastRatio(tokenHex("neon-green-text", mode), highlighted)).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+  }
+});
+
+/**
+ * NEO-645: the checklist's "N need you" pill is pink or blue by the worst level
+ * present (`SetRowActionButton` tones `fix` and `check`). It sits on the
+ * checklist card (`bg-raised`): the pill's ground is the level's wash (10% of
+ * the fill over the card in dark, white in light) and its hover is the fill at
+ * 20% over the card. The words are `ink`, held to 4.5:1 on both. Dark pink
+ * text on that wash is only 4.17:1 (the wash lifts the card), so the level
+ * lives in the edge and the icon instead, held to 3:1 (SC 1.4.11) on the card
+ * and on both grounds.
+ */
+describe("the pink and blue 'N need you' pills read on the checklist card", () => {
+  const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const over = (top: string, alpha: number, ground: string) => {
+    const t = rgb(top);
+    const g = rgb(ground);
+    return `#${t.map((c, i) => Math.round(alpha * c + (1 - alpha) * g[i]).toString(16).padStart(2, "0")).join("")}`;
+  };
+
+  for (const mode of ["dark", "light"] as const) {
+    const card = surfaceHex("raised", mode);
+    for (const level of ["pink", "blue"] as const) {
+      const fill = tokenHex(`neon-${level}`, mode);
+      const edge = tokenHex(`neon-${level}-text`, mode);
+      const grounds = {
+        resting: mode === "dark" ? over(fill, 0.1, card) : "#ffffff",
+        hover: over(fill, 0.2, card),
+      };
+      for (const [state, ground] of Object.entries(grounds)) {
+        it(`${mode} ${level}: the words read on the ${state} wash`, () => {
+          expect(contrastRatio(tokenHex("ink", mode), ground)).toBeGreaterThanOrEqual(4.5);
+        });
+        it(`${mode} ${level}: the icon reads on the ${state} wash`, () => {
+          expect(contrastRatio(edge, ground)).toBeGreaterThanOrEqual(3);
+        });
+      }
+      it(`${mode} ${level}: the edge reads against the card`, () => {
+        expect(contrastRatio(edge, card)).toBeGreaterThanOrEqual(3);
+      });
+    }
+  }
 });

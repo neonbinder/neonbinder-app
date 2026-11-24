@@ -90,7 +90,11 @@
     "test": "parsePublishedChecklist — the published line format > reads a Team Card as a team row with no player",
     "fn": "parsePublishedChecklist",
     "args": ["34 Team Card - Kansas City Royals"],
-    "result": {"rows":[{"number":"34","players":[],"teams":["Kansas City Royals"]}],"skipped":[],"format":"lines"}
+    "result": {
+      "rows": [{"number":"34","players":[],"teams":["Kansas City Royals"],"cardName":"Team Card"}],
+      "skipped": [],
+      "format": "lines"
+    }
   },
   {
     "test": "parsePublishedChecklist — the published line format > drops RC markers whether bare or bracketed, but keeps a name that merely contains rc",
@@ -299,6 +303,16 @@
     "fn": "parsePublishedChecklist",
     "args": ["Team,Card Number,Player\nCincinnati Reds,60,Rhett Lowder"],
     "result": {"rows":[{"number":"60","players":["Rhett Lowder"],"teams":["Cincinnati Reds"]}],"skipped":[],"format":"csv"}
+  },
+  {
+    "test": "parsePublishedChecklist — CSV and TSV with a header > NEO-643: BSC's backslash for an accent is cleansed out of the player, team and variation note",
+    "fn": "parsePublishedChecklist",
+    "args": ["Card Number,Player,Team\n12,Wilmer R\\ios (Photo Var\\iation),Le\\on Mex­ico"],
+    "result": {
+      "rows": [{"number":"12","players":["Wilmer Rios"],"teams":["Leon Mexico"],"variationName":"Photo Variation"}],
+      "skipped": [],
+      "format": "csv"
+    }
   },
   {
     "test": "parsePublishedChecklist — CSV and TSV with a header > detects tsv and accepts alternate spellings (Card No., Names, Club)",
@@ -1920,7 +1934,7 @@
       "rows": [
         {"number":"1","players":["Mike Trout"],"teams":["Los Angeles Angels"]},
         {"number":"2","players":["Shohei Ohtani"],"teams":["Los Angeles Dodgers"]},
-        {"number":"3","players":["Aaron Judge"],"teams":["New York Yankees"]},
+        {"number":"3","players":["Aaron Judge"],"teams":["New York Yankees"],"variationName":"Variation"},
         {"number":"4","players":["Ken Griffey Jr."],"teams":["Seattle Mariners"]},
         {"number":"5","players":["Paul Skenes"],"teams":["Pittsburgh Pirates"]},
         {"number":"6","players":["Jackson Holliday"],"teams":["Baltimore Orioles"]},
@@ -2042,7 +2056,7 @@
     "result": {
       "rows": [
         {"number":"NNO","players":["Mike Trout"],"teams":["Los Angeles Angels"],"noNumber":true},
-        {"number":"NNO","players":[],"teams":[],"noNumber":true},
+        {"number":"NNO","players":[],"teams":[],"cardName":"Header Card","noNumber":true},
         {"number":"NNO","players":["Shohei Ohtani"],"teams":["Los Angeles Dodgers"],"noNumber":true}
       ],
       "skipped": [],
@@ -2083,39 +2097,83 @@
     }
   },
   {
-    "test": "parsePublishedChecklist — collector review S3: counts and subjects that are not people > keeps the number of a checklist, team card, TC or team leaders row but names no player",
+    "test": "parsePublishedChecklist — collector review S3: counts and subjects that are not people > keeps the number of a checklist, team card, TC or team leaders row, names no player, and keeps the subject as the card's name",
     "fn": "parsePublishedChecklist",
     "args": [
       "1 Checklist 1-100\n2 Kansas City Royals Team\n3 Royals Team Card\n4 Mets TC\n5 Team Leaders\n6 AL Team Leaders\n7 Checklist"
     ],
     "result": {
       "rows": [
-        {"number":"1","players":[],"teams":[]},
-        {"number":"2","players":[],"teams":[]},
-        {"number":"3","players":[],"teams":[]},
-        {"number":"4","players":[],"teams":[]},
-        {"number":"5","players":[],"teams":[]},
-        {"number":"6","players":[],"teams":[]},
-        {"number":"7","players":[],"teams":[]}
+        {"number":"1","players":[],"teams":[],"cardName":"Checklist 1-100"},
+        {"number":"2","players":[],"teams":[],"cardName":"Kansas City Royals Team"},
+        {"number":"3","players":[],"teams":[],"cardName":"Royals Team Card"},
+        {"number":"4","players":[],"teams":[],"cardName":"Mets TC"},
+        {"number":"5","players":[],"teams":[],"cardName":"Team Leaders"},
+        {"number":"6","players":[],"teams":[],"cardName":"AL Team Leaders"},
+        {"number":"7","players":[],"teams":[],"cardName":"Checklist"}
       ],
       "skipped": [],
       "format": "lines"
     }
   },
   {
-    "test": "parsePublishedChecklist — collector review S3: counts and subjects that are not people > a not-a-person subject keeps the team after the dash, still with no player",
+    "test": "parsePublishedChecklist — collector review S3: counts and subjects that are not people > a not-a-person subject keeps the team after the dash, still with no player, and names the card",
     "fn": "parsePublishedChecklist",
     "args": ["34 Royals Team Card - Kansas City Royals"],
-    "result": {"rows":[{"number":"34","players":[],"teams":["Kansas City Royals"]}],"skipped":[],"format":"lines"}
+    "result": {
+      "rows": [{"number":"34","players":[],"teams":["Kansas City Royals"],"cardName":"Royals Team Card"}],
+      "skipped": [],
+      "format": "lines"
+    }
   },
   {
-    "test": "parsePublishedChecklist — collector review S3: counts and subjects that are not people > a not-a-person subject in a CSV player cell keeps the row with no player",
+    "test": "parsePublishedChecklist — collector review S3: counts and subjects that are not people > a not-a-person subject in a CSV player cell keeps the row with no player and names the card",
     "fn": "parsePublishedChecklist",
     "args": ["#,Player,Team\n34,Mets TC,\n35,Checklist 1-100,"],
     "result": {
-      "rows": [{"number":"34","players":[],"teams":[]},{"number":"35","players":[],"teams":[]}],
+      "rows": [
+        {"number":"34","players":[],"teams":[],"cardName":"Mets TC"},
+        {"number":"35","players":[],"teams":[],"cardName":"Checklist 1-100"}
+      ],
       "skipped": [],
       "format": "csv"
+    }
+  },
+  {
+    "test": "parsePublishedChecklist — collector review S3: counts and subjects that are not people > a not-a-person subject in Last Name / First Name columns names the card",
+    "fn": "parsePublishedChecklist",
+    "args": ["No.\tLast Name\tFirst Name\n9\tChecklist\t\n10\tTrout\tMike"],
+    "result": {
+      "rows": [
+        {"number":"9","players":[],"teams":[],"cardName":"Checklist"},
+        {"number":"10","players":["Mike Trout"],"teams":[]}
+      ],
+      "skipped": [],
+      "format": "tsv"
+    }
+  },
+  {
+    "test": "parsePublishedChecklist — collector review S3: counts and subjects that are not people > a card with a person on it takes no card name from a not-a-person part beside them",
+    "fn": "parsePublishedChecklist",
+    "args": ["12 Team Card / Mike Trout - Los Angeles Angels"],
+    "result": {"rows":[{"number":"12","players":["Mike Trout"],"teams":["Los Angeles Angels"]}],"skipped":[],"format":"lines"}
+  },
+  {
+    "test": "parsePublishedChecklist — collector review S3: counts and subjects that are not people > a subject past the name limit skips the line (the server would refuse the checklist)",
+    "fn": "parsePublishedChecklist",
+    "args": [
+      "15 Checklist xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    ],
+    "result": {
+      "rows": [],
+      "skipped": [
+        {
+          "line": 1,
+          "text": "15 Checklist xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "reason": "A card name is too long"
+        }
+      ],
+      "format": "lines"
     }
   },
   {
@@ -4801,5 +4859,50 @@
     "fn": "checklistSections",
     "args": [{"rows":[],"skipped":[],"format":"lines","tooBig":true}],
     "result": {"format":"lines","sections":[],"skipped":[],"skippedSections":[],"rowCount":0,"tooBig":true}
+  },
+  {
+    "test": "checklistSections — a no-player row's card name (NEO-645) > rides each row into its section, without the subset",
+    "fn": "parsePublishedChecklist",
+    "args": ["Set,No.,Player\nBase,1,Mike Trout\nBase,2,Team Card",{"mode":"set"}],
+    "result": {
+      "rows": [
+        {"number":"1","players":["Mike Trout"],"teams":[],"subset":"Base"},
+        {"number":"2","players":[],"teams":[],"cardName":"Team Card","subset":"Base"}
+      ],
+      "skipped": [],
+      "format": "csv",
+      "subsets": ["Base"]
+    }
+  },
+  {
+    "test": "checklistSections — a no-player row's card name (NEO-645) > rides each row into its section, without the subset",
+    "fn": "checklistSections",
+    "args": [
+      {
+        "rows": [
+          {"number":"1","players":["Mike Trout"],"teams":[],"subset":"Base"},
+          {"number":"2","players":[],"teams":[],"cardName":"Team Card","subset":"Base"}
+        ],
+        "skipped": [],
+        "format": "csv",
+        "subsets": ["Base"]
+      }
+    ],
+    "result": {
+      "format": "csv",
+      "sections": [
+        {
+          "name": "Base",
+          "key": "base",
+          "rows": [
+            {"number":"1","players":["Mike Trout"],"teams":[]},
+            {"number":"2","players":[],"teams":[],"cardName":"Team Card"}
+          ]
+        }
+      ],
+      "skipped": [],
+      "skippedSections": [],
+      "rowCount": 2
+    }
   }
 ]

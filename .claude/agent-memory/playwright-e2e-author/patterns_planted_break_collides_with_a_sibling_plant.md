@@ -21,6 +21,6 @@ baseline run and your backup copy. "Byte-exact restore" against a polluted backu
 - Restore by reversing your own one-line edit (sed back) or compare to
   `git show HEAD:<path> | shasum`, never by copying back a working-tree snapshot.
 - Shasum the product file before and after each green run, so a sibling plant during the
-  run is visible rather than read as a flake (see [[never diagnose timing]] in the agent rules).
+  run is visible rather than read as a flake (see never diagnose timing first (GUIDE) in the agent rules).
 - A one-off red that matches your own planted numbers exactly, with no plant of yours in
   place, is this mechanism until shown otherwise.

@@ -26,19 +26,9 @@
  * shortened, it is a listing that fails to publish — at the worst possible
  * moment, months after the card was built, across thousands of rows at once.
  *
- * ## The two CLIP values are NOT caps
- *
- * `LISTING_TITLE_MOBILE_CLIP` and `LISTING_TITLE_SEARCH_CLIP` are soft display
- * bands, not limits: eBay accepts titles well past both. They describe where a
- * title stops being FULLY VISIBLE — the mobile app's search tiles clip around
- * 55 characters and desktop search results around 70 — which is why the
- * generator front-loads year / set / player. Nothing rejects a title for
- * crossing them; the UI colours the character counter and moves on.
- *
- * Jason confirmed 2026-09-02 that there is **no separate 60-character rule**.
- * The "~60" in the NEO-101 ticket is this display truncation remembered as a
- * limit; there is exactly one hard title cap (80) and these two soft bands
- * beneath it.
+ * Jason confirmed 2026-09-02 that there is **no separate 60-character rule**:
+ * the "~60" in the NEO-101 ticket was display truncation in search results
+ * remembered as a limit. There is exactly one hard title cap (80).
  *
  * ## What "80 characters" is counted in, here
  *
@@ -62,18 +52,6 @@
  * `features/generateListing.ts`.
  */
 export const LISTING_TITLE_MAX = 80;
-
-/**
- * Soft band: roughly where eBay's mobile app clips a search-result tile.
- * A display hint for the character counter — never a cap.
- */
-export const LISTING_TITLE_MOBILE_CLIP = 55;
-
-/**
- * Soft band: roughly where eBay's desktop search results clip a title.
- * A display hint for the character counter — never a cap.
- */
-export const LISTING_TITLE_SEARCH_CLIP = 70;
 
 /**
  * eBay's cap on one item-specific (aspect) VALUE — the per-aspect strings a

@@ -212,49 +212,6 @@ describe("getInternal returns the stored display context", () => {
     expect(playerRow?.playerContext).toEqual(playerContext);
   });
 
-  test("the public getBatch still withholds playerContext and teamContext's cards", async () => {
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    const candidate = await seedTeam(t, sportId, "Washington Nationals");
-    await t.run(async (ctx) => {
-      const base = {
-        selectorOptionId: sportId,
-        batchId: "batch-ctx",
-        createdByUserId: ADMIN_IDENTITY.subject,
-        sportId,
-        status: "ready" as const,
-      };
-      await ctx.db.insert("entityReviewQueue", {
-        ...base,
-        kind: "team",
-        name: "Washington",
-        nameNormalized: normalizeTeamName("Washington"),
-        teamContext: {
-          candidateTeamIds: [candidate],
-          cards: [{ number: "12", players: [{ name: "Bob Allen" }] }],
-          moreCards: 0,
-        },
-      });
-      await ctx.db.insert("entityReviewQueue", {
-        ...base,
-        kind: "player",
-        name: "Bob Allen",
-        nameNormalized: normalizePlayerName("Bob Allen"),
-        playerContext: { cards: [{ number: "44", teams: ["Nationals"] }], moreCards: 0 },
-      });
-    });
-
-    const rows = await t
-      .withIdentity(ADMIN_IDENTITY)
-      .query(api.entityReviewQueue.getBatch, { selectorOptionId: sportId, batchId: "batch-ctx" });
-    expect(rows).toHaveLength(2);
-    for (const row of rows) {
-      expect(row).not.toHaveProperty("playerContext");
-      expect(row).not.toHaveProperty("createdByUserId");
-    }
-    const team = rows.find((r) => r.kind === "team");
-    expect(team?.teamContext).toEqual({ candidateTeamIds: [candidate] });
-  });
 });
 
 describe("runEntityReviewLookup on a team row that carries teamContext", () => {

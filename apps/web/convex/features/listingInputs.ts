@@ -32,6 +32,7 @@
  * Keep it that way: the SPA imports this file.
  */
 
+import { cardSubjectName } from "../../lib/cards/unnamed-card";
 import type { AttentionItem } from "./cardAttention";
 import type { Id } from "../_generated/dataModel";
 import {
@@ -152,6 +153,8 @@ export type ListingCardFacts = {
   cardNumber: string;
   isRookie?: boolean;
   isRelic?: boolean;
+  /** NEO-591 — folded into `features.isProspect`; never read by the title. */
+  isProspect?: boolean;
   /** Observed only: folded into `features.autographed`. */
   autographType?: string;
   cardVariation?: string;
@@ -191,6 +194,7 @@ export function mergeCardFeatures(
     ...deriveCardObservedFeatures({
       isRookie: card.isRookie,
       isRelic: card.isRelic,
+      isProspect: card.isProspect,
       autographType: card.autographType,
       cardVariation: card.cardVariation,
       attributes: card.attributes,
@@ -348,17 +352,50 @@ export function storedCardVariation(raw: string | undefined): string | undefined
 }
 
 /**
+ * What the cut-short flag reads off an assessment. Only `coreFits` is required:
+ * a caller (or a test) that holds just that says nothing about the shortened
+ * set name, so the title is flagged as it always was.
+ */
+export type TitleCutFacts = {
+  coreFits: boolean;
+  fits?: boolean;
+  tidyUp?: boolean;
+  dropped?: readonly string[];
+  /** `true` on an assessment; the preview query sends `boolean | undefined`. */
+  shortNameUsed?: boolean;
+};
+
+/**
+ * NEO-645 (Jason, 2026-11-23) — the title is built from the set's box text
+ * ("Shorten the set name"), fits eBay's cap, and that is the ONLY thing cut:
+ * no Tidy Up cut is out and nothing is left out to fit. Such a title is as
+ * complete as the card's facts allow, so nobody has to check it. It is no
+ * blue "cut short" stop; the Listing title tile says it with a purple note.
+ */
+export function titleFitsOnShortName(facts: TitleCutFacts): boolean {
+  return (
+    facts.shortNameUsed === true &&
+    facts.fits !== false &&
+    facts.tidyUp === false &&
+    facts.dropped !== undefined &&
+    facts.dropped.length === 0
+  );
+}
+
+/**
  * NEO-609 — the `listingTitleTruncated` value a GENERATED title is stored
  * with, from the assessment it was written from: `true` while a Tidy Up cut is
- * still out (or the title came from the box), `undefined` otherwise, which in
- * a patch clears a flag the old title carried. The one reading every writer of
- * a generated title uses (insert, Regenerate, a player link, a team removal);
- * only an operator's own typed title clears the flag without asking it.
+ * still out (or the title came from the box and the box version left
+ * something out or is over the cap), `undefined` otherwise, which in a patch
+ * clears a flag the old title carried. A title that fits only because the set
+ * name was shortened, with nothing left out, is not flagged (NEO-645,
+ * `titleFitsOnShortName`). The one reading every writer of a generated title
+ * uses (insert, Regenerate, a player link, a team removal); only an operator's
+ * own typed title clears the flag without asking it.
  */
-export function generatedTitleTruncatedFlag(
-  assessment: Pick<ListingTitleAssessment, "coreFits">,
-): true | undefined {
-  return assessment.coreFits ? undefined : true;
+export function generatedTitleTruncatedFlag(assessment: TitleCutFacts): true | undefined {
+  if (assessment.coreFits) return undefined;
+  return titleFitsOnShortName(assessment) ? undefined : true;
 }
 
 /**
@@ -390,6 +427,14 @@ export function assessNewCardListing(
     teamNames?: string[];
     teamSplits?: ListingTeamSplit[];
     cameoNames?: string[];
+    /**
+     * NEO-645 — the card's own name and the players' printed spellings: the
+     * title carries the name whenever it has one (`cardSubjectName`), as the
+     * born row and Regenerate title it. Omitted by a caller with no name to
+     * give; the assessment then reads as it always did.
+     */
+    cardName?: string;
+    printedPlayerNames?: string[];
   },
 ): {
   mergedFeatures: Record<string, string>;
@@ -399,6 +444,13 @@ export function assessNewCardListing(
 } {
   const mergedFeatures = mergeCardFeatures(card, set);
   const inputs = listingInputsForCard(card, set, names, mergedFeatures);
+  const subjectName = cardSubjectName({
+    cardName: names.cardName,
+    playerNames: names.playerNames,
+    printedPlayerNames: names.printedPlayerNames,
+    cameoNames: names.cameoNames,
+  });
+  if (subjectName) inputs.subjectName = subjectName;
   const assessment = assessListingTitle(inputs);
   return {
     mergedFeatures,

@@ -41,6 +41,8 @@ type Row = {
   teams: string[];
   noNumber?: boolean;
   noTeam?: boolean;
+  prospect?: boolean;
+  prospectClaimedTeams?: string[];
   subset?: string;
 };
 type Section = { name: string; group?: string; rows: Row[] };
@@ -887,6 +889,38 @@ describe("D9: rowsForLeaf", () => {
       "FS-1",
       "FS-2",
     ]);
+    await settle(t);
+  });
+
+  test("a mixed Prospect row round-trips its printed claim; an old row without the field reads as before", async () => {
+    const t = convexTest(schema, modules);
+    const f = await seedTree(t);
+    await upload(t, f.set, [
+      {
+        name: "Future Stars",
+        rows: [
+          {
+            number: "1",
+            players: ["Cord Rager"],
+            teams: ["Cincinnati Reds", "Frisco"],
+            prospect: true,
+            prospectClaimedTeams: ["Frisco"],
+          },
+          { number: "2", players: ["Cole Young"], teams: ["Frisco"], prospect: true },
+        ],
+      },
+    ]);
+    await link(t, f.insA, f.set, ["Future Stars"]);
+    const got = await leaf(t, f.insA);
+    if (got.kind !== "rows") throw new Error("unreachable");
+    expect(got.rows[0]).toEqual({
+      number: "1",
+      players: ["Cord Rager"],
+      teams: ["Cincinnati Reds", "Frisco"],
+      prospect: true,
+      prospectClaimedTeams: ["Frisco"],
+    });
+    expect(got.rows[1]).not.toHaveProperty("prospectClaimedTeams");
     await settle(t);
   });
 

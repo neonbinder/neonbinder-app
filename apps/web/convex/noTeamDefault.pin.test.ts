@@ -159,6 +159,8 @@ describe("NEO-556 source pins", () => {
         "./lib/selectorTeams.ts => return { teamNoneConfirmedAt: now, teamNoneConfirmedByUserId: userId };",
         "./parallelChecklistBuild.ts => teamNoneConfirmedByUserId:",
         "./selectorOptions.ts => teamNoneConfirmedByUserId: undefined,",
+        // NEO-645: taking a value that names a team retires an earlier pick's stamp.
+        "./tidyPickSource.ts => teamNoneConfirmedByUserId: undefined,",
       ].sort(),
     );
   });

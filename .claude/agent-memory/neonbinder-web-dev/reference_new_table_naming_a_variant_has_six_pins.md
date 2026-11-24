@@ -26,3 +26,9 @@ is not finished until these all name it (NEO-536 `syncReports`, verified green):
 
 **How to apply:** grep an existing sibling table's name across `convex/` and `scripts/` first;
 every hit is a list the new table probably belongs in. Related: [[reset-loop-has-a-fifth-consumer]].
+
+**Declaring a table before its drain exists (NEO-645 W1a).** `resetSetBuilderData.test.ts`
+asserts the cli `SELECTOR_DEPENDANT_TABLES` list equals the drains the reset REALLY does, so a
+table declared ahead of its reset step goes in `SELECTOR_DEPENDANT_UNDRAINED_TABLES` (which
+`cli.test.mjs` also accepts) and moves across when the drain lands. The wipe graph entry can
+say "declared, wired later"; the wipe test only checks the key exists.

@@ -230,6 +230,24 @@ describe("the ledger", () => {
     ledger.variationChanged(id, true, false);
     expect(ledger.deltaFor(id)).toEqual({ all: 0, nonVariation: 1 });
   });
+
+  test("holdsDeltasBeyond names a write for any row but the one asked about", () => {
+    const leaf = "leaf" as unknown as Id<"selectorOptions">;
+    const other = "other" as unknown as Id<"selectorOptions">;
+    const ledger = createCardCountLedger();
+    expect(ledger.holdsDeltasBeyond(leaf)).toBe(false);
+    ledger.add(leaf, 3, 3);
+    expect(ledger.holdsDeltasBeyond(leaf)).toBe(false);
+    // A card that landed on and left another row nets to zero but still stamps it.
+    ledger.add(other, 1, 1);
+    ledger.add(other, -1, -1);
+    expect(ledger.holdsDeltasBeyond(leaf)).toBe(true);
+    const nothing = createCardCountLedger();
+    nothing.add(other, 0, 0);
+    expect(nothing.holdsDeltasBeyond(leaf)).toBe(false);
+    nothing.add(other, 0, -1);
+    expect(nothing.holdsDeltasBeyond(leaf)).toBe(true);
+  });
 });
 
 describe("every writer lands the true counts", () => {
@@ -248,6 +266,7 @@ describe("every writer lands the true counts", () => {
       pendingTeamNames: [],
       sortOrder: 0,
       playerNames: [],
+      printedNames: [],
       ...extra,
     });
     await t.run(async (ctx) => {
@@ -886,6 +905,7 @@ describe("lastCardAt (NEO-532)", () => {
           pendingTeamNames: [],
           sortOrder: 0,
           playerNames: [],
+          printedNames: [],
         },
         { sportValue: "Baseball", setNameValue: "Chrome" },
         { sport: async () => s.sport },

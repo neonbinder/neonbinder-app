@@ -21,7 +21,7 @@ Surfaces to key on (`CardChecklist.tsx`):
 | inline progress, sentence | `Fetching from <BSC\|SportLots>... <ready> of <total> cards ready.` |
 | the result, and the FETCH COUNT | `Kept all <n> cards from <marketplace>. Nothing to match, no other marketplace attached.` (appears only once the action RESOLVED, so it is the solo path's equivalent of waiting on the Confirm button) |
 | stream never arrived | `The fetched cards did not arrive — nothing was saved. Run the sync again.` (30 s cap; commits nothing) |
-| wizard | opens as normal, but **no "Back to Match Cards"** (`onBack` is gated on `streamedPairing`) |
+| the walk | the cards are saved at the commit and the Tidy up walk opens after it as normal when a card needs a person (no way back into Match Cards) |
 | the kept card's badge | `BSC only` (token `unmatched-sl`) / `SL only` (token `unmatched-bsc`): the mapping in `CardChecklistItem.badgeLabel` reads inverted at a glance |
 
 **The inline progress line is too short-lived to assert** (measured on PR #242's
@@ -101,9 +101,9 @@ kept as a memory; see SET-REGISTRY.md and GUIDE).
 - Card item and checklist-row item both contain "#SIG-XX": filter listitems by `^#SIG-XX` regex (card side) to avoid strict-mode violations.
 - Combobox option names carry league and era ("Oakland Athletics MLB · 1968–2024"): match by `^Name .*1968.2024`.
 - The card list is virtualized: never assert all N cards render; assert one visible plus absence of the bad shape.
-- A two-phase fresh-only spec (phase A discards before committing, phase B commits) passes once per seed; a red between phases parks a review batch that must be cancelled or the deployment re-seeded.
+- A two-phase fresh-only spec (phase A discards before committing, phase B commits) passes once per seed; a red between phases leaves the set half-built, so re-seed before the retry.
 - Copy and accessible names in a new modal move during the audit round: pin them with minimal regexes and re-run after the audit commit.
-- Equal counts with ONE misspelled name: the server pairs the rest and Match Cards still opens (solo) for the one leftover card and row, saying "N cards already matched to your checklist — they're saved too". Linking a pair whose spellings differ makes the wizard open on "Checklist says otherwise" FIRST (`expectChecklistDisagreementFirst`, then `pickDisagreementSide`, then Next).
+- Equal counts with ONE misspelled name: the server pairs the rest and Match Cards still opens (solo) for the one leftover card and row, saying "N cards already matched to your checklist — they're saved too". Linking a pair whose spellings differ raises a pink "Sources disagree" tile on that card on the walk (`takeSourceSide` answers it).
 - A full local run on ONE test account: workers=1 (every local worker maps to the one account, so parallel workers race on its data), and a placeholder/photo-upload burst can hit the per-account batch limit ("12 batches in the last 60 minutes", it is a screenshot-only message); those specs pass alone, so classify by an isolated re-run on a fresh seed. A spec that needs a deployment env var (a BSC stall id list) fails by name on a per-worktree deployment that lacks it.
-- A fresh-seed re-run is the only way to retry a committing spec: keep a byte-exact backup of the file before a planted break, and plant the break BEFORE the first commit point so no review batch is parked.
-- A past-era club with a player whose stints name it is now linked by the wizard ("Linked to <club> · <player> played there"), so a spec that answered its New Team step must read the Decided line instead (NEO-490 rule 2b).
+- A fresh-seed re-run is the only way to retry a committing spec: keep a byte-exact backup of the file before a planted break, and plant the break BEFORE the first commit point so nothing is committed.
+- A past-era club with a player whose stints name it is now linked at the commit ("Linked to <club> · <player> played there"), so there is no Team tile row to answer for it (a purple "Linked for you" note at most); read the card's team instead (NEO-490 rule 2b).

@@ -12,8 +12,8 @@ metadata:
 - macOS `sed -i` needs an extension arg; use python for in-place edits in scripts.
 
 ## Round 2 additions (NEO-569 coverage audit)
-- Wizard Teams-step proof rides the Roanoke ONE-marketplace fixture: add NCAA to the Base row's League list BEFORE the fetch (openAttributesPanel, "Add league"), stage a second same-window career team that is already in the catalogue (e.g. an NCAA program: no lookup, no New Team step), assert the NCAA team's radio is checked and the club's is not. The planted proof is skipping the "Add league" step. Do NOT use the `bscLookupOutcome` `.or()` here: a tie left unselected looks exactly like a cooldown, so the `.or()` cannot go red (GUIDE: BSC no longer 429s alone, no new `.or()` branches).
-- No player with an undated NCAA stint exists, and the wizard needs a From year, so a single-team "college only" pre-fill cannot be staged; the set-league-sensitive path is the two-teams-in-window tie.
+- Team tile proof rides the Roanoke ONE-marketplace fixture: add NCAA to the Base row's League list BEFORE the fetch (openAttributesPanel, "Add league"), stage a second same-window career team that is already in the catalogue (e.g. an NCAA program: no lookup, no New team form), assert the NCAA team's radio is checked and the club's is not. The planted proof is skipping the "Add league" step. Do NOT use the `bscLookupOutcome` `.or()` here: a tie left unselected looks exactly like a cooldown, so the `.or()` cannot go red (GUIDE: BSC no longer 429s alone, no new `.or()` branches).
+- No player with an undated NCAA stint exists, and a career stint needs a From year, so a single-team "college only" pre-fill cannot be staged; the set-league-sensitive path is the two-teams-in-window tie.
 - Card league follows its teams on ANY change to the team set (no pick survival). Teams in two leagues -> League blank with the "different leagues" line.
 - Team Management has two selects labelled "League" (filter and the team's); pick the team's by `.filter({ has: option "— none —" })`.
 - Inherited row: `Remove <league> from this <noun>` only when the inherited list has more than one league; a lone inherited league has no x.

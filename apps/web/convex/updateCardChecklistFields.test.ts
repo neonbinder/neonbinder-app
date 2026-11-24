@@ -106,6 +106,33 @@ async function seed() {
   return { asAdmin, ...ids };
 }
 
+describe("updateCard — the card name (NEO-645)", () => {
+  test("is cleansed, and refused past a player name's length without echoing it or writing anything", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    const nameOf = async () =>
+      (
+        await asAdmin.query(api.selectorOptions.getCardChecklist, { selectorOptionId: variantTypeId })
+      ).find((c) => c._id === cardId)!.cardName;
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      cardName: "  Team \u0000  Card ",
+    });
+    expect(await nameOf()).toBe("Team Card");
+
+    const err = await asAdmin
+      .mutation(api.selectorOptions.updateCard, { id: cardId, cardName: "Q".repeat(121) })
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    const text = String((err as { data?: unknown })?.data ?? err);
+    expect(text).toContain("at most 120 characters");
+    expect(text).not.toContain("QQQQ");
+    expect(await nameOf()).toBe("Team Card");
+  });
+});
+
 describe("updateCard structured fields (NEO-25)", () => {
   test("round-trips every new field through getCardChecklist", async () => {
     const { asAdmin, variantTypeId, playerA, cardId } = await seed();
@@ -908,7 +935,7 @@ describe("updateCard printRun — boundary values beyond the basic sweep", () =>
 describe("updateCard pending-name arguments (NEO-221)", () => {
   test("an EMPTY array clears the field rather than storing []", async () => {
     // "None" is the ABSENCE of the field everywhere else that writes these two
-    // (addCustomCard, the commit chunk), and `deriveCardAttention` reads `[]`
+    // (addCustomCard, the commit chunk), and `deriveLegacyCardAttention` reads `[]`
     // and absent identically — but a stored `[]` would still be a second
     // spelling of the same state for every future reader to get wrong.
     const { asAdmin, cardId } = await seed();

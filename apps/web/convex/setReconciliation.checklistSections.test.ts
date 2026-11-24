@@ -111,12 +111,22 @@ describe("matchChecklistSections: the probe's names", () => {
   test("a near name whose words sit inside the target's matches below 1", () => {
     const result = matchChecklistSections(
       [sec("Future Stars")],
-      [{ target: bscItem("bsc-fs"), labels: ["Future Stars Die-Cut"] }],
+      [{ target: bscItem("bsc-fs"), labels: ["Future Stars Diecut"] }],
     );
     expect(result.matches).toHaveLength(1);
     expect(result.matches[0].target).toEqual(bscItem("bsc-fs"));
     expect(result.matches[0].confidence).toBeLessThan(1);
     expect(result.matches[0].confidence).toBeGreaterThan(0.6);
+  });
+
+  test("NEO-643: a hyphen is a space, so a hyphenated label is the same name", () => {
+    const result = matchChecklistSections(
+      [sec("Future Stars Die-Cut")],
+      [{ target: bscItem("bsc-fs"), labels: ["Future Stars Die Cut"] }],
+    );
+    expect(result.matches).toEqual([
+      { sectionKey: "future stars die-cut", target: bscItem("bsc-fs"), confidence: 1 },
+    ]);
   });
 
   test("a row's labels count as its names", () => {

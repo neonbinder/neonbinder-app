@@ -408,3 +408,22 @@ describe("computeMatches — the blocked argument (NEO-325)", () => {
     ).toEqual(plain);
   });
 });
+
+describe("computeMatches — NEO-643 one character fold", () => {
+  test("BSC's backslash for an accent matches the accented name, at 1.0", () => {
+    const r = computeMatches(
+      [item("2026 Panini Liga Mexicana de B\\eisbol Stickers")],
+      [item("2026 Panini Liga Mexicana de Béisbol Stickers")],
+    );
+    expect(r.autoMatched).toHaveLength(1);
+    expect(r.autoMatched[0].confidence).toBe(1.0);
+    expect(r.unmatchedBsc).toHaveLength(0);
+    expect(r.unmatchedSl).toHaveLength(0);
+  });
+
+  test("an accent against its plain spelling matches at 1.0 (the strip no longer eats the letter)", () => {
+    const r = computeMatches([item("Exposé")], [item("Expose")]);
+    expect(r.autoMatched).toHaveLength(1);
+    expect(r.autoMatched[0].confidence).toBe(1.0);
+  });
+});

@@ -7,6 +7,7 @@ import { teamFullName } from "../../lib/teams/team-name";
 import type { Id } from "../../convex/_generated/dataModel";
 import CardAttentionBadge from "./CardAttentionBadge";
 import { deriveCardAttention } from "./card-attention";
+import type { CardChecklistRow } from "./card-checklist-row";
 import { NO_TEAM_TEXT } from "./team-picker-labels";
 
 type CardChecklistItemProps = {
@@ -41,6 +42,14 @@ type CardChecklistItemProps = {
      * not a state the product creates any more.
      */
     pendingTeamNames?: string[];
+    // NEO-645: the rest of what `deriveCardAttention` reads. Optional for the
+    // same reason as the fields above: leave one off and the mark is missed.
+    pendingPlayerNames?: string[];
+    listingTitle?: string;
+    listingTitleTruncated?: boolean;
+    sourceDisagreements?: CardChecklistRow["sourceDisagreements"];
+    tidyChecks?: CardChecklistRow["tidyChecks"];
+    tidyReviewed?: CardChecklistRow["tidyReviewed"];
     attributes?: string[];
     isRookie?: boolean;
     isRelic?: boolean;
@@ -541,8 +550,8 @@ export default function CardChecklistItem({
           20px slot on every row means the mark can appear and disappear
           without moving anything. */}
       <span className="w-5 h-5 shrink-0 flex items-center justify-center">
-        {attention.length > 0 && (
-          <CardAttentionBadge items={attention} cardIdentity={cardIdentity} />
+        {attention.level !== "none" && (
+          <CardAttentionBadge attention={attention} cardIdentity={cardIdentity} />
         )}
       </span>
       {/* Actions always rendered. Hiding them behind hover (opacity-0

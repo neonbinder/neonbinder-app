@@ -18,7 +18,8 @@
 
 import { act, render, screen } from "@testing-library/react";
 import React from "react";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
 import type { EntityColumnProps } from "./EntityColumn";
 
 vi.mock("../../convex/_generated/api", () => ({
@@ -105,14 +106,18 @@ describe("EntityColumn — ensureSync new path (NEO-47)", () => {
       mockEnsure.mockImplementation(
         () => new Promise((resolve) => (release = () => resolve({ ran: true, reason: "synced" }))),
       );
-      const { findByText, getAllByText, queryByText } = renderVT();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      const { getByText, getAllByText, queryByText } = renderVT();
 
       await act(async () => {});
       expect(mockEnsure).toHaveBeenCalledTimes(1);
       const sent = mockEnsure.mock.calls[0][0].waitKey as string;
       expect(sent).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
 
-      const line = await findByText(WAIT, {}, { timeout: 3000 });
+      await act(async () => {
+        vi.advanceTimersByTime(ANNOUNCE_AFTER_MS);
+      });
+      const line = getByText(WAIT);
       expect(line.closest('[role="status"]')).not.toBeNull();
       expect(getAllByText(WAIT)).toHaveLength(1);
       expect(new Set(state.asked)).toEqual(new Set([sent]));
@@ -398,4 +403,8 @@ describe("EntityColumn — ensureSync new path (NEO-47)", () => {
       elsewhere.remove();
     });
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

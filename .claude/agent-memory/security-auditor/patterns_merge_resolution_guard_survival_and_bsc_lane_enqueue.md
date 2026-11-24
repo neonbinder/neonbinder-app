@@ -31,3 +31,21 @@ was kept); target absent from the merge tree = a dangling link correctly dropped
 unlinked = loss. Then check every file in `git ls-tree <merge> <dir>/` is linked once. An
 unindexed file that is also unindexed in the merge base and both parents is pre-existing, not
 the resolution's fault: a note, not a finding.
+
+**Merged golden snapshots (`__snapshots__/*.snap`) and union types.** A snapshot file one side
+created can come back from a merge regenerated: `git diff <branch parent> <merge> -- f | grep -c '^-[^-]'`
+must be 0 and every `+exports[` key must name a fixture the other side added. A `--cc` hunk
+showing `-1,0` on one parent means that side never had the file, so it is not a conflict.
+When one side adds a required field to a union (`& { teamless: boolean }`) and the other adds
+a variant, read the merged variant's construction site: the default it picks is a semantic
+decision (unknown = not teamless = ask), not a mechanical one. Line-survival alone misses it.
+
+**A branch that redefines an enum value's meaning, merged with a side that writes it.** When the
+branch changes what a value means (NEO-639: `teamLookup: "failed"` went from "a claim, hold the
+pre-fill back" to "missing data, pre-fill as usual"), grep the OTHER side for new writers of that
+value and read each writer's comment: if it still documents the old meaning, ask whether the
+writer relied on it (a hold-back that silently became a pre-fill). For "failed" the only new
+writer was the Unlink revert, which keeps the listing's own team strings, so `listedClaims` still
+holds a real claim back; the stale comment is a note. Also check a new union variant without the
+field a branch reads (`p.request` on a `kind: "new"` player): the merged default (no stints) is
+the safe one; typecheck alone proves the field access, not the choice.

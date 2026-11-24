@@ -34,7 +34,7 @@ Reference specs that show the patterns below:
 | `tests/home/landing-smoke.spec.ts` | signed-out page, reachability as the assertion |
 | `tests/set-selector/admin-missing-both-shows-warning.spec.ts` | dedicated `account=`, role-scoped asserts, `toBeHidden` |
 | `tests/set-selector/topps-chrome-add-feature.spec.ts` | the drill helper, a genuine "is it open?" branch |
-| `tests/set-selector/checklist-wizard-link-team-saves-alias.spec.ts` | entity-review wizard, minted names |
+| `tests/set-selector/tidy-up-team-link-remembers-the-name.spec.ts` | the Tidy Up walk's Team tile, minted names, Back through the walk |
 | `tests/labels/scan-visibility.spec.ts` | scoping to one list item; hidden-then-shown text |
 | `tests/admin/player-live-wikidata-enrichment.spec.ts` | a link whose name carries sr-only text; a sanctioned long wait |
 
@@ -107,15 +107,13 @@ Reference specs that show the patterns below:
    queue. One worker per shard, each owning one test account
    (`TEST_EMAIL_<WORKER_INDEX>`); tests must not depend on order. After any red
    spec the harness resets that account (see "The failure reset").
-   **`@bsc-breaker` specs never retry.** A breaker spec's retry opens the
-   deployment-wide BSC call gate again, which the failure reset does not undo.
-   (NEO-555 retired the other no-retry tag, the shared-seller one, with the
-   shared eBay sandbox seller: eBay is the fake now, one seller per test user,
-   so its listing specs retry like any other.) Each such file says
-   `test.describe.configure({ retries: 0 })` (it beats the config and
-   `--retries`): `shard-plan.mjs` refuses to plan while a tagged file lacks
-   it, and the `noRetryOnSharedAccounts` fixture still refuses the retry of a
-   tagged spec that slipped past, before its body runs.
+   **Every spec retries alike; there is no no-retry tag.** NEO-555 retired the
+   shared-seller tag with the shared eBay sandbox seller, and NEO-628 retired
+   `@bsc-breaker`: the BSC call gate is per test user against the fake, so a spec
+   that opens it (a 429, 503, hang or reset) closes only its own worker's gate,
+   runs in an ordinary shard and retries like any other. A fresh-only spec's
+   retry after its commit fails by name at its "nothing exists yet"
+   precondition; read the first attempt's error (Gotchas, "Fresh-only specs").
 6. **Public repo.** No secrets, account ids, internal URLs or deployment
    slugs in any file, comment, log line or artifact. Never `git add -A`,
    never `git stash` in a shared worktree.
@@ -225,7 +223,7 @@ typed into "+ Custom" (the form refuses the name) and never searched for.
   mobile") and `ATTEMPT_TOKEN` is that with hyphens stripped; anything that
   reconstructs a prefix from `WORKER_INDEX` by hand is wrong.
 - **Committing specs are sole writers and self-cleaning.** A spec that
-  commits data (wizard flows, set builds) owns what it commits, uses minted
+  commits data (checklist fetches, set builds) owns what it commits, uses minted
   names, and leaves nothing a later spec or the same worker's next run
   trips on. Fresh-only specs are listed under Gotchas.
 - **Tags.** `{ tag: ["@smoke", "@<area>"] }`: `@smoke` (the fast subset) plus
@@ -395,15 +393,28 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   person per worker for a spec that adds a Baseball player as scaffolding
   (see "Enrichment fixtures").
 - `support/theme.ts`: `expectLook`, `expectPageLook` (a light or dark page, proven by painted colour; theme specs), `paintsLook`, `pageHasBanner` (what `expectAccessible` uses to prove each mode; see "Accessibility checks").
-- `support/wizard.ts`: entity-review wizard (`reviewWizard`, `wizardProgress`,
-  `STEP_SUBTITLE`, `expectWizardStep`, `readProgress`, `expectNoStepCount`,
-  `expectNothingDecided`, `decidedSummary`, `readDecidedCount`,
-  `expectDecidedCount`, `nameStepSkip`, `readNameStep`, `expectNameStepLeft`,
-  `expectPostNameStepLeft`, `fetchChecklistToWizard`,
-  `fetchOneMarketplaceSetChecklistToWizard`, `cancelAndDiscard`,
-  `discardResumedReviewBatch`, `personSkip`, `walkToPlayerRow`,
-  `advanceToSave`, `readBackDecision`, `confirmSaveButton`). Each helper's
-  contract is in its doc comment; see "The entity-review wizard" under Gotchas.
+- `support/tidy-walk.ts`: the per-card Tidy Up walk (NEO-645). Open and read
+  it: `tidyWalk`, `tidyUpName`, `expectTidyWalkOpen`, `expectCardSettled`,
+  `expectCardsLeft`, `needsYouPill`, `openTidyWalk`, `settleWalkAfterCommit`
+  (after "Saved N cards.": did the walk open?), `tidyTile`, `pinkTile`,
+  `mustFixLine`, `tidyCardHeader`, `EDIT` (an answered row's `Edit <name>`
+  button name, cameo rows excluded; scope it to the row's group). Move:
+  `saveAndNext`, `skipCard`,
+  `skipUntil`, `saveForLater`, `finishTidyWalk`. Answer tiles:
+  `createPlayerOnOpenRow`, `createTeamOnOpenRow`, `answerPinkPlayerTiles`,
+  `answerPinkTeamTiles`, `answerPinkAutographTile`, `ruleOutOpenPlayerRows`,
+  `ruleOutOpenTeamRows`, `takeSourceSide`. Career gaps: `keepOpenCareerGaps(page)`
+  answers every open gap on the card "Keep as is" (writes nothing), because
+  Save & next over an open Career gap writes a stint from the set's year to the
+  player. Whole walks: `walkAnsweringEverything` (answers every pink Player and
+  Team tile, Save & next or Skip, returns a `WalkTally`; its `career?: "keep" |
+  "add"` option defaults to `"keep"`, which keeps every open gap first and
+  counts them in `WalkTally.careerKept`; `"add"` leaves them for Save & next to
+  write, so never use it where the player is a catalogue player),
+  `tidyForTheParallelBuild`. Fetch into
+  it: `fetchChecklistToTidyWalk`, `fetchOneMarketplaceSetChecklistToTidyWalk`
+  (`openOneMarketplaceSetBase` is in `set-builder.ts`). Each contract is in its
+  doc comment; see "The Tidy Up walk" under Gotchas.
 - `support/published-checklist.ts`: the publisher's-checklist upload
   (`usePublishersChecklist`, `expectTeamsFromChecklist`, `checklistFacts`,
   `CHECKLISTS`) and the captured CSVs in `fixtures/checklists/`. A spec that
@@ -411,6 +422,27 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   one by one; N in `Teams from your checklist: N of M cards` is read off the
   file, never typed. Captured with `tools/capture-bsc-checklist-teams.mjs`
   (SET-REGISTRY.md, "Published-checklist fixtures").
+  **Match Cards opens or not by the file's fact (NEO-640).** Every fetch with two
+  or more sources starts on the progress line (`checklistFetchProgress`: a
+  group named by its status, "Fetching from BSC and your checklist…"; the
+  ticking " N of M cards ready." is aria-hidden, so read it with `getByText`;
+  its Cancel is "Cancel card fetch", `cancelCardFetchButton`); the dialog opens
+  only when a card needs the operator, with focus on the dialog itself
+  ("Match Cards — <set>"). A run with every card Matched at 100% skips it and
+  the cards SAVE first (NEO-645): the saved line says why right after its
+  count, "Saved N cards. BSC and your checklist agreed on every one, so Match
+  Cards sat this one out." (`skippedSavedReason`), then the teams line, and any
+  walk opens only after the save. The "All N cards matched…" line before the
+  save is a moment, never asserted. That line names Match Cards, so assert the dialog's
+  absence by role (`matchCardsDialog`), never by text. Each file in
+  `CHECKLISTS` carries `matchCards: { paused, live }` (`MATCH_CARDS`); a full
+  capture skips, a file with a row left out, a tie or the publisher's own numbers
+  opens, and an edit to the rows (appended, dropped, renumbered, split) opens.
+  Settle a fetch with `settleChecklistFetch(page, env, { facts, what })`, which
+  branches on `opensMatchCards(facts, env)`, never on an `.or()` between the
+  dialog and the saved line; then settle the walk (`settleWalkAfterCommit(page,
+  savedLine(page, n))`, or `expectTidyWalkOpen` when a card needs a person). A new file gets its entry from a run, checked
+  against `checklistMatch` (the product's matcher over the file and BSC's cards).
 - `support/bypass-proxy.mjs`: CI-only proxy that injects the preview's
   deployment-protection header and `x-vercel-skip-toolbar` (NEO-548: Vercel's
   preview toolbar otherwise covers controls on the phone viewport); started by
@@ -477,7 +509,7 @@ Idioms:
   and the `hasNot` filter then passes everything. Build the inner locator from
   `page.locator(...)` only when it is meant relative, or use `hasText`/`hasNotText`.
 - **`aria-disabled` buttons.** Much of the app disables with `aria-disabled`
-  (the wizard's "Add as New Team" while a lookup is in flight, between rows).
+  (the walk's Save & next while anything on the card is pink).
   Playwright treats that as disabled, so `click()` waits and times out at 7 s.
   When the flow waits for a button to become usable, locate only the enabled
   one: `getByRole("button", { name, disabled: false })`. When the flow taps a
@@ -498,76 +530,39 @@ Idioms:
   section is absent when everything paired. Branch on the thing the YAML
   branches on (`heading /^BSC only \([1-9]/` visible), not on a control
   inside it.
-- **Loops over wizard steps.** After acting on step N, wait for step N's own
-  control to go (`getByRole("button", { name: skipName, exact: true })`
-  `.toBeHidden()`) before looking for step N+1, or the next iteration can
-  act on the same step twice.
-- **The entity-review wizard ("Tidy up <set>", NEO-335, NEO-497).** The
-  dialog is named for the checklist it tidies: `Tidy up <year> <set>
-  <variant>`, e.g. `Tidy up 2024 Topps Chrome Refractor` (the year row, the
-  SET row, never the manufacturer, and the checklist's own row). Only the
-  Base variant type's checklist leaves the variant out: `Tidy up 2024 Topps
-  Chrome`. Every other row keeps its name whole, an insert-level row called
-  "Base" (Insert > Base) included: `Tidy up 2024 Topps Base` (NEO-616). It reads `Tidy
-  up this set` only while those names load. The post-save attention walker
-  wears the same title. Find either by `TIDY_UP_NAME` (`/^Tidy up /`, via
-  `reviewWizard` or `getByRole("dialog", { name: TIDY_UP_NAME })`), never by
-  the old literal: an absence check on `Tidy up this set` would pass forever.
-  Assert the full name with `tidyUpName({ year, set, variant })` where the
-  spec knows its fixture, leaving `variant` out for the Base variant type.
-  The helper throws on a `variant` of "Base" or "Bases" unless the spec
-  passes `insertRow: true` for an insert row of that name; both
-  fetch-to-wizard helpers already assert the Base type's name. It was
-  "Tidy up this set" until NEO-497 and "Confirm New Players & Teams" before
-  NEO-335. The title holds the set's names, so while it is open a loose
-  `getByText(<set name>)` also matches it: scope to the row or use `exact`. The old
-  "N of M reviewed" line and its "N still being looked up" tail are gone (the
-  footer still says "N still looking up"). Header facts a spec may assert:
-  the subtitle (`New league`, `New team`, `New player`, `Which player is
-  this?`, `Cards with no team`, `Card titles`, `Ready to save`) and, since
-  NEO-467, the progress bar `getByRole("progressbar", { name: "Wizard
-  progress" })` (`wizardProgress`), whose `aria-valuetext` is the subtitle and
-  `aria-valuenow` a rounded percent (100 on Save). There is NO exact count: no
-  `Step x of y` anywhere, no growth line. Say where the wizard is by subtitle
-  (`expectWizardStep`); a batch with nothing decided is `expectNothingDecided`
-  (a name step, no "Decided (N)" history). Name steps of a kind share a
-  subtitle, so "this row was decided" is the row's own skip going
-  (`readNameStep`, then `expectNameStepLeft`), and "exactly one decision" is
-  the "Decided (N)" history growing by one (`readDecidedCount`, then
-  `expectDecidedCount`; read it on a settled name step, and only there: the
-  history is not shown on the teams, autograph or titles steps). A Next on a
-  post-name step is proved by `expectPostNameStepLeft` (a later subtitle). A
-  percent may only be held not to go down across a change, and only once the
-  new step is asserted; never pin its value except 100 on Save.
-  "Every name is decided" is the footer state `Next (Enter)` or
-  `Confirm & Save`: past the names come `Cards with no team`, `Autographed
-  cards` and `Card titles` (each only when needed, each with `Next (Enter)`
-  and NO Confirm & Save), then `Ready to save` (heading `Save N cards?`),
-  the end of the progress bar and the only step with Confirm & Save. `Autographed
-  cards` (NEO-345) is asked when a card the save will create carries BSC's AU
-  tag and the synced part has no autograph format; it is a radio group (`On
-  card` / `Sticker`, placeholder copy in `support/wizard.ts`) whose answer is
-  REQUIRED, so its Next is `aria-disabled` until one is picked and
-  `advanceToSave` picks `On card` for any spec that does not own the step. A spec whose feature is a name decision calls
-  `advanceToSave` to reach Save (Next leaves every line on its default); a
-  spec whose feature is the teams or titles step drives that step itself. A
-  sync with no unknown names opens the wizard only when a post-name step is
-  needed, straight onto it (subtitle `Cards with no team` or `Card titles`). The wizard only opens for names
-  the reference catalogue does not know, so a wizard spec needs a registered
-  fixture set (SET-REGISTRY.md). The post-save attention walker wears the same
-  title, subtitles and progress bar: tell them apart by the walker's `Skip for
-  now, card <number>`, and scope its progress bar to the walker's dialog. A
-  walker sitting's size is proved by the walk (one answer or skip per card,
-  then `All clear`), not by a count. To prove WHAT a decision was, read it back with
-  `readBackDecision` (the footer Back opens the most recent decision read-only
-  in the group `Decision for <name>`); the "Decided (N)" list is batch-ordered
-  and collapses past five entries, so it is no read-back. A Maestro-era scroll
-  or drag to bring a form above the footer has no Playwright counterpart:
-  click() scrolls and refuses to click through an overlapping control.
+- **Loops over walk cards.** The address changes BEFORE the next card
+  renders, so a footer move is proved by what is on screen: `saveAndNext` and
+  `skipCard` read the card's face (one `img` named "Card #<number>, <who>…")
+  before the press and wait for a face named otherwise (or the end screen),
+  so two NNO cards are still told apart. Never loop on the URL alone, or the
+  next iteration reads the old card's tiles.
+- **The Tidy Up walk (NEO-645).** It replaced the entity-review wizard and
+  the post-save attention walker. Match Cards' Confirm (or a single-source
+  fetch) SAVES the cards; the walk opens by itself when a saved card needs a
+  person (`settleWalkAfterCommit`), else from the checklist's pill ("N need
+  you", "1 needs you", plus ", M to fix" when M of them are pink; its text is
+  its name, so assert the whole string where the spec knows its cards). It is
+  a dialog named `Tidy up <year> <set> [<variant>]`: assert it with
+  `tidyUpName` (leave `variant` out for Base; the helper throws on "Base").
+  One card at a time: a face, a header line ("#38b · Mike Trout"), and tiles,
+  each a `group` named by its heading ("Sources disagree", "Player",
+  "Career", "Team", "Autograph", "Listing title", "More about this card").
+  A tile's level is its accessible description: "To fix" (pink, holds Save &
+  next), "To check" (blue), none. Purple notes are `role="note"` and never
+  stop a card. Every tile saves when it is answered, so nothing is staged and
+  nothing is discarded: "Save for later (Esc)" closes the walk writing
+  nothing, "Skip: not ready to list" moves on writing nothing, "Save & next
+  (Enter)" marks the card's blue items seen. The position is in the URL
+  (`?tidy=<card>|done`), so the browser's Back walks back through the cards;
+  the header's progress bar reads "N cards left" (`expectCardsLeft`). The end
+  screen counts skipped cards and has "Done (Esc)". A fetch writes its set,
+  so a spec that needs a first fetch of a real set is that set's registered
+  sole writer (SET-REGISTRY.md); a hand-made set reaches the walk through a
+  pasted checklist (`usePastedChecklist`).
 - **Option names include their badges.** A set-builder row reads
   "Base SL BSC" to a screen reader; pick rows by their own visible text with
   `columnOption()` (`.filter({ has: getByText(name, { exact: true }) })`).
-- **Fresh-only specs** (wikidata live proof, the committing wizard flows, the
+- **Fresh-only specs** (wikidata live proof, the first fetch of a real set, the
   specs that persist a name from `support/recorded-names.ts`) pass
   once per seed. A second local run fails at its "nothing exists yet"
   precondition; that is correct, not flaky. So does CI's retry of one: read the
@@ -666,11 +661,17 @@ It works because test accounts are on System, so the app follows the OS.
 - **A spec that saves an explicit theme restores System BEFORE calling
   `expectAccessible`**, and one that flips the demo switch calls it before
   touching the switch. `profile/theme-setting` calls it once, on System.
-- **Cost.** One call is now two axe runs plus two scheme flips: measured
-  about +0.75 s on a light marketing page (0.4-1.3 s each), more where the
-  DOM is large (set builder, wizard). A pinned page adds the 7 s probe. Add
-  the call where a new screen or state appears, not as a habit after every
-  step.
+- **Cost.** One call is two axe runs plus two scheme flips, and it grows with
+  the DOM. Measured (NEO-628, desktop, own deployment): a light marketing page
+  about 0.75 s (0.4-1.3 s); a full Base checklist (300 rows) about 16-23 s,
+  whole page or scoped to the checklist's region alike (it is most of the
+  page); Team Management's 2,000-row window about 80-95 s before
+  `resultTypes` and about 60 s after. axe's rule checks are a small share of
+  that (about 4 s of a 30-50 s run on the 2,000 rows, colour contrast the
+  largest); the rest is axe describing every node it read. A pinned page adds
+  the 7 s probe. Add the call where a new screen or state appears, not as a
+  habit after every step, and never on a long list when a shorter one shows
+  the same markup.
 
 ```ts
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -688,7 +689,7 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   finished (a dialog's open animation, a page flip, a list still filling):
   axe checks whatever is in the DOM at that moment, and a half-faded element
   measures as a contrast failure that no user sees. A dialog opening, a
-  wizard step, an error state and an empty state are each a state. It runs on both projects
+  walk card, an error state and an empty state are each a state. It runs on both projects
   with the same call, so the phone layout is checked too. `expectAccessible`
   also re-checks (up to three passes in all) a pass that has violations AND saw a
   finite animation or transition start while axe ran (a row fading into a live
@@ -696,16 +697,26 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   that held still, is final, and the last pass is what it reports, so a
   violation the settled screen really has is never hidden.
 - **Helpers.** A `support/` helper whose product is a screen, dialog or
-  wizard it opens and returns with showing (`fetchChecklistToWizard`,
+  walk it opens and returns with showing (`fetchChecklistToTidyWalk`,
   `openCrossListForm`) runs `expectAccessible` itself on arrival, so every
   spec that uses it covers that state; do not repeat it in the spec. Helpers
   that only drive through intermediate states (the `drillTo*` cascade,
   `walkToPlayerRow`, login warm-ups, form fillers) never call it: the spec
   checks the state it stops on.
-- **Whole page by default.** `within` takes a Locator (role, label or text,
-  like any other locator; it must resolve to exactly one element) for a
-  region whose page the spec already checked. `label` names what the user
-  sees; it defaults to the URL path.
+- **Whole page by default, once per state.** `within` takes a Locator (role,
+  label or text, like any other locator; it must resolve to exactly one
+  element) for a region whose page the spec already checked. `label` names
+  what the user sees; it defaults to the URL path. **The owner rule
+  (NEO-628):** one whole-page check per screen state, per project, across the
+  suite, in the spec that owns that state. A later state of the same page is
+  checked `within` the region that changed (a search region's results, the
+  one row a count changed). A spec that reaches a state another spec already
+  checks whole scopes its call to what it drives, or drops it, with a comment
+  naming the owner (`admin/team-management-filter` owns Team Management,
+  checked on one league's list that still overflows its scroller;
+  `admin/players-list-at-catalogue-scale` owns the unfiltered Players page).
+  Scope only to a region the product already names: never add a name or a
+  role for a test.
 - **Violations are product bugs.** Fix them in the product (contrast, names,
   roles, landmarks), never in the spec. There is no option to disable a rule,
   and `EXCLUDED_REGIONS` in `support/a11y.ts` holds only UI that is not
@@ -759,12 +770,12 @@ its Base Sync, `setup.spec.ts` uploads `fixtures/checklists/2024-topps-chrome-ba
 (BSC's own per-card answers for 2024 Topps Chrome Base, with card #300's row
 left out) through "Add the official checklist", asserts the result line
 `Teams from your checklist: N of M cards` (N read off the file by
-`checklistFacts`), and fails by name if the wizard opens on "Checklist says
-otherwise". So the seed asks BSC for the bulk checklist and for ONE card, and
+`checklistFacts`), and fails by name if a card of the walk opens on a
+"Sources disagree" tile. So the seed asks BSC for the bulk checklist and for ONE card, and
 **setup is no longer the live proof for per-card team lookups.** The live proofs
 are `checklist-bsc-team-enrichment` (card #300), the stall spec
 (`checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards`) and the upload spec
-(`checklist-published-upload-skips-bsc-and-asks-on-disagreement`). Do not read a
+(`checklist-published-upload-skips-bsc-and-asks-on-the-sources-disagree-tile`). Do not read a
 green seed as evidence that a per-card BSC lookup works. The Future Stars insert
 uploads its own file too (20 cards, `fixtures/checklists/2024-topps-chrome-insert-future-stars.csv`);
 the Gold Wave build is a copy of Base's cards and asks BSC for nothing per card.
@@ -831,7 +842,7 @@ this before diagnosing anything that touches BSC:
   password (`fake-bsc-password`; `wrong-password` is its rejected-credentials
   answer, which `credentials-lifecycle` uses). The scripted reset
   (`e2e-baseline.sh reset`) and `resetMyTestState` clear the accounts, and the
-  call gate, with the rest of the state. They keep the fake's catalogue misses
+  call gates (`resetMyTestState`: the user's own), with the rest of the state. They keep the fake's catalogue misses
   (the recorder's to-do list): a miss leaves only once its recording is
   uploaded, so a reset between runs never loses one.
 - **The saved BSC sign-in is per deployment too.** The browser service stores
@@ -856,7 +867,7 @@ this before diagnosing anything that touches BSC:
   seller without it. A new seller holds no shipping policy, NB never makes one, so a
   spec gives it one with `ebayFake.holdShippingPolicy`. Orders exist only when a spec
   injects them; `ebayFake.pollNow` runs the sales poll at once. Faults on `ebay/`
-  templates never touch the BSC call gate, so they need no breaker tag.
+  templates never touch the BSC call gate.
 - **A spec makes BSC misbehave through `support/bscFake.ts`, and only there.**
   The `bscFake` fixture's `setFaults([...])` puts rules on the worker's own
   account (`bscFault.slow`, `.tooManyRequests`, `.unavailable`, `.hangs`,
@@ -866,31 +877,32 @@ this before diagnosing anything that touches BSC:
   `/testing/bsc-fake` hop (`api.testing.setMyBscFaults` / `addMyBscOrder` /
   `clearMyBscFaults` / `clearBscCallGate`), on a second page, so the spec's own
   page never moves. **Teardown is automatic**: the fixture clears the rules, and
-  the call gate when a rule could have opened it, whether the test passed or
-  failed. Orders are not cleared (the fake has no per-order delete); a spec that
+  the worker's own call gate when a rule could have opened it (`clear=all`
+  clears that test user's gate only), whether the test passed or failed. Orders are not cleared (the fake has no per-order delete); a spec that
   injects one must be the only user of the cards it names. Never write a spec
   that waits for BSC to be slow, and never add a deployment switch for a fault.
-- **Convex has ONE BSC call gate per deployment** (`convex/bscCallGate.ts`: a
-  breaker, plus a token bucket that is not applied against the fake, so there is no rate cap). A 429 opens it at once (honouring `Retry-After`);
-  five consecutive 5xx or timeouts open it too (no fault drops the connection: a
-  `reset` answers 503 at once, and a `hang` the caller outwaits ends in a 503 at
-  its 2-minute cap); while it is open every caller on the deployment is refused
-  without a request. So a fault of
-  kind `429`, `503`, `hang` or `reset` stops every shard's BSC calls. **Such a
-  spec carries `@bsc-breaker` and is listed in `BREAKER_SPECS`
-  (`project-scope.mjs`)**: no shard plans it; e2e.yml's `breaker-desktop` /
-  `breaker-mobile` jobs run it alone, after every shard of its
-  pass, and the gate still needs it green on both projects. `setFaults` throws
-  in a spec without the tag, and `shard-plan.mjs` refuses to plan if the tag and
-  the list disagree. A `delay` is allowed anywhere while it is shorter than the
-  caller's own timeout (a card-listing call gives up at 5 s, the seller profile
-  read at 20 s, the seller sheet at 90 s); a delay that outlasts the timeout is a
-  failure to the gate and belongs in a breaker spec. The two breaker specs today:
+- **Convex keeps one BSC call gate per test user against the fake, and one per
+  deployment against real BSC** (`convex/bscCallGate.ts`, NEO-628: the gate key is
+  the rate-limit domain the call lands in; real BSC limits by egress IP, the fake
+  keeps faults per namespace). Each gate is a breaker, plus a token bucket that is
+  not applied against the fake, so there is no rate cap. A 429 opens it at once
+  (honouring `Retry-After`); five consecutive 5xx or timeouts open it too (no fault
+  drops the connection: a `reset` answers 503 at once, and a `hang` the caller
+  outwaits ends in a 503 at its 2-minute cap); while it is open that gate's callers
+  are refused without a request. Against the fake a fault of kind `429`, `503`,
+  `hang` or `reset` therefore stops only the worker that set it, so any spec may
+  set one: there is no breaker tag, list or job, and such a spec runs in an ordinary
+  shard on both projects and retries like any other (hard rule 5). A spec that still
+  needs BSC after its own fault opened the gate clears it first (`bscFake.clear()`).
+  A `delay` shorter than the caller's own timeout (a card-listing call gives up at
+  5 s, the seller profile read at 20 s, the seller sheet at 90 s) is an answer; one
+  that outlasts it counts as a failure to the gate, like a `hang`. The two specs
+  that open it on purpose:
   `checklist-fetch-bsc-429-cooldown-holds-the-cards-back-and-queues-them` (the
   cooldown a 429 opens) and `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards`
   (three hung cards, whose six timeouts open the gate).
 - **A cooldown, as a spec meets it.** A 429 on a card's listing opens a
-  deployment-wide window as long as the longer of our backoff (15 s doubling to
+  window on that gate (the worker's own against the fake) as long as the longer of our backoff (15 s doubling to
   120 s) and the `Retry-After` (honoured up to 10 minutes). While it is open a
   fetch stops asking BSC per card at once: the cards it still owed are marked
   failed, held back from any guess and queued for the background lane, and the
@@ -899,7 +911,7 @@ this before diagnosing anything that touches BSC:
   cooldown holds no call, so a fetch that meets one finishes at once without it.
   The older specs' `bscLookupOutcome` / `.or()` branches for a real 429 stay (they
   now always take the "answered" side) and **no new ones are added**: the
-  cooldown is proved by the breaker spec above.
+  cooldown is proved by the 429 spec above.
 - **The seller's wait is still a product state.** NeonBinder reads the seller
   account in the background and holds a run until it lands (see "The seller
   account" below). The fake answers the profile at once, so a seller spec that
@@ -909,8 +921,16 @@ this before diagnosing anything that touches BSC:
   specs do. The wait is made likelier, not guaranteed (the background read is armed
   30 s after the save and those specs press minutes later): both orders stay legal and
   end in the same hard asserts. The wait copy itself ("Waiting on BuySportsCards"
-  while a call is outstanding) is proved deterministically by the stall spec, whose
-  hung lookups hold the screen for about ten seconds.
+  while a call is outstanding) is proved with a held read, never with an `.or()`
+  between places it might show (NEO-628): `bscFault.slow(BSC_PATH.results, ...)`
+  holds the fetch's one catalogue read (its timeout is 30 s, so a shorter hold is an
+  answer), and Match Cards cannot be open before that read returns, so the page's
+  line must show. The 429 spec proves it on a one-source fetch and owns its
+  whole-page axe check; the stall spec proves it on a two-source fetch and then the
+  dialog's own line (`waitingOn(matchCards, ...)`) while the hung lookups hold.
+  `expectAfterMarketplace` credits the dialog's line like the page's; the dialog's
+  "still resolving (N of M done)" sentence is never credited, because it stays up
+  after the fetch until the run's teams land, which is our own time.
 
 **A listing-on BSC seed is one store (NEO-483).** `/testing/seed-credentials?sites=buysportscards&listing=on`
 (`saveBscSignIn(page, { listing: true })`) saves the sign-in once and returns:
@@ -968,7 +988,7 @@ How a spec handles it, all in `support/collection.ts`:
   box, by which time the account is normally stored.
 
 **The reset clears BSC's state.** `e2e-baseline.sh reset` also empties the BSC call
-gate, the "Waiting on BuySportsCards" wait rows, the background team lane and every
+gates, the "Waiting on BuySportsCards" wait rows, the background team lane and every
 fake BSC account the deployment owns (listings, photos, orders, faults), and a lane
 item queued before the reset ends without asking BSC. A re-seed therefore starts
 with BSC open and the lane empty.
@@ -1008,7 +1028,7 @@ trip the spec waits for (faster specs). So a spec spends a per-card lookup only 
 the card it is about:
 
 - **Every real-set fetch uploads its publisher checklist first** (`usePublishersChecklist`,
-  or `fetchChecklistToWizard`, which does it for the default set), before Sync card
+  or `fetchChecklistToTidyWalk`, which does it for the default set), before Sync card
   checklist. BSC is then asked per card only for rows left out on purpose
   (`--omit-number` / `--omit-player` in `tools/capture-bsc-checklist-teams.mjs`) and
   for a number that appears twice (rule 7: never keyed on a non-unique number).
@@ -1024,13 +1044,18 @@ the card it is about:
   BSC gives no team as a blank cell, so `No Team` is set by hand after a capture and
   recorded in SET-REGISTRY.md; a re-capture must put it back.
 - **Numbers are read as printed, in any case** (`TBD`, `PPR-DLa`, `1a`). `checklistFacts`
-  mirrors the parser and throws on two numbers in one file that differ only by case.
+  runs the product's own parser and matcher (`parsePublishedChecklist`,
+  `matchPublishedChecklist`; NEO-591), so N is what the fetch computes: never restate a
+  pairing rule in support code, import it. An edited upload (`usePublishersChecklist`'s
+  `ChecklistEdits`: team cells, a row renumbered, split into variations or dropped) gets
+  the edited file's facts; `nearNamePair` gives a near-name pair's % as Match Cards prints it.
 - **BSC does not 429 on its own any more, so a live card is answered.** The older
   specs' `.or()` over "answered" and "cooldown" (`bscLookupOutcome`, a `bsc-lookup`
   annotation) stay as they are and now take the answered side; do not add new ones.
   The cooldown itself (the product holds the guess back and asks the operator,
-  invariant 8) is proved on purpose by the `@bsc-breaker` spec that injects the 429
-  (see "BuySportsCards is the fake"). Never a flat wait, and a wait on the screen's
+  invariant 8) is proved on purpose by the spec that injects the 429
+  (`checklist-fetch-bsc-429-cooldown-holds-the-cards-back-and-queues-them`; see
+  "BuySportsCards is the fake"). Never a flat wait, and a wait on the screen's
   own wait line stays the measured time plus 7 s (`expectAfterMarketplace`).
 - **A card the recordings do not hold is a recorder run, not a spec change** (see
   "Unrecorded request"). A fixture file that leaves a card out on purpose adds that
@@ -1148,8 +1173,9 @@ skipped: no SportLots ids on this path."; the base picker's SportLots pane
 shows "SportLots wasn't asked: <set> has no SportLots link."; checklist fetches take the
 one-marketplace path ("Kept all N cards from BSC. Nothing to match, no other
 marketplace attached.") unless a publisher's checklist is in play (pasted, or
-the set's stored one): BSC plus the checklist are two sources, so Match Cards
-opens even paused (NEO-496; `confirmChecklistMatchCards`).
+the set's stored one): BSC plus the checklist are two sources even paused
+(NEO-496), and Match Cards opens when a card needs the operator, by the file's
+fact (NEO-640; `settleChecklistFetch`).
 Paused branches below Years assert THAT state, never the paused sentence.
 Consequences for drills: the Manufacturers column holds only the pinned "All
 Brands" view entry on a fresh deployment (see `SET-REGISTRY.md` -> "When
@@ -1197,7 +1223,7 @@ rejected-credentials answer, which is what `credentials-lifecycle` types.
 
 ## Enrichment fixtures (NEO-289)
 
-The entity-review wizard enriches players, teams and leagues from Wikidata
+The product enriches the players and leagues it creates from Wikidata
 (and ESPN) as before, but on **dev and PR previews** the names the seed set
 surfaces (2024 Topps Chrome, Baseball) are answered from a committed
 recording (`convex/adapters/__fixtures__/enrichment-lookups.json`) instead of
@@ -1210,8 +1236,8 @@ no-match and logged as `enrichment_fixture_live_refused` (error level), except
 the live-proof player below. Record a name before a spec depends on its
 answer. What that changes:
 
-- **`setup.spec.ts` no longer proves the live lane.** Its wizard drain
-  (the names-done footer, 240 s) is now an upper bound over a fixture-backed hit:
+- **`setup.spec.ts` no longer proves the live lane.** Its drain (the Tidy Up
+  walk, `walkAnsweringEverything`) is now an upper bound over a fixture-backed hit:
   seconds when the recording covers the seed, network time only for names it
   does not. The 240 s stays (the seed's sanctioned cold-path ceiling), but a seed that needs it with the recording in
   place is a coverage gap, not a slow Wikidata. CI prints the coverage report
@@ -1241,7 +1267,7 @@ answer. What that changes:
 - **Every other spec stays off live Wikidata** (Jason, 2026-10-30: "Use real
   names in tests. Keep a single test that does a real Wikidata lookup").
   Every player and league the product CREATES is looked up once, through the
-  same 5-wide pool the wizard's lookups wait in, so a minted name
+  same 5-wide pool a fetch's lookups wait in, so a minted name
   (`PM<token>`) is a live miss that holds a slot. Teams are not looked up on
   creation (NEO-254), and a custom sport has no `sportConfig.wikidata`, so
   neither costs anything. A spec that adds a Baseball player only as
@@ -1251,8 +1277,8 @@ answer. What that changes:
   per worker per spec. Such a spec is fresh-only. The unit test refuses a
   pool name that is not a recorded no-match. Since NEO-413 the same holds
   for every player, league or team a spec makes that the product looks up
-  (a Football player, a league added by hand or in the wizard, a career
-  team staged in the wizard): it comes from `recordedNoMatchName(env,
+  (a Football player, a league added by hand, a career team added on the
+  walk's Career tile): it comes from `recordedNoMatchName(env,
   "<spec>[:<role>]")`, a real name recorded as a no-match in that sport and
   absent from the catalogue. Never mint a token for a name that reaches a
   lookup; under the recording it is refused and logged as
@@ -1371,8 +1397,9 @@ raise a budget: run them, then run the spec.
 A worker with no `TEST_EMAIL_<n>` falls back to `TEST_EMAIL`, so a different
 worker number does not give you a different user. The eBay and BSC listing specs
 run on your own deployment like any other (NEO-552, NEO-555: both marketplaces are
-the fake, one seller per test user), and so do the `@bsc-breaker` specs; a breaker spec moves the deployment-wide BSC
-call gate, so run it alone and let its teardown clear it.
+the fake, one seller per test user), and so do the BSC fault specs (the 429 and stall
+specs): the call gate they open is the worker's own against the fake, and their teardown
+clears it.
 
 A change to `services/browser` or `services/preprocess`, or a red your deployment
 cannot reproduce, runs against **the PR preview** after the first push instead:
@@ -1405,13 +1432,20 @@ timeboxed check and then push; CI validates.
 PR in two passes, each on a freshly seeded preview:
 
 ```
-setup -> seed -> shard-desktop x8 -> breaker-desktop -> seed-mobile -> shard-mobile x8 -> breaker-mobile -> e2e (gate) -> report
+setup -> seed -> shard-desktop x8 -> seed-mobile -> shard-mobile x8 -> e2e (gate) -> report
 ```
 
 `seed` is the scripted reset plus the `setup` project (worker 0); the desktop
-shards run `--project=e2e`. `seed-mobile` needs every desktop shard (the reset
-wipes the shared preview), runs even when desktop has reds, and repeats the
-same Convex env steps, reset and `setup` project; the mobile shards run
+shards run `--project=e2e`. `seed-mobile` starts right after `seed` (NEO-628), installs
+and downloads the reference bundle while the desktop pass runs, then waits (a
+poll of the run's jobs API) until all 8 desktop shards have completed, because
+its reset wipes the shared preview. The wait also reads their conclusions: only
+if every one is `success` does it go on to repeat the reset and `setup` project
+(the Convex env switches `seed` set are not rewritten). If desktop is red it
+ends successfully without touching the preview and the mobile shards are
+skipped (fail fast, NEO-627: a red run may have no mobile results at all; the
+`e2e` gate still runs and says so, `report` still publishes the desktop
+results). It is a job condition, never a run cancel. The mobile shards run
 `--project=e2e-mobile`. Each shard gets an explicit file list from
 `node playwright/shard-plan.mjs 8 <i> --project <e2e|e2e-mobile>`
 (longest-processing-time-first over that project's entry in `timings.json`,
@@ -1441,25 +1475,24 @@ the shared-seller tag and its spec list are gone. A spec that writes to a
 marketplace seller account that IS shared (SportLots has one real test seller) is not
 written: raise it with the coordinator first.
 
-**BSC breaker specs (NEO-552).** A spec that makes the fake BSC answer 429, 5xx or
-nothing opens Convex's deployment-wide BSC call gate for every shard (see
-"BuySportsCards is the fake"). Those specs are in `BREAKER_SPECS`, carry
-`@bsc-breaker`, are planned in no shard (`shard-plan.mjs --breaker` prints them) and
-run in `breaker-desktop` / `breaker-mobile`: one job per pass, as worker 8, started
-only after every shard of the pass has finished (a red among them does
-not stop it), so nothing else is calling BSC while the gate is open. Each spec clears
-the gate itself (the `bscFake` fixture's teardown); the pass's reset clears it too.
-The `e2e` gate still needs each green on both projects. Artifacts:
-`pw-report-breaker-<pass>-a<attempt>`, `convex-logs-breaker-<pass>-a<attempt>`. A new
-spec that injects such a fault joins the list AND takes the tag (`setFaults` throws
-otherwise). Locally run them alone, on your own deployment.
+**BSC fault specs run in the shards (NEO-628).** Until NEO-628 a spec that made the
+fake BSC answer 429, 5xx or nothing opened Convex's one deployment-wide BSC call gate
+for every shard, so those specs carried `@bsc-breaker`, were planned in no shard and
+ran alone in `breaker-desktop` / `breaker-mobile` jobs after the shards, never
+retried. The gate is per test user against the fake now (see "BuySportsCards is the
+fake"), so they are planned like any other spec, retry like any other, and the tag,
+`BREAKER_SPECS`, `shard-plan.mjs --breaker` (a usage error now) and the breaker jobs
+are gone.
 
 **Reading a red run.**
 1. Find which spec failed in the "Playwright E2E" check or the sticky comment.
 2. Download the artifacts: `pw-report-desktop-<n>-a<attempt>` or
    `pw-report-mobile-<n>-a<attempt>` (the shard's screenshots and report),
-   `pw-report-breaker-desktop-a<attempt>` / `pw-report-breaker-mobile-a<attempt>` (the BSC breaker specs), `pw-report-seed-a<attempt>` / `pw-report-seed-mobile-a<attempt>` (a pass's seed), and `pw-merged`
-   (both passes' merged report and results). Every per-job artifact carries
+   `pw-report-seed-a<attempt>` / `pw-report-seed-mobile-a<attempt>` (a pass's seed), and `pw-merged`
+   (both passes' merged report and results). After a red desktop pass there are
+   no `*-mobile-*` artifacts by design (the mobile pass was skipped, NEO-627);
+   read the desktop ones. A PR whose every changed path is inert skips E2E
+   entirely and has none. Every per-job artifact carries
    the attempt it came from, so a rerun no longer overwrites an earlier red
    attempt's evidence (`pw-merged` is unsuffixed and is replaced by the
    latest attempt, so download it before any rerun). `gh run download <run-id> -n pw-report-desktop-1-a1`
@@ -1537,8 +1570,8 @@ public. Traces are only on locally (`retain-on-failure`).
 - [ ] A spec that fetches a real set uploads its publisher checklist first; a
       card it leaves live is named at the call site, and its team cell is never
       blank (`No Team` when the card has none). A spec that makes BSC misbehave does
-      it through `bscFake` only, and a 429, 503, hang or reset puts the spec in
-      `BREAKER_SPECS` with `@bsc-breaker`. eBay misbehaves through `ebayFake` only. New requests it makes of the catalogue
+      it through `bscFake` only (any fault kind, from any spec: the gate it opens is
+      the worker's own). eBay misbehaves through `ebayFake` only. New requests it makes of the catalogue
       come with their recorder run.
 - [ ] If the spec drives a shared helper you changed, a deliberate throw in
       the helper turns the covering specs red.

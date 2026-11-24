@@ -1,15 +1,19 @@
 // Origin: .maestro/flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml (Maestro suite retired in NEO-341; see git history)
 // Sole writer of the 1996 Score Dugout Collection Artists Proofs insert; fresh-only.
 //
-// NEO-535: the "Card titles" step is also proved in the SportLots-PAUSED branch, which
-// has no marketplace pairing and no 220-card merge. There ONE BSC insert (Series 1,
-// 110 cards, a captured publisher's checklist uploaded first) is renamed to a name
-// long enough that every title has to leave something out (NEO-609: a whole team, the
-// number or a first name sends a card to the step), so the wizard opens its "Card
-// titles" step and its "Set name in titles" box, and the box and per-card edits are
-// proved there, then read back off the stored cards. NEO-618: the box reaches every
-// title that left something out (a team or a number, not only a first name) whenever
-// the box version fits.
+// NEO-535 / NEO-645: the "Listing title" tile of the Tidy Up walk is proved in the SportLots-PAUSED
+// branch, which has no marketplace pairing and no 220-card merge. There ONE BSC insert (Series 1,
+// 110 cards, a captured publisher's checklist uploaded first) is renamed to a name long enough that
+// every title has to leave something out (NEO-609: a whole team, the number or a first name). The
+// file pairs every card at 100%, so Match Cards sits out (NEO-640): the 110 cards save first, each
+// worth a check, and the walk opens on them. Card by card the tile shows what went ("Left out
+// to fit"), takes titles typed by hand (one typed past 80 is refused in place), and "Shorten the
+// set name for every card" saves a "Set name in titles" that retitles every card. From the walk
+// that is a regeneration (NEO-645 C7): every title is rebuilt with the set name, the ones typed by
+// hand included. A title that fits only because the set name was shortened, with nothing else
+// left out, is no blue check: the tile says "Set name shortened to fit." in a purple note (NEO-645,
+// Jason 2026-11-23). The stored titles are read back; #3's typed title rebuilt and #12 with no
+// "cut short" mark are asserted LAST, in P9.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
@@ -23,28 +27,21 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
+import { cardAttentionMark, editCardButton } from "../../support/cards";
+import { CHECKLISTS, savedLine, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import {
-  addAsNewPlayerButton,
-  advanceToSave,
-  answerPlayerAsNew,
-  answerStepAsNew,
-  awaitLookupsSettled,
-  confirmSaveButton,
-  LOOKUPS,
-  newStepHeading,
-  expectDecidedCount,
-  expectNameStepLeft,
-  expectPostNameStepLeft,
-  expectWizardStep,
-  nextStepButton,
-  passCareerAndTeamsSteps,
-  readNameStep,
-  reviewWizard,
-  STEP_SUBTITLE,
+  expectCardSettled,
+  expectCardsLeft,
+  openTidyWalk,
+  saveForLater,
+  settleWalkAfterCommit,
+  skipCard,
+  skipUntil,
+  tidyCardIdentity,
+  tidyTile,
   tidyUpName,
-  wizardProgress,
-} from "../../support/wizard";
+  tidyWalk,
+} from "../../support/tidy-walk";
 import { expectNoOverCapLook, expectOverCapLook } from "../../support/theme";
 import type { Page } from "@playwright/test";
 
@@ -53,66 +50,54 @@ const SERIES_2 = "Dugout Collection Artist's Proofs Series 2";
 const MERGED = "Dugout Collection Artists Proofs";
 const FETCH = 120_000;
 
-/**
- * Wait for "Add remaining players as new" to have FINISHED, never for its busy label to be
- * gone. The press paints "Adding players…" a render later, and the walk is a few writes, so a
- * `toBeHidden` on that label can pass before it ever shows (the trace of a red mobile run: the
- * check ran 85 ms after the tap, the label painted after it, and the walk moved the wizard on
- * under the next click). The finished walk has two positive signs: the link reads "(0)" (a team
- * or league name is still undecided), or every name is decided and the footer offers Next /
- * Confirm & Save. The steps still showing before it read "(N)" with N above zero.
- */
-async function expectBulkWalkDone(page: Page): Promise<void> {
-  const wizard = reviewWizard(page);
-  await expect(
-    wizard
-      .getByRole("button", { name: /^Add remaining players as new \(0\)$/ })
-      .or(nextStepButton(page))
-      .or(confirmSaveButton(page)),
-  ).toBeVisible({ timeout: 240_000 });
-}
-
 // ── The SportLots-paused branch's fixture (NEO-535, NEO-609) ──
 // Series 1's NB row is renamed to LONG_INSERT. The title arithmetic is exact because
 // the name is a fixed string (no minted token), computed with the title builder
 // (`assessListingTitle`) over the captured checklist. The description "1996 Score
 // <name>" is 67 characters, and the row's type name ("Insert") is a quiet cut, so
 // every one of the 110 titles has to give up a whole team, the number or a first name
-// (NEO-609, the Tidy Up line): all 110 are on the step, which draws the first 50 in
-// card order and counts the rest ("And 60 more, saved as generated."). The cards the
-// spec reads sit among those 50:
-//   #2  Rich Becker      loses the team and the number, keeps his full name; the box
-//                        (NEO-618: any Tidy Up cut, not only a first name) brings both
-//                        back, the team whole
-//   #6  Jim Thome        fits at exactly 80 and loses ONLY the team; the box brings it
-//                        back whole (NEO-618; before it, the box left this card alone)
-//   #8  Don Mattingly    loses the team and "Don" (hand-edited in the step)
-//   #12 Darren Daulton   loses the team and "Darren"; the box brings the name back and
+// (NEO-609): every card is on the walk, worth a check. The cards the spec reads:
+//   #2  Rich Becker      loses the team and the number, keeps his full name; the set name
+//                        (NEO-618: any cut, not only a first name) brings both back, the
+//                        team whole
+//   #6  Jim Thome        fits at exactly 80 and loses ONLY the team; the set name brings it
+//                        back whole (NEO-618)
+//   #12 Darren Daulton   loses the team and "Darren"; the set name brings the name back and
 //                        the team fits as its nickname (NEO-606), the sport kept
-// and #76 Todd Hollandsworth, past the 50 drawn, runs over 80 after every cut (81): the
-// step counts it as still running long until the box makes it fit.
+// and #76 Todd Hollandsworth runs over 80 after every cut (81) until the set name makes it fit.
+// The titles the operator writes, each typed BEFORE the set name is saved. The set name saved
+// from the walk regenerates every title (NEO-645 C7), so neither survives it:
+//   #3  Ryan Klesko      holding the description: "Klesko #3" after it, 77, so it still leaves
+//                        out "Ryan" and the team; the set name rebuilds it whole (KLESKO_BOXED),
+//                        where a set name saved outside the walk would have swapped it in
+//                        (NEO-637)
+//   #8  Don Mattingly    OWN_TITLE (after one typed past 80): rebuilt as the generated one
 const SERIES_1_CARDS = 110;
-/** The step draws this many title rows (`TITLE_ROWS_SHOWN`) and counts the rest. */
-const TITLE_ROWS_SHOWN = 50;
 const LONG_INSERT = "Dugout Collection Artists Proofs Hologram Foil Series II";
 const LONG_DESCRIPTION = `1996 Score ${LONG_INSERT}`;
-// The box text the operator types: the description without the filler words.
+// The set name the operator saves: the description without the filler words.
 const SHORT_BOX = "1996 Score Dugout Collection Artists Proofs";
-/** #12 under the box: the first name back, the team by its nickname (NEO-606), the sport kept. */
+/** #12 under the set name: the first name back, the team by its nickname (NEO-606), the sport kept. */
 const DAULTON_BOXED = `${SHORT_BOX} Darren Daulton #12 Phillies Baseball`;
-/** #76 under the box (saved as generated, past the 50 drawn): it fits, the team by its nickname. */
+/** #76 under the set name: it fits, the team by its nickname. */
 const HOLLANDSWORTH_BOXED = `${SHORT_BOX} Todd Hollandsworth #76 Dodgers`;
-/** #2 before the box: the full name kept, the team and the number left out (80 is the cap). */
+/** #2 before the set name: the full name kept, the team and the number left out (80 is the cap). */
 const BECKER_BUILT = `${LONG_DESCRIPTION} Rich Becker`;
-/** #2 under the box (NEO-618): the number and the whole team back; the sport does not fit (83). */
+/** #2 under the set name (NEO-618): the number and the whole team back; the sport does not fit (83). */
 const BECKER_BOXED = `${SHORT_BOX} Rich Becker #2 Minnesota Twins`;
-/** #6 before the box: it fits at exactly 80 with only its team left out. */
+/** #6 before the set name: it fits at exactly 80 with only its team left out. */
 const THOME_BUILT = `${LONG_DESCRIPTION} Jim Thome #6`;
-/** #6 under the box (NEO-618): the team back whole; the sport does not fit (83). */
+/** #6 under the set name (NEO-618): the team back whole; the sport does not fit (83). */
 const THOME_BOXED = `${SHORT_BOX} Jim Thome #6 Cleveland Indians`;
 // What the operator types over #8's generated title: first past the cap, then their own.
 const OVER_TITLE = `${LONG_DESCRIPTION} Don Mattingly #8 New York Yankees`;
 const OWN_TITLE = "1996 Score Artists Proofs Don Mattingly #8 My Own Title";
+/** #8 under the set name, its edit dropped: the generated title, the team whole; the sport does not fit (86). */
+const MATTINGLY_BOXED = `${SHORT_BOX} Don Mattingly #8 New York Yankees`;
+/** NEO-637 — #3 as the operator types it: the set name kept, "Ryan" and the team out. */
+const KLESKO_OWN = (setName: string) => `${setName} Klesko #3`;
+/** #3 under the set name, rebuilt from the walk: the name and the team back; the sport does not fit (82). */
+const KLESKO_BOXED = `${SHORT_BOX} Ryan Klesko #3 Atlanta Braves`;
 
 async function openScoreInserts(page: Page, env: Parameters<typeof drillToSet>[1]) {
   await drillToSet(page, env, { year: "1996", manufacturer: "Score", set: "Score", createManufacturer: true });
@@ -120,8 +105,8 @@ async function openScoreInserts(page: Page, env: Parameters<typeof drillToSet>[1
 }
 
 /**
- * NEO-535, the SportLots-paused branch: the "Card titles" step and "Set name in
- * titles", proved on ONE BSC insert (Series 1) with nothing but BSC attached.
+ * NEO-535 / NEO-645, the SportLots-paused branch: the walk's "Listing title" tile and
+ * "Set name in titles", proved on ONE BSC insert (Series 1) with nothing but BSC attached.
  *
  * Contract: ENTRY the Inserts column is open on the 1996 Score variant type with both
  * BSC series listed under their own names (the caller asserted that). EXIT the set is
@@ -129,10 +114,6 @@ async function openScoreInserts(page: Page, env: Parameters<typeof drillToSet>[1
  * to LONG_INSERT and carries SHORT_BOX as its "Set name in titles". Fresh-only.
  */
 async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof drillToSet>[1]) {
-  const wizard = reviewWizard(page);
-  const next = nextStepButton(page);
-  const confirmSave = confirmSaveButton(page);
-
   // ── P1. Rename Series 1 so its titles cannot fit ──
   // The fetch reads the row's BSC id from its slot, never its name (product invariant 4),
   // so the rename cannot change what is fetched.
@@ -150,145 +131,144 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   expect(LONG_DESCRIPTION, "the description is 67 characters").toHaveLength(67);
   expect(SHORT_BOX, "the box text is 43 characters").toHaveLength(43);
   expect([BECKER_BUILT.length, THOME_BUILT.length, BECKER_BOXED.length, THOME_BOXED.length]).toEqual([79, 80, 74, 74]);
+  // NEO-637: every title the operator writes fits, and so does #8's under the set name.
+  expect([KLESKO_OWN(LONG_DESCRIPTION).length, KLESKO_BOXED.length, MATTINGLY_BOXED.length]).toEqual([77, 73, 77]);
 
   // ── P2. Fetch with the publisher's checklist uploaded first, BSC alone ──
   const facts = await usePublishersChecklist(page, CHECKLISTS.dugoutArtistsProofs1996Series1);
   expect(facts.rows, "the captured file holds every one of Series 1's cards").toBe(SERIES_1_CARDS);
   await syncChecklistButton(page).click();
-  // NEO-496 (D10): a publisher's checklist is a source, so even one marketplace opens Match Cards.
-  // The helper waits for it (one live BSC round trip: our 7 s plus the time BSC is measured to take),
-  // asserts "Teams from your checklist" while it is open, keeps every BSC card and confirms. The
-  // Save step below still counts all 110 cards ("Save 110 cards?"), which is what Keep-all proves.
-  await confirmChecklistMatchCards(page, { facts, what: "the solo fetch of Series 1" });
+  // NEO-496 (D10): a publisher's checklist is a source, so one marketplace and the file are two.
+  // NEO-640 / NEO-645 C5: the file is BSC's own 110 cards, each paired by its number at 100%, so
+  // Match Cards sits out: the helper asserts the progress line, then (one live BSC round trip: our
+  // 7 s plus BSC's) the saved line of all 110 cards with why the dialog sat out and "Teams from your
+  // checklist". The cards save FIRST; the walk opens after, on its own: every title had to leave
+  // something out, so every card is worth a check.
+  await settleChecklistFetch(page, env, { facts, what: "the solo fetch of Series 1" });
+  expect(
+    await settleWalkAfterCommit(page, savedLine(page, SERIES_1_CARDS)),
+    "every title left something out, so the walk opened",
+  ).toBe(true);
+  await expect(tidyWalk(page)).toHaveAccessibleName(tidyUpName({ year: "1996", set: "Score", variant: LONG_INSERT }));
+  await expectCardsLeft(page, SERIES_1_CARDS);
+  await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, every title left something out (SportLots paused)" });
 
-  // ── P3. Names first: the few the catalogue lacks are created as new ──
-  // The queue behind the lookups is the batch-lookups ceiling `walkToPlayerRow` waits at (LOOKUPS).
-  await expect(wizard).toBeVisible({ timeout: 60_000 });
-  await expect(wizard).toHaveAccessibleName(tidyUpName({ year: "1996", set: "Score", variant: LONG_INSERT }));
-  await awaitLookupsSettled(page);
-  const addNew = addAsNewPlayerButton(page);
-  const addRemaining = wizard.getByRole("button", { name: /Add remaining players as new/ });
-  for (let i = 0; i < 250; i++) {
-    await expect(next.or(confirmSave).or(addNew).or(newStepHeading(page))).toBeVisible({ timeout: LOOKUPS });
-    if ((await next.isVisible()) || (await confirmSave.isVisible())) break;
-    if (await addNew.isVisible()) {
-      await answerPlayerAsNew(page);
-      if (await addRemaining.isVisible()) {
-        await addRemaining.click();
-        await expectBulkWalkDone(page);
-      }
-    } else {
-      await answerStepAsNew(page);
+  // ── P3. The Listing title tile, card by card, BEFORE any set-name change ──
+  // The walk goes in (ready, number) order, and a card whose name lookups are still running is
+  // not ready, so the cards this spec reads are found by their number off the open card, and every
+  // other card is skipped (Skip writes nothing). Bounded by the checklist's size.
+  const titleTile = tidyTile(page, "Listing title");
+  const shownTitle = (text: string) => titleTile.getByText(text, { exact: true });
+  const leftOut = titleTile.getByText(/^Left out to fit: /);
+  const titleBox = (number: number) => titleTile.getByRole("textbox", { name: `Card title for #${number}`, exact: true });
+  const editTitle = titleTile.getByRole("button", { name: "Edit title", exact: true });
+  /** Type a title by hand and keep it with Enter: the editor closes and the tile shows it. */
+  const typeTitle = async (number: number, text: string) => {
+    await editTitle.click();
+    await titleBox(number).fill(text);
+    await titleBox(number).press("Enter");
+    await expect(titleBox(number)).toBeHidden();
+    await expect(shownTitle(text)).toBeVisible();
+  };
+  const handlers: Record<string, () => Promise<void>> = {
+    // #2 kept its full name and gave up its team and number: a cut (blue) puts it on the walk.
+    "2": async () => {
+      await expect(titleTile).toHaveAccessibleDescription(/To check/);
+      await expect(shownTitle(BECKER_BUILT)).toBeVisible();
+      await expect(leftOut).toHaveText(/^Left out to fit: Minnesota Twins, #2$/);
+    },
+    // #3 typed by hand, holding the set's description: "Ryan" and the team stay out.
+    "3": async () => {
+      await expect(shownTitle(`${LONG_DESCRIPTION} Ryan Klesko`)).toBeVisible();
+      await typeTitle(3, KLESKO_OWN(LONG_DESCRIPTION));
+    },
+    // #6 fits at exactly 80 and gave up its team alone (nothing after it: no comma).
+    "6": async () => {
+      await expect(shownTitle(THOME_BUILT)).toBeVisible();
+      await expect(leftOut).toHaveText(/^Left out to fit: Cleveland Indians$/);
+    },
+    // #8: a title typed past 80 is refused in place (invalid, the pink look, Save title held);
+    // then the operator's own, which fits, and Enter keeps it.
+    "8": async () => {
+      await editTitle.click();
+      const box = titleBox(8);
+      await box.fill(OVER_TITLE);
+      const over = titleTile.getByText("Over the limit, so it opens ready to edit.", { exact: true });
+      await expect(over).toBeVisible();
+      await expect(box).toHaveAttribute("aria-invalid", "true");
+      await expectOverCapLook(box, over);
+      await expect(titleTile.getByRole("button", { name: "Save title", exact: true })).toHaveAttribute("aria-disabled", "true");
+      await expectAccessible(page, { within: tidyWalk(page), label: "Listing title tile, a title typed past 80 (SportLots paused)" });
+      await box.fill(OWN_TITLE);
+      await expect(box).not.toHaveAttribute("aria-invalid", "true");
+      await expect(over).toHaveCount(0);
+      await expect(titleTile.getByText("Fits now. Enter saves it.", { exact: true })).toBeVisible();
+      await expectNoOverCapLook(box);
+      await box.press("Enter");
+      await expect(box).toBeHidden();
+      await expect(shownTitle(OWN_TITLE)).toBeVisible();
+    },
+    // #12 lost "Darren" and its team, whole (it does not fit even as "Phillies").
+    "12": async () => {
+      await expect(shownTitle(`${LONG_DESCRIPTION} Daulton #12`)).toBeVisible();
+      await expect(leftOut).toHaveText(/Darren/);
+      await expect(leftOut).toHaveText(/Philadelphia Phillies/);
+    },
+  };
+  const todo = new Set(Object.keys(handlers));
+  for (let i = 0; i < SERIES_1_CARDS && todo.size > 0; i++) {
+    await expectCardSettled(page);
+    const number = (await tidyCardIdentity(page).first().textContent())?.match(/^#(\S+)/)?.[1] ?? "";
+    if (todo.has(number)) {
+      await handlers[number]();
+      todo.delete(number);
     }
+    if (todo.size > 0) await skipCard(page);
   }
-  await expect(next.or(confirmSave)).toBeVisible();
+  expect([...todo], "the walk showed every card this spec reads").toEqual([]);
 
-  // ── P4. THE CARD TITLES STEP ──
-  // Which post-name steps come first: the career check (NEO-574) when a known player's career
-  // does not show a card's team for 1996, teams only when a card would save teamless (every
-  // card here carries the checklist's team, so normally not); Next leaves their lines on
-  // their default ("Keep as is", "Leave for later").
-  await passCareerAndTeamsSteps(page);
-  await expect(wizard.getByText("Card titles", { exact: true })).toBeVisible();
-  await expect(
-    wizard.getByRole("heading", {
-      name: "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.",
-      exact: true,
-    }),
-  ).toBeVisible();
-
-  const box = wizard.getByRole("textbox", { name: "Set name in titles", exact: true });
-  const title = (number: number) => wizard.getByRole("textbox", { name: new RegExp(`^Title for #${number} `) });
-  // The box opens on the set's whole description (no type name), and shows how much of the 80 it is.
+  // ── P4. "Shorten the set name for every card", from #12 in a new sitting (the pill) ──
+  await saveForLater(page);
+  await openTidyWalk(page);
+  await skipUntil(page, tidyWalk(page).getByText(/^#12$/), { maxCards: SERIES_1_CARDS });
+  const shorten = titleTile.getByRole("button", { name: "Shorten the set name for every card", exact: true });
+  await expect(shorten).toHaveAttribute("aria-expanded", "false");
+  await shorten.click();
+  await expect(shorten).toHaveAttribute("aria-expanded", "true");
+  const box = titleTile.getByRole("textbox", { name: "Set name in titles", exact: true });
+  await expect(box).toBeFocused();
+  // It opens on what the titles say now: the builder's description of the set (the year, the
+  // brand and the renamed insert, capped at 80), never the set row's bare name ("Score").
   await expect(box).toHaveValue(LONG_DESCRIPTION);
-  await expect(box).toHaveAccessibleDescription(/\b67\/80\b/);
-  // #12 lost "Darren" and its team, whole (it does not fit even as "Phillies").
-  await expect(title(12)).toHaveValue(`${LONG_DESCRIPTION} Daulton #12`);
-  await expect(title(12)).toHaveAccessibleDescription(/Left out to fit: .*Darren/);
-  await expect(title(12)).toHaveAccessibleDescription(/Left out to fit: .*Philadelphia Phillies/);
-  // #2 kept its full name and gave up its team and number: a Tidy Up cut puts it here too.
-  await expect(title(2)).toHaveValue(BECKER_BUILT);
-  await expect(title(2)).toHaveAccessibleDescription(/Left out to fit: Minnesota Twins, #2/);
-  // #6 fits at exactly 80 and gave up its team alone (nothing after it: no comma).
-  await expect(title(6)).toHaveValue(THOME_BUILT);
-  await expect(title(6)).toHaveAccessibleDescription(/Left out to fit: Cleveland Indians(?!,)/);
-  // Every one of the 110 had to leave something out: 50 are drawn and the rest counted.
-  const titles = wizard.getByRole("textbox", { name: /^Title for #/ });
-  await expect(titles).toHaveCount(TITLE_ROWS_SHOWN);
-  await expect(wizard.getByText(`And ${SERIES_1_CARDS - TITLE_ROWS_SHOWN} more, saved as generated.`, { exact: true })).toBeVisible();
-  await expectAccessible(page, { within: wizard, label: "Card titles step, every title left something out (SportLots paused)" });
-
-  // NEO-606: a box typed past 80 is refused in place, on the wizard's own surface: the box is
-  // invalid, the refusal is an alert, and no title takes it. Axe reads it in both modes while
-  // it shows.
-  const overBox = `${LONG_DESCRIPTION} Hologram Foil Extra`;
-  expect(overBox).toHaveLength(87);
-  await box.fill(overBox);
-  await box.press("Enter");
-  const boxRefusal = wizard.getByRole("alert").filter({ hasText: "Set name in titles tops out" });
-  await expect(boxRefusal).toHaveText("Set name in titles tops out at 80 characters.");
-  await expect(box).toHaveAttribute("aria-invalid", "true");
-  await expect(title(12)).toHaveValue(`${LONG_DESCRIPTION} Daulton #12`);
-  await expectAccessible(page, { within: wizard, label: "Card titles step, Set name in titles over 80 refused" });
-
-  // ── P5. Trim the box: every title that left something out takes it (NEO-618) ──
   await box.fill(SHORT_BOX);
-  // Enter settles the box in place; its status is read at the settle. It counts every
-  // title, the ones past the 50 drawn too: #76, over 80 after every cut, fits now.
-  await box.press("Enter");
-  await expect(wizard.getByText("Every title fits now.")).toBeVisible();
-  await expect(boxRefusal).toHaveCount(0);
-  await expect(box).not.toHaveAttribute("aria-invalid", "true");
-  await expect(box).toHaveAccessibleDescription(/\b43\/80\b/);
-  // #12 has its first name back, opening with the box text verbatim, and its team fits as
-  // the nickname, where it would not fit whole (NEO-606): nothing is reported left out.
-  await expect(title(12)).toHaveValue(DAULTON_BOXED);
-  await expect(title(12)).not.toHaveAccessibleDescription(/Left out to fit/);
-  // NEO-618: #2 fit with its full name and lost its team and number, and #6 fit and lost
-  // only its team. A Tidy Up cut is enough for the box when the box version fits: both
-  // open with the box text and get back everything they left out.
-  await expect(title(2)).toHaveValue(BECKER_BOXED);
-  await expect(title(2)).not.toHaveAccessibleDescription(/Left out to fit/);
-  await expect(title(6)).toHaveValue(THOME_BOXED);
-  await expect(title(6)).not.toHaveAccessibleDescription(/Left out to fit/);
-  // The list itself never moved under the edit.
-  await expect(titles).toHaveCount(TITLE_ROWS_SHOWN);
-  await expectAccessible(page, { within: wizard, label: "Card titles step, every title fits (SportLots paused)" });
-
-  // ── P6. A title typed by hand wins on its card ──
-  // Typed past 80 first: the whole box says it is over, invalid to a screen reader and the
-  // error pink on its edge and on its note (the row's own status line, NEO-606).
-  const row8 = wizard.getByRole("listitem").filter({ has: page.getByRole("textbox", { name: /^Title for #8 / }) });
-  const note8 = row8.getByRole("status");
-  await title(8).fill(OVER_TITLE);
-  await expect(note8).toHaveText("Too long to list as-is.");
-  await expect(title(8)).toHaveAttribute("aria-invalid", "true");
-  await expectOverCapLook(title(8), note8);
-  await expectAccessible(page, { within: wizard, label: "Card titles step, a title typed past 80 (SportLots paused)" });
-  // Their own title, which fits: the error lets go (not invalid, no pink, the emptied
-  // status line hides itself and leaves the accessibility tree), and Enter keeps it.
-  await title(8).fill(OWN_TITLE);
-  await expect(title(8)).not.toHaveAttribute("aria-invalid", "true");
-  await expect(note8).toHaveCount(0);
-  await expectNoOverCapLook(title(8));
-  await title(8).press("Enter");
-  await expect(wizard.getByRole("button", { name: /^Use generated title for #8 / })).toBeVisible();
-  await expect(title(8)).toHaveValue(OWN_TITLE);
-  // The box did not take #12's edit away: a hand edit is per card.
-  await expect(title(12)).toHaveValue(DAULTON_BOXED);
-
-  // ── P7. Save: the Save step is a later step, and Enter on it commits ──
-  await expectWizardStep(page, STEP_SUBTITLE.titles);
-  await next.click();
-  await expect(wizard.getByText("Ready to save", { exact: true })).toBeVisible();
-  // NEO-467: the Save step is a later step than Card titles, the end of the bar.
-  await expectPostNameStepLeft(page, STEP_SUBTITLE.titles);
-  await expect(wizardProgress(page), "the Save step fills the progress bar").toHaveAttribute("aria-valuenow", "100");
-  await expect(wizard.getByText(new RegExp(`Save ${SERIES_1_CARDS} cards?\\?`))).toBeVisible();
-  await expect(confirmSave).toBeVisible();
-  await confirmSave.press("Enter");
-  await expect(page.getByText(new RegExp(`Saved ${SERIES_1_CARDS} cards`))).toBeVisible();
-  await expect(wizard).toBeHidden();
+  // The card's title follows the box as it is typed (nothing saved yet): #12 has its first name
+  // back, opening with the box text verbatim, and its team fits as the nickname (NEO-606).
+  await expect(shownTitle(DAULTON_BOXED)).toBeVisible();
+  await expectAccessible(page, { within: tidyWalk(page), label: "Listing title tile, Set name in titles open (SportLots paused)" });
+  // Escape closes only the field, nothing saved: the title is the stored one again.
+  await box.press("Escape");
+  await expect(box).toBeHidden();
+  await expect(shorten).toBeFocused();
+  await expect(shownTitle(`${LONG_DESCRIPTION} Daulton #12`)).toBeVisible();
+  // Again, and this time saved for every card of the checklist. The box opens on the description
+  // again: the Escape kept nothing of the typed text.
+  await shorten.click();
+  await expect(box).toHaveValue(LONG_DESCRIPTION);
+  await box.fill(SHORT_BOX);
+  await titleTile.getByRole("button", { name: `Save and apply to all ${SERIES_1_CARDS} cards`, exact: true }).click();
+  await expect(titleTile.getByText("Set name saved. The other cards' titles are updating.", { exact: true })).toBeVisible();
+  await expect(box).toBeHidden();
+  // #12's STORED title is the set name's now, and nothing is left out of it. It fits only because
+  // the set name was shortened, so it is no blue check: the tile is plain (no "To check") and says
+  // so in a purple note (NEO-645, Jason 2026-11-23). The walk keeps the open card on screen though
+  // it no longer needs a person; STEP P9 reads, last, that its checklist row carries no cut mark.
+  await expect(shownTitle(DAULTON_BOXED)).toBeVisible();
+  await expect(leftOut).toHaveCount(0);
+  const shortenedNote = titleTile.getByRole("note").filter({ hasText: /^Set name shortened to fit\.$/ });
+  await expect(shortenedNote).toBeVisible();
+  await expect(titleTile).not.toHaveAccessibleDescription(/To check/);
+  await expectAccessible(page, { within: tidyWalk(page), label: "Listing title tile, Set name shortened to fit (SportLots paused)" });
+  await saveForLater(page);
 
   // ── P8. The stored cards carry the chosen titles ──
   await openScoreInserts(page, env);
@@ -308,27 +288,27 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardTitle).toBeHidden();
   };
-  // #12: the box text opens it (the listed title the operator kept), and the stored title is
-  // exactly what the step showed, its team by the nickname (NEO-606).
+  // The set name retitled every card in scheduled pages (NEO-637's rules, server-side). A
+  // GENERATED title is rebuilt with it: #12 (on screen when it was saved) and #2, #6 and #76,
+  // which were never opened after it. #2 and #6 fit but left a team (and #2 its number) out
+  // (NEO-618); #76 ran over 80 and fits now.
   await openCard(12);
   await expect(cardTitle).toHaveValue(DAULTON_BOXED);
   await closeCard();
-  // #8: the title the operator typed.
-  await openCard(8);
-  await expect(cardTitle).toHaveValue(OWN_TITLE);
-  await closeCard();
-  // #2 and #6 (NEO-618): they fit but left a team (and #2 its number) out, so the commit
-  // built them from the box too, as the step showed.
   await openCard(2);
   await expect(cardTitle).toHaveValue(BECKER_BOXED);
-  await expectAccessible(page, { label: "Card detail drawer, a fitting title the box rebuilt (SportLots paused)" });
+  await expectAccessible(page, { label: "Card detail drawer, a fitting title the set name rebuilt (SportLots paused)" });
   await closeCard();
   await openCard(6);
   await expect(cardTitle).toHaveValue(THOME_BOXED);
   await closeCard();
-  // #76, past the 50 drawn, was saved as generated: with the box, as the step counted it.
   await openCard(76);
   await expect(cardTitle).toHaveValue(HOLLANDSWORTH_BOXED);
+  await closeCard();
+  // A title typed by hand is rebuilt too: the set name from the walk regenerates (C7), so #8's own
+  // words are gone and the title is the generated one.
+  await openCard(8);
+  await expect(cardTitle).toHaveValue(MATTINGLY_BOXED);
   await closeCard();
   // The box text sits on the insert row itself (its attributes panel), for the cards that come next.
   await expect(page.getByRole("heading", { name: `Attributes for ${LONG_INSERT}` })).toBeVisible();
@@ -346,6 +326,28 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(columnSearch(page, "Inserts")).toBeVisible();
   await expect(columnOption(page, "Inserts", LONG_INSERT)).toBeVisible();
   await expect(page.getByRole("heading", { name: `Attributes for ${LONG_INSERT}` })).toBeHidden();
+
+  // ── P9 (LAST: #3's typed title rebuilt, #12 with no "cut short" mark) ──
+  // NEO-645 C7: the set name saved from the walk regenerates every title, a typed one included, so
+  // #3's "Klesko #3" (which still left out "Ryan" and the team) is the generated title under the set
+  // name, nothing of the hand edit kept. The row opens with the checklist at its end, so the card is
+  // brought up by its player's name.
+  await columnOption(page, "Inserts", LONG_INSERT).click();
+  const search = page.getByRole("searchbox", { name: "Search cards" });
+  await search.fill("Klesko");
+  await page.getByRole("button", { name: /^Edit card 3, / }).click();
+  await expect(cardTitle).toBeVisible();
+  await expect(cardTitle).toHaveValue(KLESKO_BOXED);
+  await closeCard();
+  // #12 under the set name leaves nothing out (its team fits as the nickname, NEO-606, and the tile
+  // listed nothing under "Left out to fit"): the shortened set name is the only cut, so its row is
+  // not "worth a check: listing title was cut short" (NEO-645, Jason 2026-11-23:
+  // `titleFitsOnShortName` clears `generatedTitleTruncatedFlag`). Before that rule the walk's
+  // rebuild stored the flag on every title built on the set name. The row itself is on screen
+  // (the positive the absence is read beside).
+  await search.fill("Daulton");
+  await expect(editCardButton(page, "12")).toBeVisible();
+  await expect(cardAttentionMark(page, "12", "listing title was cut short")).toHaveCount(0);
 }
 
 test(
@@ -361,7 +363,6 @@ test(
     const reconcile = page.getByRole("dialog", { name: "Reconcile Inserts" });
     const pairing = page.getByRole("dialog", { name: /Match Cards/ });
     const confirmMatches = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-    const wizard = reviewWizard(page);
     const saveSets = reconcile.getByRole("button", { name: /^Save [0-9]+ sets$/ });
 
     await signIn("/set-selector");
@@ -454,112 +455,32 @@ test(
     await expect(pairing.getByText(/Nothing kept/)).toBeHidden();
     await expect(pairing.getByText(/220 cards will be saved/)).toBeVisible();
     await expectAccessible(page, { within: pairing, label: "Match Cards dialog (two BSC sources + SportLots)" });
+    // NEO-645: Confirm IS the commit of the 220 cards, and the Tidy Up walk opens on them by itself
+    // (every title is over 80 after every cut, so every card is a stop).
     await confirmMatches.click();
     await expect(pairing).toBeHidden({ timeout: 60_000 });
+    const saved220 = page.getByText(/^Saved 220 cards\./).first();
+    await expect(saved220).toBeVisible({ timeout: FETCH });
+    expect(await settleWalkAfterCommit(page, saved220), "every title is over 80, so the walk opened").toBe(true);
+    await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, every title over 80" });
 
-    // ── 4. Entity review: decide one row, back out of the discard, then add the rest ──
-    await expect(wizard).toBeVisible({ timeout: FETCH });
-    await expect(wizard.getByText(/still looking up/)).toBeHidden({ timeout: 180_000 });
-    await expectAccessible(page, { within: wizard, label: "Tidy-up wizard" });
-    // NEO-331: a New League step's primary is held until a Level is pressed
-    // (none is pre-pressed), so read which kind settled first. "Other" claims
-    // nothing (the batch is discarded or bulk-added anyway).
-    const anyAddAsNew = wizard.getByRole("button", { name: /^Add as New (Player|Team|League)( anyway)?$/ });
-    await expect(anyAddAsNew.first()).toBeVisible({ timeout: 30_000 });
-    const firstKind = (await anyAddAsNew.first().textContent()) ?? "";
-    // The presented row, by its own skip ("Skip <name> — not a ..."): NEO-467's
-    // header has no step count, so the row's own control says it was decided.
-    const firstRow = await readNameStep(page);
-    if (/League/.test(firstKind)) {
-      await wizard.getByRole("radio", { name: "Other", exact: true }).click();
-    }
-    if (/Player/.test(firstKind)) {
-      // NEO-424: a player step may lead with a suggested link; creating is the intent.
-      await answerPlayerAsNew(page);
-    } else {
-      await wizard
-        .getByRole("button", { name: /^Add as New (Team|League)( anyway)?$/, disabled: false })
-        .first()
-        .click({ timeout: 30_000 });
-    }
-    // ONE decision: the wizard left that row, and the names' history reads
-    // "Decided (1)" (NEO-467 took the "Step 2 of …" count away; the same claim,
-    // as strict, as the old "1 of N reviewed").
-    await expectNameStepLeft(page, firstRow);
-    await expectDecidedCount(page, 1);
-    await wizard.getByRole("button", { name: "Cancel (Esc)" }).click();
-    await expect(page.getByText(/Discard 1 decision/)).toBeVisible();
-    await expect(page.getByText(/The same names come back the next time you sync this set/)).toBeVisible();
-    await expectAccessible(page, {
-      within: page.getByRole("dialog", { name: /Discard 1 decision/ }),
-      label: "Discard decisions confirm",
-    });
-    await page.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(wizard).toBeVisible();
-    // Backing out of the discard kept the decision: still one decided, and the
-    // wizard did not return to that row.
-    await expectDecidedCount(page, 1);
-    await expect(wizard.getByRole("button", { name: firstRow, exact: true })).toBeHidden();
-
-    await wizard.getByRole("button", { name: /Add remaining players as new/ }).click();
-    // Deciding a team step in the middle of the walk would race the bulk's own writes
-    // (Convex OCC), and a user watches the walk finish before touching the next step.
-    await expectBulkWalkDone(page);
-    const confirmSave = confirmSaveButton(page);
-    // The names-done footer (NEO-335): "Next (Enter)" on a teams / titles step,
-    // else Confirm & Save. Neither renders while a name is undecided.
-    const next = wizard.getByRole("button", { name: "Next (Enter)", exact: true });
-    const stepHeading = wizard.getByRole("heading", { name: /^New (Team|League): / });
-    for (let i = 0; i < 250; i++) {
-      await expect(next.or(confirmSave).or(stepHeading)).toBeVisible({ timeout: 240_000 });
-      if ((await next.isVisible()) || (await confirmSave.isVisible())) break;
-      // R10 loop rule: act on the step, then wait for ITS heading to go before
-      // looking for the next one (NEO-331: a league step gets its Level first).
-      const step = (await stepHeading.textContent()) ?? "";
-      await answerStepAsNew(page);
-      await expect(wizard.getByRole("heading", { name: step, exact: true })).toBeHidden();
-    }
-    await expect(next.or(confirmSave)).toBeVisible();
-
-    // ── 4b. THE CARD TITLES STEP, AND THE SET'S "SET NAME IN TITLES" (NEO-335, NEO-535) ──
-    // STEP 3b's long insert name leaves every card's title over 80 after every
-    // cut, so the "Card titles" step is certain; a run where it does not come up
-    // fails at its subtitle below, by name. The box opens prefilled with the
-    // builder's own whole description; untouched and over 80 it sits out. The
-    // operator replaces it: every over-cap title then opens with the box text,
-    // verbatim, it rides the commit as the batch's `listingShortName`, and STEP
-    // 5 reads it back off a stored card. ONE alphanumeric token per attempt.
+    // ── 4. THE SET'S "SET NAME IN TITLES", FROM THE WALK (NEO-335, NEO-535, NEO-645) ──
+    // STEP 3b's long insert name leaves every card's title over 80, so the open card's Listing
+    // title tile is pink and opens ready to edit. "Shorten the set name for every card" saves the
+    // box text as the row's set name and retitles every card; STEP 5 reads it back off a stored
+    // card. ONE alphanumeric token per attempt.
     const short = `DCAP${env.ATTEMPT_TOKEN}`;
-    // Which post-name steps come first: the career check (NEO-574) when a known
-    // player's career does not show a card's team for 1996, the teams step only when
-    // a card would save teamless (this fetch names its teams, so usually not).
-    // Neither is this spec's business: Next leaves every line on its default.
-    await passCareerAndTeamsSteps(page);
-    await expect(wizard.getByText("Card titles", { exact: true })).toBeVisible();
-    const shortName = wizard.getByRole("textbox", { name: "Set name in titles", exact: true });
-    // The prefill: the builder's whole description, year, maker and the insert
-    // first (a parallel name the leaf's features carry would follow it).
-    await expect(shortName).toHaveValue(new RegExp(`^1996 Score ${escapeRe(renamed)}`));
-    await expect(wizard.getByText("Over 80, so it's sitting out. Trim it and your titles pick it up.")).toBeVisible();
-    await shortName.clear();
+    const titleTile = tidyTile(page, "Listing title");
+    await expect(titleTile).toHaveAccessibleDescription(/To fix/);
+    await titleTile.getByRole("button", { name: "Shorten the set name for every card", exact: true }).click();
+    const shortName = titleTile.getByRole("textbox", { name: "Set name in titles", exact: true });
+    await expect(shortName).toBeFocused();
     await shortName.fill(short);
-    // Enter settles the box in place; its status is read at the settle. The
-    // proof the box reached EVERY title: the line is computed from the same
-    // assessment as the list, over every new card.
-    await shortName.press("Enter");
-    await expect(wizard.getByText("Every title fits now.")).toBeVisible();
-    await expect(shortName).toHaveValue(short);
-    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Card titles step" });
-    await expectWizardStep(page, STEP_SUBTITLE.titles);
-    await next.click();
-    await expect(wizard.getByText("Ready to save", { exact: true })).toBeVisible();
-    // NEO-467: the Save step is a later step than Card titles, the end of the bar.
-    await expectPostNameStepLeft(page, STEP_SUBTITLE.titles);
-    await expect(wizardProgress(page), "the Save step fills the progress bar").toHaveAttribute("aria-valuenow", "100");
-    // Focus follows the Save step, and the label says "(Enter)": Enter committing IS the feature.
-    await expect(confirmSave).toBeVisible();
-    await confirmSave.press("Enter");
-    await expect(page.getByText(/Saved 220 cards/)).toBeVisible({ timeout: FETCH });
+    await expectAccessible(page, { within: tidyWalk(page), label: "Tidy Up walk, Set name in titles" });
+    await titleTile.getByRole("button", { name: "Save and apply to all 220 cards", exact: true }).click();
+    await expect(titleTile.getByText("Set name saved. The other cards' titles are updating.", { exact: true })).toBeVisible();
+    await expect(titleTile).not.toHaveAccessibleDescription(/To fix/);
+    await saveForLater(page);
     await expectAccessible(page, { label: "Saved 1996 Score insert checklist" });
 
     // ── 5. NeonBinder's own card name survives a re-sync (NEO-203) ──
@@ -594,31 +515,11 @@ test(
     await expectAccessible(page, { within: review, label: "Review Changes dialog" });
     await expect(review.getByText(/no longer listed upstream/)).toBeHidden();
     await review.getByRole("button", { name: "Apply selected changes" }).click();
-    // NEO-335: the wizard has no NAMES to ask about here, but it can still open
-    // TEAMS-ONLY (same title, straight onto its teams step) when a card would
-    // save with no team. Whether any is in that state is the marketplaces'
-    // business, so both shapes are accepted and the save is asserted after
-    // either. The two never coexist: the sync cleared the previous "Saved 220
-    // cards." banner when it started, and the wizard stays open until its commit
-    // writes the next one.
-    const saved = page.getByText(/Saved 220 cards/);
-    await expect(wizard.or(saved).first()).toBeVisible({ timeout: FETCH });
-    if (await wizard.isVisible()) {
-      // The precondition, by name: no names to decide, and a post-name step is
-      // the sitting's first.
-      await expect(wizard.getByRole("button", { name: /Skip remaining names/ })).toBeHidden();
-      // NEO-467: the sitting's first step, read off the progress bar's value text.
-      // NEO-574: "Career check" too (any one of these is the post-name step being up).
-      await expectWizardStep(
-        page,
-        new RegExp(`^(${STEP_SUBTITLE.career}|${STEP_SUBTITLE.teams}|${STEP_SUBTITLE.titles})$`),
-      );
-      // Teams are not this spec's business: Next leaves every line on its default.
-      await advanceToSave(page);
-      await expect(wizard.getByText(/Save [0-9]+ cards?\?/)).toBeVisible();
-      await confirmSaveButton(page).click();
-    }
+    // NEO-645: the commit's line, then the walk opens by itself if a card still needs a person
+    // (not this spec's business: Save for later closes it and writes nothing).
+    const saved = page.getByText(/^Saved 220 cards\./).first();
     await expect(saved).toBeVisible({ timeout: FETCH });
+    if (await settleWalkAfterCommit(page, saved)) await saveForLater(page);
     await expect(page.getByText(new RegExp(`NB203-${id}`)).first()).toBeVisible();
 
     // ── 6. The set is still renamed (STEP 3b), re-sync the column: the name check offers suggestions ──

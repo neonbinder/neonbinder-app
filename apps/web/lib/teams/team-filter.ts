@@ -1,7 +1,5 @@
-import {
-  entityNameQueryReadings,
-  entityNameTokens,
-} from "../entities/normalize-name";
+import { storedNameMatchesTyped } from "../entities/name-search";
+import { entityNameCompareReadings, entityNameQueryReadings } from "../entities/normalize-name";
 
 /**
  * NEO-330 — what "this team matches what I typed" means, in ONE place.
@@ -26,10 +24,22 @@ import {
 
 /**
  * The typed text as the matcher reads it — one reading, or two when the text
- * ends in a run of initials (see `entityNameQueryReadings`). Empty when nothing
- * matchable was typed, which matches every team.
+ * ends in a run of initials (see `entityNameQueryReadings`). A hyphen is a space
+ * (`entityNameCompareReadings`, NEO-643), so "wilkes barre" and "wilkes-barre"
+ * type the same words. Empty when nothing matchable was typed, which matches
+ * every team.
  */
 export function teamFilterReadings(raw: string): string[][] {
+  return entityNameCompareReadings(raw).filter((tokens) => tokens.length > 0);
+}
+
+/**
+ * The same readings as `teamFilterReadings`, but read the way the STORED key
+ * is (a hyphen stays inside its word), for the search index, which holds
+ * `nameNormalized` as stored. A hyphen means a space only in the in-memory
+ * filter above; the index is asked exactly as it was before NEO-643.
+ */
+export function teamSearchReadings(raw: string): string[][] {
   return entityNameQueryReadings(raw).filter((tokens) => tokens.length > 0);
 }
 
@@ -37,21 +47,21 @@ export function teamFilterReadings(raw: string): string[][] {
  * Whether a team answers to the typed text.
  *
  * `nameNormalized` is the folded, punctuation-stripped tokens of the composed
- * full name (location + nickname), so it is read as-is; aliases are stored as
- * the operator typed them and are tokenised here the same way.
+ * full name (location + nickname). Aliases are stored as the operator typed
+ * them and are tokenised here the same way.
+ *
+ * NEO-643 — a strict superset of what main answered (`storedNameMatchesTyped`):
+ * `readings` (`teamFilterReadings`, a hyphen is a space) are tried against the
+ * name with its hyphens split, and `storedReadings` (`teamSearchReadings`,
+ * main's own reading) against the name split on spaces as main did. So a
+ * stored "K-C Royals" is found by "K-C Royals", "K-C Royal", "KC Royals" and
+ * "K C Royals" alike.
  */
 export function teamMatchesFilter(
   team: { nameNormalized: string; aliases?: readonly string[] },
   readings: readonly (readonly string[])[],
+  storedReadings: readonly (readonly string[])[],
 ): boolean {
-  if (readings.length === 0) return true;
-  const names = [
-    team.nameNormalized.split(" ").filter(Boolean),
-    ...(team.aliases ?? []).map((alias) => entityNameTokens(alias)),
-  ];
-  return readings.some((typed) =>
-    names.some((words) =>
-      typed.every((t) => words.some((word) => word.startsWith(t))),
-    ),
-  );
+  if (readings.length === 0 && storedReadings.length === 0) return true;
+  return storedNameMatchesTyped(team.nameNormalized, readings, storedReadings, team.aliases);
 }

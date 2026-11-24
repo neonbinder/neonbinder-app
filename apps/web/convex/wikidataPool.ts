@@ -34,6 +34,7 @@ import type { MutationCtx } from "./_generated/server";
 import { internalMutation } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { backstopEntityReviewRowImpl } from "./entityReviewQueue";
+import { backstopLookupRowImpl } from "./tidyNames";
 import {
   enrichmentCompletionLogLine,
   type WikidataLookupKind,
@@ -167,11 +168,29 @@ export const wikidataPool = new Workpool(components.wikidataPool, {
  * serialization is needed, unlike placeholderPipeline's `withJobSettleLock`.
  */
 export const onEntityReviewLookupComplete = wikidataPool.defineOnComplete({
-  context: v.object({ rowId: v.id("entityReviewQueue") }),
+  // NEO-645: a `tidyNames` lookup carries its row and the generation it asked
+  // under; an `entityReviewQueue` item (the old wizard, and any in flight
+  // across the deploy) carries just its row.
+  context: v.union(
+    v.object({ rowId: v.id("entityReviewQueue") }),
+    v.object({ tidyNameId: v.id("tidyNames"), gen: v.number() }),
+  ),
   handler: async (
     ctx: MutationCtx,
-    { context, result }: { context: { rowId: Id<"entityReviewQueue"> }; result: RunResult },
+    {
+      context,
+      result,
+    }: {
+      context:
+        | { rowId: Id<"entityReviewQueue"> }
+        | { tidyNameId: Id<"tidyNames">; gen: number };
+      result: RunResult;
+    },
   ) => {
+    if ("tidyNameId" in context) {
+      await backstopLookupRowImpl(ctx, context, result);
+      return;
+    }
     // NEO-301: the workpool calls this only once retries are exhausted (or
     // the item succeeded, or was non-retryable/canceled) — never between
     // attempts — so a row whose lookup was unavailable stays `pending` for
@@ -270,6 +289,42 @@ export const enqueueEntityReviewLookups = internalMutation({
     if (nextFrom < args.rowIds.length) {
       await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueEntityReviewLookups, {
         rowIds: args.rowIds,
+        from: nextFrom,
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * NEO-645 — enqueue `tidyNames` lookups onto the same 5-wide lane. Each item
+ * carries the generation it was requested under, so a result for a question the
+ * row has since moved past is dropped by `tidyNames.applyLookupResult`.
+ */
+export const enqueueTidyNameLookups = internalMutation({
+  args: {
+    items: v.array(v.object({ rowId: v.id("tidyNames"), gen: v.number() })),
+    from: v.optional(v.number()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const from = args.from ?? 0;
+    const chunk = args.items.slice(from, from + WIKIDATA_ENQUEUE_CHUNK_SIZE);
+    for (const { rowId, gen } of chunk) {
+      await wikidataPool.enqueueAction(
+        ctx,
+        internal.adapters.wikidata.runTidyNameLookup,
+        { tidyNameId: rowId, gen },
+        {
+          onComplete: internal.wikidataPool.onEntityReviewLookupComplete,
+          context: { tidyNameId: rowId, gen },
+        },
+      );
+    }
+    const nextFrom = from + WIKIDATA_ENQUEUE_CHUNK_SIZE;
+    if (nextFrom < args.items.length) {
+      await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueTidyNameLookups, {
+        items: args.items,
         from: nextFrom,
       });
     }

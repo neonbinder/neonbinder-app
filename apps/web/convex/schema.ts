@@ -338,7 +338,9 @@ export const selectorOptionMetadataFields = {
    * the one it writes with, so saving A, then B, then A again leaves one live
    * chain, not two.
    *
-   * Written only by `saveTitleFixes`, beside the box. Every other writer of
+   * Written by `saveTitleFixes`, beside the box, and by
+   * `tidyCards.applySetNameToTitles` (NEO-645), which starts a chain of its own
+   * the same way (two quick saves leave one live chain). Every other writer of
    * `listingShortName` (the attributes panel, the wizard commit, the
    * short-name backfill) spreads `metadata` and leaves it as it is: none of
    * them starts a chain, and a box they change stops the live one by itself.
@@ -1348,7 +1350,16 @@ export const listingSyncProgressValidator = v.object({
 /**
  * NEO-496 — one stored row of a publisher checklist (`publishedChecklistChunks`).
  * The server re-check (`convex/lib/publishedChecklistCheck.ts`) is the only
- * thing that builds one: `noNumber` / `noTeam` are only ever stored as `true`.
+ * thing that builds one: `noNumber` / `noTeam` / `prospect` are only ever
+ * stored as `true`.
+ *
+ * NEO-591 — `prospect`: the team cell said "Prospect" / "Prospect (X)", so the
+ * card is born with the Prospect Card attribute. The X of "Prospect (X)" is
+ * the card's printed team (Jason, 2026-11-19) and is stored in `teams` like any
+ * other. `prospectTeams` is DEPRECATED: an earlier build stored the X here, out
+ * of `teams`. Nothing writes it now; the fetch folds it into `teams` on read
+ * (`foldLegacyProspectTeams`). Kept optional so a row stored by that build
+ * still passes the schema; remove it once no deployment holds one.
  */
 export const publishedChecklistStoredRowValidator = v.object({
   number: v.string(),
@@ -1362,6 +1373,29 @@ export const publishedChecklistStoredRowValidator = v.object({
    * re-check sets it, and only from a valid value.
    */
   printRun: v.optional(v.number()),
+  prospect: v.optional(v.boolean()),
+  /** DEPRECATED (NEO-591): never written; see the note above. */
+  prospectTeams: v.optional(v.array(v.string())),
+  // NEO-591 — which of `teams` sat INSIDE the Prospect parens when only some
+  // did ("Cincinnati Reds / Prospect (Frisco)": ["Frisco"]; `[]` for a
+  // "Prospect" beside plain teams). Display only, so the row reads as printed:
+  // `teams` and `prospect` keep their meaning and nothing reads this back as
+  // data. Set by `checkPublishedChecklist` only for such a mixed row, always a
+  // subset of `teams` (so at most a card's team cap, each within the name cap);
+  // a row without it (an all-prospect cell, or stored before the field) reads
+  // every team as inside. Not the DEPRECATED `prospectTeams` above.
+  prospectClaimedTeams: v.optional(v.array(v.string())),
+  // NEO-591 (variations) — the checklist's own note for a variation row
+  // ("photo variation"), at most `MAX_VARIATION_NAME` characters with no
+  // control characters (`checkPublishedChecklist`). Becomes the variation
+  // name of a card created from the row.
+  variationName: v.optional(v.string()),
+  // NEO-645 — the subject a row printed that names no person ("Checklist",
+  // "Team Card", "Mets TC"), as printed and cleansed, for a row with no
+  // players. The card made from the row is named by it. Never a player and
+  // never read for pairing. At most `MAX_PLAYER_NAME_LENGTH` characters
+  // (`checkPublishedChecklist`).
+  cardName: v.optional(v.string()),
 });
 /** NEO-496 — a publisher checklist's life: uploading → ready → retired, or uploading → retired. */
 export const publishedChecklistStatusValidator = v.union(
@@ -1390,16 +1424,47 @@ export const checklistConflictSidesValidator = v.object({
   marketplace: v.array(v.string()),
   checklist: v.array(v.string()),
 });
+/**
+ * The teams side of a conflict. `prospectClaim` is DEPRECATED (NEO-591): an
+ * earlier build marked a "Prospect (X)" checklist side with it. Nothing writes
+ * or reads it now; kept optional so a stored conflict still passes the schema.
+ */
+export const checklistTeamConflictSidesValidator = v.object({
+  marketplace: v.array(v.string()),
+  checklist: v.array(v.string()),
+  prospectClaim: v.optional(v.literal(true)),
+});
 export const checklistConflictValidator = v.object({
   players: v.optional(checklistConflictSidesValidator),
-  teams: v.optional(checklistConflictSidesValidator),
+  teams: v.optional(checklistTeamConflictSidesValidator),
 });
+
+/**
+ * NEO-640 — which lookup paired a matched row's BSC and SportLots halves:
+ * a stored link ("stored"), the cross-reference ("crossRef"), the variation
+ * rules ("variation"), the card number ("number") or the player/card name
+ * ("name"). Defined here, beside the table that stores it, so the schema's
+ * `checklistCandidates.pairedBy` and the fetch's wire shape cannot drift;
+ * `checklistCandidates.ts` imports it (and re-exports it for its callers).
+ */
+export const marketplacePairViaValidator = v.union(
+  v.literal("stored"),
+  v.literal("crossRef"),
+  v.literal("variation"),
+  v.literal("number"),
+  v.literal("name"),
+);
 
 /**
  * NEO-496 — a publisher-checklist row a fetched card was paired with on the
  * server, in the shape Match Cards lists a row (`ChecklistLinkRow`) plus the
  * name the row has as a card of its own (`checklistOnlyCard`). `teams` are
  * resolved like a checklist-only card's; `noTeam` is the row's "No Team".
+ *
+ * NEO-591 — `prospect` is the row's Prospect claim; its X is in `teams`, so
+ * `teams` and `prospect` rebuild the row exactly and an unlinked row that is
+ * linked again still carries its claim. `prospectTeams` is DEPRECATED: an
+ * earlier build held the X there; nothing writes it now.
  */
 export const checklistPairedRowValidator = v.object({
   number: v.string(),
@@ -1407,6 +1472,19 @@ export const checklistPairedRowValidator = v.object({
   teams: v.array(v.string()),
   noNumber: v.optional(v.literal(true)),
   noTeam: v.optional(v.literal(true)),
+  prospect: v.optional(v.literal(true)),
+  /** DEPRECATED (NEO-591): never written. */
+  prospectTeams: v.optional(v.array(v.string())),
+  // Collector review — the row's team cell AS PRINTED ("Seattle", "Prospect
+  // (Oklahoma)"), for display only: Match Cards reads it on the row and in its
+  // Unlink label. Present only when it differs from `teams` joined (a settled
+  // Prospect (X) or a team printed as a place); nothing reads it back as data.
+  claim: v.optional(v.string()),
+  // NEO-591 (variations) — the checklist's own note for a variation row
+  // ("Photo variation"), so an Unlink or a relink puts back the same
+  // checklist-only variation card, name included. Bounded when the row is
+  // stored (`MAX_VARIATION_NAME`).
+  variationName: v.optional(v.string()),
   cardName: v.string(),
 });
 
@@ -1422,15 +1500,258 @@ export const checklistPairedRowValidator = v.object({
  *  - `teams`: the card's own teams before the row (absent: none).
  *  - `teamLookup: "failed"`: the card had no team of its own and a BSC
  *    listing whose team lookup was skipped because the row answered it.
- *    "failed" is the data-missing state (rule 8): the operator picks the
- *    team and no rule guesses one.
+ *    "failed" is the data-missing state (rule 8): no listing claim stands,
+ *    so the wizard's Teams step pre-fills it from NB's own evidence like any
+ *    other card (NEO-639), and the operator confirms the team.
  */
 export const checklistPairRevertValidator = v.object({
   players: v.optional(v.array(v.string())),
   teamsFromRow: v.boolean(),
   teams: v.optional(v.array(v.string())),
   teamLookup: v.optional(v.literal("failed")),
+  // NEO-591 (names first, numbers confirm) — the card's own number before the
+  // row was applied. Present only when the pair changed it (the row's number
+  // outranks the marketplace's, `preferCardNumber`), so Unlink puts it back.
+  cardNumber: v.optional(v.string()),
 });
+
+/**
+ * NEO-591 — the numbers each source printed for a card the sources paired by
+ * NAME while their numbers differ ("OV-ANFI" on BuySportsCards, "NNO" on the
+ * publisher checklist). Names pair a card; a number only confirms, so a pair
+ * whose numbers differ is kept and shown with all of them. The card itself
+ * carries one number (`preferCardNumber`: letters over digits over none).
+ * Absent on every pair whose numbers agree. A key is present only when that
+ * source is in the pair. Each value is held to `MAX_SOURCE_NUMBER_LENGTH`
+ * (checklistCandidates.ts) when written.
+ */
+export const sourceNumbersValidator = v.object({
+  bsc: v.optional(v.string()),
+  sportlots: v.optional(v.string()),
+  checklist: v.optional(v.string()),
+});
+
+// ── NEO-645: One-card Tidy Up ───────────────────────────────────────────────
+//
+// Every shared validator below is exported and imported by `getCardChecklist`,
+// `tidyNames.ts`, `tidyCards.ts` and `cardPrintedNames.ts`. No hand copies:
+// `entityReviewQueue` kept its own copies of the enrichment and decision
+// validators, and the strict-returns memory records that as a past source of
+// drift.
+
+/**
+ * NEO-645 — which source printed a value, as a LABEL for the Sources-disagree
+ * tile. The same slot keys `sourceNumbersValidator` uses. A closed union, and
+ * widening it for a new source is additive. Keys are labels only: no rule may
+ * prefer a source by key (product invariant 4).
+ */
+export const sourceKeyValidator = v.union(
+  v.literal("bsc"),
+  v.literal("sportlots"),
+  v.literal("checklist"),
+);
+
+/**
+ * NEO-645 — one field on which the sources still disagree AFTER parsing
+ * through the shared name matcher ("Judge / Soto" and "Judge | Soto" are one
+ * value, Acuña and Acuna are one value; those are never stored).
+ *
+ * While `chosen` is absent the field holds nothing: no links and no pending
+ * names, which is what keeps the losing side out of the walk. NB never picks a
+ * side, so `chosen.by` is always "operator" (a person picked); `typed` marks a
+ * value the operator typed rather than picked.
+ *
+ * Bounds, enforced by the writer (the validator cannot): at most 3 values per
+ * field, at most MAX_CARD_PLAYERS (20) / MAX_CARD_TEAMS (8) names per value,
+ * each name at most 120 characters, and `getConvexSize(sourceDisagreements)`
+ * at most 4096 bytes. The array lands on rows `getCardChecklist` reads for the
+ * whole leaf, so an uncapped worst case (about 43 KB a card) would pass the
+ * 16 MiB query read limit on a 900-card leaf.
+ */
+export const sourceDisagreementValidator = v.object({
+  field: v.union(v.literal("players"), v.literal("teams")),
+  values: v.array(
+    v.object({
+      value: v.array(v.string()),
+      sources: v.array(sourceKeyValidator),
+    }),
+  ),
+  chosen: v.optional(
+    v.object({
+      value: v.array(v.string()),
+      by: v.literal("operator"),
+      typed: v.optional(v.literal(true)),
+    }),
+  ),
+});
+
+/**
+ * NEO-645 — why the commit wrote a team onto a card that would otherwise have
+ * saved teamless (Jason, 2026-11-21, Q1 = A): "otherCards" is the same player's
+ * team on other cards (this batch, or the set's stored cards); "career" is the
+ * one team his career window gives. Copy only; no rule keys on it.
+ */
+export const tidyTeamFillReasonValidator = v.union(
+  v.literal("otherCards"),
+  v.literal("career"),
+);
+
+/**
+ * NEO-645 — a fact the tiles need that cannot be derived from the card row
+ * alone, stored where it changes (at commit, on a link, on Add to career, and
+ * when a player is created) so `deriveCardAttention` stays a pure function of
+ * the row (D3).
+ *
+ *  - careerGap: single-player card whose player has no stint covering the
+ *    card's team by the card's year (`careerCoversCardTeam`, J2: today's rule,
+ *    not a [Y-1, Y] window). Blue.
+ *  - newPlayerCareer: the player was created on this card; check the career
+ *    Wikidata proposed. Blue, only on the card where the player was created.
+ *  - teamFill: the commit wrote these teams itself from strict pre-fill
+ *    evidence. NOTE-ONLY, never blue and never a stop; cleared when the team
+ *    is changed by hand.
+ */
+export const tidyCheckValidator = v.union(
+  v.object({
+    kind: v.literal("careerGap"),
+    playerId: v.id("players"),
+    teamId: v.id("teams"),
+  }),
+  v.object({ kind: v.literal("newPlayerCareer"), playerId: v.id("players") }),
+  v.object({
+    kind: v.literal("teamFill"),
+    teamIds: v.array(v.id("teams")),
+    reason: tidyTeamFillReasonValidator,
+  }),
+);
+
+/**
+ * NEO-645 — "seen", for blue. A blue item is suppressed while its fingerprint
+ * key is in `keys` (at most 16 keys, each at most 64 characters). Keys hash
+ * their values (`features/cardAttention.ts` `tidyReviewedKey*`), so the client
+ * and `tidyCards.markReviewed` produce identical keys. Writing it must NOT
+ * bump `lastUpdated`, which is the NEO-203 baseVersion.
+ */
+export const tidyReviewedValidator = v.object({
+  at: v.number(),
+  keys: v.array(v.string()),
+});
+
+/** NEO-645 — what a `tidyNames` row names. */
+export const tidyNameKindValidator = v.union(v.literal("player"), v.literal("team"));
+
+/** NEO-645 — the Wikidata lookup state of a name row. */
+export const tidyLookupStatusValidator = v.union(
+  v.literal("pending"),
+  v.literal("ready"),
+  v.literal("error"),
+);
+
+/**
+ * NEO-645 — the lookup's payload on a name row. Lifted from
+ * `entityReviewQueue.enrichment`. Dropped: `source` (careerTeamOf/leagueOf,
+ * career-team and league staging go), every `decision` arm, league-only
+ * `abbreviation`, and the stored `teamContext`/`playerContext` (now live from
+ * `cardPrintedNames`). `careerTeams` is held to 64 entries by the writer.
+ */
+export const tidyNameEnrichmentValidator = v.object({
+  wikidataId: v.optional(v.string()),
+  careerTeams: v.optional(
+    v.array(
+      v.object({
+        name: v.string(),
+        fromYear: v.number(),
+        toYear: v.optional(v.number()),
+        wikidataId: v.optional(v.string()),
+      }),
+    ),
+  ),
+  undatedCareerTeams: v.optional(v.array(v.string())),
+  isHallOfFame: v.optional(v.boolean()),
+  description: v.optional(v.string()),
+  birthYear: v.optional(v.number()),
+  enwikiTitle: v.optional(v.string()),
+  existingCandidates: v.optional(
+    v.array(
+      v.object({
+        playerId: v.id("players"),
+        name: v.string(),
+        birthYear: v.optional(v.number()),
+        careerSummary: v.string(),
+        activeInSetYear: v.optional(v.boolean()),
+        matchedAlias: v.optional(v.string()),
+        sportValue: v.optional(v.string()),
+      }),
+    ),
+  ),
+  preselect: v.optional(
+    v.object({
+      playerId: v.id("players"),
+      name: v.string(),
+      sportId: v.id("selectorOptions"),
+      sportValue: v.string(),
+      reason: v.union(
+        v.literal("priorYearProduct"),
+        v.literal("onlyNamesake"),
+        v.literal("setHistory"),
+        v.literal("hallOfFame"),
+        v.literal("careerTeam"),
+      ),
+    }),
+  ),
+  league: v.optional(v.string()),
+  leagueWikidataId: v.optional(v.string()),
+  location: v.optional(v.string()),
+  yearsActive: v.optional(v.object({ from: v.number(), to: v.optional(v.number()) })),
+  colors: v.optional(
+    v.object({ primary: v.optional(v.string()), secondary: v.optional(v.string()) }),
+  ),
+  espnId: v.optional(v.string()),
+});
+
+/** NEO-645 — why an auto-link was made (a player's reasons). */
+export const tidyPlayerAutoReasonValidator = v.union(
+  v.literal("setHistory"),
+  v.literal("hallOfFame"),
+  v.literal("careerTeam"),
+);
+
+/** NEO-645 — why an auto-link was made (a team's reasons). */
+export const tidyTeamAutoReasonValidator = v.union(
+  v.literal("setHistory"),
+  v.literal("careerTeam"),
+);
+
+/**
+ * NEO-645 — what a name was answered with. A three-arm union rather than
+ * `{link, playerId|teamId}`, so a row can never carry both ids. There is no
+ * "create" arm: Add as new player creates the player and stores `linkPlayer`
+ * with `by: "operator"`. Clearing an answer is an `answerName` argument, not a
+ * stored arm.
+ *
+ * `addSetSport` and `saveAsAlias` are AUDIT: the sport row / alias was already
+ * written at answer time.
+ */
+export const tidyNameAnswerValidator = v.union(
+  v.object({
+    kind: v.literal("linkPlayer"),
+    playerId: v.id("players"),
+    by: v.union(v.literal("operator"), v.literal("auto")),
+    autoReason: v.optional(tidyPlayerAutoReasonValidator),
+    addSetSport: v.optional(v.literal(true)),
+  }),
+  v.object({
+    kind: v.literal("linkTeam"),
+    teamId: v.id("teams"),
+    by: v.union(v.literal("operator"), v.literal("auto")),
+    autoReason: v.optional(tidyTeamAutoReasonValidator),
+    saveAsAlias: v.optional(v.literal(true)),
+  }),
+  v.object({
+    kind: v.literal("notEntity"),
+    by: v.union(v.literal("operator"), v.literal("auto")),
+  }),
+);
 
 /**
  * NEO-335 / PR 451 — how a card's fetch-time team answer was reached:
@@ -2265,7 +2586,10 @@ export default defineSchema({
     // NEO-101 / NEO-609: the card is in Tidy Up. The auto-generated title fit
     // eBay's 80-character cap only by a cut from the Tidy Up line down (a
     // whole team, the card number, SP, RELIC, a first name, RC or AUTO; the
-    // "#" alone is not one), or it was built from the set's box text.
+    // "#" alone is not one), or it was built from the set's box text and that
+    // version still leaves something out or is over the cap. A title that fits
+    // only because the set name was shortened, with nothing left out, is not
+    // flagged (NEO-645, `titleFitsOnShortName`).
     // The title is valid and listable — it is just missing identifying words a
     // human may want to decide differently, which is why this drives a "needs attention" item
     // (`features/cardAttention.ts` → `titleTruncated`) rather than an error.
@@ -2332,6 +2656,23 @@ export default defineSchema({
     // re-prompt for the same player).
     pendingPlayerNames: v.optional(v.array(v.string())),
     pendingTeamNames: v.optional(v.array(v.string())),
+    // ── NEO-645: One-card Tidy Up review state ───────────────────────────────
+    //
+    // All four optional and all additive. Parallel copies do NOT carry any of
+    // them: they are review state of the source card, and carrying them would
+    // make every parallel show blue. See the validators above `sourceKeyValidator`.
+    //
+    // Fields on which the sources still disagree after parsing. Written only on
+    // NEW rows (D4: a re-synced row keeps NB's data, NEO-203). While a
+    // disagreement has no `chosen`, the field holds nothing.
+    sourceDisagreements: v.optional(v.array(sourceDisagreementValidator)),
+    // What each source numbered the card, for the "Numbers didn't match" note.
+    // The commit used to accept this and drop it.
+    sourceNumbers: v.optional(sourceNumbersValidator),
+    // Facts the tiles need that the row cannot derive; stored where they change.
+    tidyChecks: v.optional(v.array(tidyCheckValidator)),
+    // "Seen" for blue. Writing it does not bump `lastUpdated`.
+    tidyReviewed: v.optional(tidyReviewedValidator),
     // NEO-24: per-card override of marketplace-agnostic feature map. Inherits
     // merged ancestor `selectorOptions.features` at card-creation time
     // (`commitCardChecklist`). Subsequent edits via `setSelectorOptionFeature`
@@ -2621,6 +2962,15 @@ export default defineSchema({
       wikidataId: v.optional(v.string()), // e.g. "Q123456"
     })),
     createdByUserId: v.optional(v.string()),
+    /**
+     * NEO-591: the client-minted token of the career check's "New player named
+     * X" answer that created this row (`players.createCareerNewPlayers`). Its
+     * one job is retry safety: a Confirm retried from the same wizard state
+     * carries the same ref, so the commit ADOPTS the row it already made
+     * instead of minting a second. Never read anywhere else, never shown, and
+     * `toPublicPlayer` strips it. Absent on every other player.
+     */
+    creationRef: v.optional(v.string()),
     lastUpdated: v.number(),
   })
     .index("by_name_normalized", ["nameNormalized"])
@@ -3902,6 +4252,116 @@ export default defineSchema({
       "nameNormalized",
     ]),
 
+  /**
+   * ── NEO-645: the name rows of One-card Tidy Up ───────────────────────────
+   *
+   * Replaces `entityReviewQueue` (a per-fetch, per-user batch) and absorbs
+   * `entityReviewSkips` (a skip is a `notEntity` answer). One row per
+   * (scopeId, kind, nameNormalized); shared across operators, because an
+   * answer is a fact about the set's data, exactly as a skip always was.
+   *
+   * `scopeId` is the leaf that PRINTED the name (D2). Do not widen it to the
+   * set: per-leaf is the safety property ("Chase" is a sponsor on one insert
+   * and a shortstop on the next). Parallel copies take their source leaf's
+   * scope; set history still auto-links across the set's leaves when cards
+   * are written.
+   *
+   * An exact single NB match gets NO row (D6): its "Linked for you" note is
+   * read live. Rows exist for names that are pending, auto-answered, or
+   * `notEntity`, so a set that needs no walk writes about none.
+   *
+   * No uniqueness index: uniqueness comes from OCC on the point read of
+   * `by_scope_kind_name` (a phantom insert conflicts). Readers use `.first()`.
+   *
+   * `lookupGen` follows the workpool-cancel pattern: bumped on every
+   * `requestLookup` / `setNameSport`, and a pool result must match it.
+   * `answerGen` is bumped per answer; fan-out pages stop on a mismatch.
+   * The stale sweep reads `lookupRequestedAt`, not `_creationTime`: a row born
+   * `ready` and asked to look up later must not be aged to `error` at once.
+   */
+  tidyNames: defineTable({
+    scopeId: v.id("selectorOptions"),
+    kind: tidyNameKindValidator,
+    // `normalizeEntityName` (lib/entities/normalize-name.ts), the key players,
+    // teams and skips already use. Q2: NEO-643's cleanse helper replaces it
+    // when it lands.
+    nameNormalized: v.string(),
+    // First-seen trimmed spelling, at most 120 characters.
+    name: v.string(),
+    // The sport the question is asked in; `setNameSport` re-points it.
+    sportId: v.id("selectorOptions"),
+    status: tidyLookupStatusValidator,
+    lookupGen: v.optional(v.number()),
+    lookupRequestedAt: v.optional(v.number()),
+    enrichment: v.optional(tidyNameEnrichmentValidator),
+    // NEO-602 rows the name reached at the gate. Display only.
+    candidateTeamIds: v.optional(v.array(v.id("teams"))),
+    // NEO-591 place candidates.
+    candidatePlace: v.optional(v.literal(true)),
+    answer: v.optional(tidyNameAnswerValidator),
+    answerGen: v.optional(v.number()),
+    answeredByUserId: v.optional(v.string()),
+    answeredAt: v.optional(v.number()),
+    // The states cards of this name may still be in because an earlier
+    // answer's fan-out has not finished (newest first; `null` is "unanswered").
+    // A newer answer's fan-out takes a card in ANY of them, so a job that went
+    // stale part-way strands nobody. Set when an answer changes, cleared when
+    // the current answer's fan-out reaches its last page.
+    fanOutFrom: v.optional(v.array(v.union(tidyNameAnswerValidator, v.null()))),
+  })
+    // The point upsert and the answer read; its `[scopeId]` prefix is the
+    // gate's and prelude's one-range answer read and the delete/wipe sweep.
+    .index("by_scope_kind_name", ["scopeId", "kind", "nameNormalized"])
+    // `lookupsPending({scopeId})`: eq(scope).eq("pending").
+    .index("by_scope_status", ["scopeId", "status"])
+    // The stale-lookup sweep: eq("pending").lt(lookupRequestedAt, cutoff).
+    .index("by_status_requested", ["status", "lookupRequestedAt"]),
+
+  /**
+   * ── NEO-645: the names each card PRINTED, flat and indexable ─────────────
+   *
+   * Pending names are array members on the card (`pendingPlayerNames`,
+   * `pendingTeamNames`), which Convex cannot index, so "every card in this
+   * scope that printed this name" had no index: an answer would scan the leaf
+   * plus every parallel leaf (about 900 x 11 card reads). This table is that
+   * index, and it keeps the printed record after a name is answered, so an
+   * answer can be changed back.
+   *
+   * DERIVED from the card, never authored. `syncCardPrintedNames` in
+   * convex/cardPrintedNames.ts is the ONE writer, and
+   * `cardPrintedNames.pin.test.ts` greps for any other. Rows exist only for
+   * names that have a `tidyNames` row (pending, auto-answered, notEntity).
+   *
+   * `scopeId` is the scope the NAME is answered in, which for a parallel copy
+   * is its SOURCE leaf, not the copy's own. A copy of a copy keeps the root
+   * scope. When the scope leaf is gone (a wipe), readers fall back to the
+   * card's own leaf (Q3); nothing re-scopes at write time.
+   *
+   * `order` is required: when a pending name is linked later, the link must
+   * land at the printed position, or the `playerIds` = `playerLinks` order
+   * invariant and multi-player titles break.
+   *
+   * `cardOverride`: the operator changed THIS card's link on its own (Change,
+   * + Another player); a fan-out never overwrites it.
+   */
+  cardPrintedNames: defineTable({
+    cardChecklistId: v.id("cardChecklist"),
+    scopeId: v.id("selectorOptions"),
+    kind: tidyNameKindValidator,
+    nameNormalized: v.string(),
+    // This card's own spelling, at most 120 characters.
+    printed: v.string(),
+    // Position among the card's printed names of this kind.
+    order: v.number(),
+    cardOverride: v.optional(v.literal(true)),
+  })
+    // The fan-out page, the live "Printed on #1, #17" note, and the leaf
+    // delete sweep (its `[scopeId]` prefix).
+    .index("by_scope_kind_name", ["scopeId", "kind", "nameNormalized"])
+    // `cardContext`, the single writer's diff, `removeCardRow`, and copying
+    // rows to parallel copies.
+    .index("by_card", ["cardChecklistId"]),
+
   // NEO-402 — a checklist fetch's player names that matched exactly one NB
   // player, kept so the commit that follows does not look each one up again.
   // Scratch for one (set, operator) review session; see
@@ -3957,6 +4417,21 @@ export default defineSchema({
     attributes: v.optional(v.array(v.string())),
     isRookie: v.optional(v.boolean()),
     isRelic: v.optional(v.boolean()),
+    // NEO-591 — the publisher checklist's team cell said "Prospect" /
+    // "Prospect (X)": the card is born with the Prospect Card attribute
+    // (`features.isProspect`). Follows `isRookie`'s route to NEW cards only.
+    isProspect: v.optional(v.boolean()),
+    // NEO-591 — a checklist-only row's team cell AS PRINTED ("Cincinnati Reds /
+    // Prospect (Frisco)"), for display only: Match Cards prints it on the row.
+    // Present only when the printed cell differs from `teams` read as one
+    // Prospect claim (a mixed Prospect row); nothing reads it back as data.
+    teamCell: v.optional(v.string()),
+    // DEPRECATED (NEO-591): an earlier build held the X of a "Prospect (X)"
+    // cell here, apart from `teams`. Nothing writes or reads either field now
+    // (the X is one of `teams`); kept optional so a stored candidate row still
+    // passes the schema.
+    prospectTeam: v.optional(v.string()),
+    prospectTeams: v.optional(v.array(v.string())),
     printRun: v.optional(v.number()),
     autographType: v.optional(v.string()),
     cardVariation: v.optional(v.string()),
@@ -4007,6 +4482,25 @@ export default defineSchema({
       // (`platformData: {}`). Widening only: no existing row changes.
       v.literal("checklistOnly"),
     ),
+    // NEO-591 — see `sourceNumbersValidator`.
+    sourceNumbers: v.optional(sourceNumbersValidator),
+    // NEO-591 (variations) — a checklist-only candidate the server created for
+    // a row that is a variation of a paired card (card "38" took row "38a";
+    // row "38b" becomes its own card). The operator is presumed to want it, so
+    // the client seeds it as Keeping. Optional; absent on every other row.
+    preKept: v.optional(v.literal(true)),
+    // NEO-591 — the number was DERIVED by the sync (minted for a SportLots-only
+    // variation, or swapped in by `preferCardNumber`), so it is not a number a
+    // marketplace printed for this card. The commit never matches a stored
+    // row by slot+number or by number alone for such a card (it matches by its
+    // own ref or inserts), so a derived "38b" cannot land on a stored "38b".
+    // A forged flag only narrows matching.
+    numberMinted: v.optional(v.literal(true)),
+    // NEO-591 (variations) — an opaque NB-side token shared by a card that took a
+    // checklist row and the variation cards made from that row's siblings, so
+    // the commit links them without searching by number. Never a marketplace
+    // value; held to 32 characters by the commit.
+    variationGroup: v.optional(v.string()),
     // NEO-496 — how a card paired with a publisher-checklist row, for Match
     // Cards' badge. Optional; absent on every existing row.
     checklistLink: v.optional(
@@ -4018,10 +4512,20 @@ export default defineSchema({
           v.literal("player"),
           v.literal("playerName"),
           v.literal("playerFuzzy"),
+          // NEO-591 — one row standing for several cards that share its
+          // number's stem (row "38" for cards 38, 38b, 38c).
+          v.literal("stem"),
         ),
+        // NEO-591 — the row's index in the rows the fetch was given, set when
+        // more than one card holds the same row, so Match Cards can tell which
+        // links share it (an Unlink re-lists the row only on the last holder).
+        rowKey: v.optional(v.number()),
         // playerFuzzy only, 0.92..1.
         confidence: v.optional(v.number()),
-        // A name pair with a numbered row: the row's number as printed.
+        // NEO-591 — the row's number as printed ("NNO" for a no-number row),
+        // set when it is not the number the card was fetched with. The card
+        // itself carries the more specific of the two (`preferCardNumber`;
+        // `revert.cardNumber` holds the one it replaced).
         checklistNumber: v.optional(v.string()),
         // NEO-496 — the row the server paired, and the card as it was before
         // the row was applied, so Match Cards can undo a wrong pair. Shapes:
@@ -4033,6 +4537,13 @@ export default defineSchema({
     // Pairing confidence for a matched row; the modal surfaces a fuzzy match
     // differently from an exact one.
     confidence: v.optional(v.number()),
+    // NEO-640 — which lookup paired a matched row's two marketplace halves.
+    // Written on matched rows only; missing = written before NEO-640 (the
+    // client treats a missing value on a matched row as "needs the operator").
+    // A rule 7 name pair whose numbers differ is not told apart here: it is
+    // scored below 1 and carries `sourceNumbers`. `marketplacePairViaValidator`
+    // is defined above this table and shared with `checklistCandidates.ts`.
+    pairedBy: v.optional(marketplacePairViaValidator),
 
     // ── streaming ─────────────────────────────────────────────────────────
     // Card-number stem. A parent and its variations share one, and the whole
@@ -4795,12 +5306,18 @@ export default defineSchema({
   }).index("by_owner_and_run", ["ownerId", "runKey"]),
 
   /**
-   * NEO-552 — the deployment-wide BSC call gate: the breaker and token bucket
+   * NEO-552 — the BSC call gate: the breaker and token bucket
    * every BuySportsCards call passes through (`bscFetch`, `bscCallGate.ts`;
    * policy in `lib/bscCallGatePolicy.ts`). It replaced the PR 451 per-endpoint
    * 429 cooldown table, whose definition is gone.
    *
-   * One row per (platform, scope). No ids, no user data: counters and times.
+   * One row per rate-limit domain (platform + scope): `deployment` for real
+   * BSC, `ns:<namespace>` per test user on the fake. No ids, no user data:
+   * counters and times.
+   * NEO-628: `scope` is the gate KEY (`lib/bscGateKey.ts`): `"deployment"`
+   * (the only one against real BSC), or `ns:<fake namespace>` against the
+   * fake, one per test user. A plain string, checked in code by one helper
+   * (`bscCallGate.gateScopeFor`) on every insert and read, which fails closed.
    *  - `tokens` / `refilledAt`: a debt bucket (may go negative: that is a wait
    *    the caller sleeps), refilled at the tuning's rate up to its burst.
    *  - `openUntil`: no call before it. `openCause` says which ladder opened it
@@ -4813,7 +5330,7 @@ export default defineSchema({
    */
   marketplaceCallGates: defineTable({
     platform: v.literal("bsc"),
-    scope: v.literal("deployment"),
+    scope: v.string(),
     tokens: v.number(),
     refilledAt: v.number(),
     openUntil: v.number(),

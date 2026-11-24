@@ -1,6 +1,6 @@
 ---
 name: pr-queue
-description: The CI queue for the NeonBinder monorepo. One session runs the queue (`/pr-queue run`); it only takes requests to join and hands out turns, one at a time. Any session whose ticket is ready for production joins it (`/pr-queue join <ticket>`) and, when its turn comes, merges main, pushes and opens its PR, watches CI, merges to production on green with pr-close, sends a Mac notification, tells every other session main moved, and tells the queue it is done. A session never pushes outside its turn, because every push starts a CI run and only a run that can merge is worth paying for. When the repo variable `MERGE_QUEUE` is `true` the queue is GitHub's merge queue instead: no queue session, no turns; the session enqueues with `gh pr merge --squash` and follows it with `pr-watch --queue`. Use "run the PR queue" / "be the queue" for the queue side, and "queue NEO-464" / "join the queue" / "ship this ticket" for the requester side.
+description: The CI queue for the NeonBinder monorepo. One session runs the queue (`/pr-queue run`); it only takes requests to join and hands out turns, one at a time. Any session whose ticket is ready for production joins it (`/pr-queue join <ticket>`) and, when its turn comes, merges main, pushes and opens its PR, watches CI, merges to production on green with pr-close, sends a Mac notification, tells every other session main moved, and tells the queue it is done. A session never pushes outside its turn, because every push starts a CI run and only a run that can merge is worth paying for. When the repo variable `MERGE_QUEUE` is `true` the queue is GitHub's merge queue instead: no queue session, no turns; the session enqueues with `gh pr merge --squash` and follows it with one background command. Use "run the PR queue" / "be the queue" for the queue side, and "queue NEO-464" / "join the queue" / "ship this ticket" for the requester side.
 argument-hint: run | join <ticket> | status | leave <ticket>
 allowed-tools: Bash(*/.claude/skills/pr-queue/state.sh:*), Bash(*/.claude/skills/pr-queue/notify.sh:*), Bash(gh pr list:*), ToolSearch, ListAgents, SendMessage, Skill
 ---
@@ -26,6 +26,13 @@ run on `gh-readonly-queue/main/pr-<N>-*`), runs the full preview stack and E2E
 there, and merges on green. A PR push runs only the cheap checks, so nothing here
 waits for a turn.
 
+Two behaviours shape the wait (NEO-627). A PR whose every changed path is inert
+(docs, `.claude/` except agents, which run full E2E, root `*.md`, fake-BSC recorder and tests) skips E2E and the
+preview stack, so it finishes on the cheap checks in about 3 minutes, and CI Gate
+decides. E2E also fails fast: a red desktop pass skips the mobile pass, so an
+ejection with a desktop red has no mobile results and triage reads the desktop
+artifacts only.
+
 **Bar for enqueueing is today's bar for joining**: every audit's findings applied,
 unit tests, typecheck, lint and build green, the covering E2E specs green locally on
 desktop and mobile, and, for a UI change, Jason's verdict given on the local build.
@@ -41,7 +48,7 @@ enqueue.
 1. **Push freely, no turn needed.** `git fetch origin && git merge origin/main`
    is optional (the queue builds on current main itself). Push, open the PR with
    the ticket in the title (`NEO-123(<pr>) Short title`), and let the cheap checks run;
-   `pr-watch <PR>` reports them as "cheap checks green", never "green".
+   they are "cheap checks green", never "green".
    Need the full E2E run off-queue (a harness change, a pinned tool bump, a
    red you want to reproduce on a preview)? Add the `run-e2e` label and push.
    **Remove the `run-e2e` label before enqueueing** (`gh pr edit <PR> --remove-label run-e2e`):
@@ -56,18 +63,17 @@ enqueue.
    `gh pr merge` would merge on cheap checks alone: stop, and use the Claude-run
    flow or ask Jason. Then
    `gh pr merge <PR> --squash` (it enqueues, it does not merge
-   at once). Tab `cc-state queue`. Do not push to the branch while it is queued
+   at once). Do not push to the branch while it is queued
    unless you mean to leave: a push dequeues it.
-3. **Keep watching in this session, do not rely on Discord:**
-   `pr-watch --queue <PR>` (Monitor armed from the main loop, as pr-watch
-   describes). Tab: `cc-state queue` while waiting, `cc-state ci` once its group
-   is running (the line printed when its group starts, `group runs ... active`).
-4. **`DONE MERGED`** → `pr-close` finishes it (Mac notification, production
-   check, smoke test, Linear, cleanup); `cc-state test` when production
-   checks out.
-5. **`DONE EJECTED`** (GitHub removed it itself) → same rules as any red:
+3. **Keep following it in this session, do not rely on Discord:**
+   the background queue-follow command in the monorepo `CLAUDE.md` (merge queue, step 6). It wakes the session once, with
+   MERGED, EJECTED or REMOVED.
+4. **MERGED** → `pr-close` finishes it (Mac notification, production
+   check, smoke test, Linear, cleanup).
+5. **EJECTED** (GitHub removed it itself) → same rules as any red:
    - save the run's artifacts first (the red-run triage steps), into the
-     session scratchpad;
+     session scratchpad (after a desktop red there are no mobile artifacts,
+     NEO-627; do not look for them);
    - triage as in the turn flow: a Sonnet agent finds candidate `ci-fail`
      tickets, the session matches the error signature;
    - **every re-enqueue repeats the pre-enqueue checklist first**: step 0
@@ -91,11 +97,11 @@ enqueue.
    - send the Mac notification, with the ticket's Occurrences count for a
      known failure so a loop shows: `REASON='#499 ejected: one-line reason' notify.sh 'NEO-123 ejected' "$REASON"`
      (free text single-quoted, as above);
-   - `cc-state answer` only if Jason must decide; otherwise keep working.
-6. **`DONE REMOVED`** (a person, an unknown dequeue reason, or a closed PR) →
-   stop: `cc-state answer`, tell Jason the reason and actor, and **never
+   - tell Jason only if he must decide; otherwise keep working.
+6. **REMOVED** (a person, an unknown dequeue reason, or a closed PR) →
+   stop: tell Jason the reason and actor, and **never
    re-enqueue on your own**.
-7. **Leaving the queue:** `gh pr merge <PR> --disable-auto`, then `cc-state clear`.
+7. **Leaving the queue:** `gh pr merge <PR> --disable-auto`.
 8. **Rollback runbook** (the queue rule is taken off, `MERGE_QUEUE` deleted or
    the ruleset restored to its saved copy). A PR whose last green was a
    cheap-mode run has never run E2E, so after the ruleset is restored and before
@@ -103,7 +109,7 @@ enqueue.
    each head SHA gets a full run. Then the Claude-run flow's merge check below
    (the `E2E / e2e` gate check on the head SHA) decides, not `CI Gate` alone.
 9. **Discord is a backup only**, for when no session is alive. A live session
-   always knows first through its own `pr-watch --queue`.
+   always knows first by following its own PR.
 
 A red is triaged exactly as in the turn flow (known `ci-fail` signature →
 bump and go again unchanged; anything else → planner, then Jason); "go again"
@@ -132,20 +138,7 @@ its PR exists; the PR is opened on its turn.
 - **Jason** decides what neither can: reordering the line, a merge the
   permission check refuses, anything that stops a turn.
 
-## Tab status and Mac notifications
-
-Keep the iTerm tab current through the whole process with `cc-state` (in
-`~/.claude/bin`; skip it where it is not installed), so Jason can always see
-where every session stands:
-
-| When | Command | Colour |
-|---|---|---|
-| Joined, waiting for the turn | `cc-state queue` | yellow |
-| `YOUR TURN` arrives (the very first action, before the main merge) | `cc-state ci` | blue |
-| Stopped and the next step is Jason's | `cc-state answer` | red |
-| Stopped, passed the turn, fixing on your own | `cc-state clear` | green while working |
-| Merged and the production check passed | `cc-state test` | purple |
-| Left the line without a merge, nothing needed from Jason | `cc-state clear` | grey when idle |
+## Mac notifications
 
 Mac notifications go through `notify.sh` beside this file. Send one on **every
 merge** and on **every stop**, the moment it happens, so Jason knows at once
@@ -230,8 +223,7 @@ carry on.
 1. **Claim the queue.** Read `"$Q" owner`. If it names a session that still
    appears in `ListAgents`, another queue is running: say so and stop.
    Otherwise `"$Q" set-owner <this session's name>`.
-2. **Title the tab** `cc-state title "PR queue"`.
-3. **Resume what is on file.** `"$Q" show`. A restarted queue keeps its line.
+2. **Resume what is on file.** `"$Q" show`. A restarted queue keeps its line.
    If a ticket holds the turn, send its session `PR-QUEUE STATUS` once to say
    the queue is back. If that session no longer appears in `ListAgents`,
    treat it as gone (step 6).
@@ -290,7 +282,7 @@ still be open when it starts.
 
 1. Read `"$Q" owner`. Empty, or not in `ListAgents`: no queue is running.
    Notify Jason (`notify.sh "NEO-123 ready" "No PR queue is running"`), say so,
-   `cc-state answer`, and stop. Never start a queue yourself.
+   and stop. Never start a queue yourself.
 2. Write your own entry, then tell the queue:
 
    ```bash
@@ -300,17 +292,16 @@ still be open when it starts.
    The title may hold letters, digits, spaces and `. , : ( ) # _ / + ' -`;
    leave out a `'` so the single quotes hold.
 
-   Send `PR-QUEUE JOIN NEO-123` to the owner. Title the tab
-   `cc-state title "NEO-123 Short title"` and set `cc-state queue`.
+   Send `PR-QUEUE JOIN NEO-123` to the owner. 
 3. **Until your turn, do not push.** Every push to a PR branch starts a CI run.
    Use the time however you like: local work, local specs, another task. If
    something turns up that means you are no longer ready, send
    `PR-QUEUE LEAVE NEO-123` and join again once it is.
 4. **On `YOUR TURN`**, in this order:
-   1. **Check the turn is real, then tab blue.** The message's `from` must
+   1. **Check the turn is real.** The message's `from` must
       equal `"$Q" owner`, and `"$Q" position NEO-123` (your own ticket) must
       print position 0. If either fails, ignore the message, tell Jason, and
-      stay in line. Then `cc-state ci`, before anything else.
+      stay in line.
    2. **Merge in main.** `git fetch origin && git merge origin/main`. Resolve
       any conflict. If the merge brought in code, run the fast gates for the
       areas touched (the monorepo CLAUDE.md lists them). If you resolved
@@ -318,9 +309,11 @@ still be open when it starts.
       cannot finish quickly, pass the turn and rejoin.
    3. **Push the branch and open the PR.** `git push -u origin HEAD`. If no PR
       exists yet, `gh pr create` with the ticket in the title, then retitle it
-      `NEO-123(<pr>) Short title` and set the tab title the same way. If the
+      `NEO-123(<pr>) Short title`. If the
       PR already exists, the push alone starts its run.
-   4. **Watch the run** with `pr-watch` until green or red.
+   4. **Watch the run** with one background command that exits when it
+      finishes (`gh pr checks <PR> --watch --fail-fast --interval 120`, run in
+      the background), so the session wakes once, green or red.
    5. **On a red, pass the turn at once.** Save the run's artifacts (the
       red-run triage steps) into the session scratchpad, never inside the
       checkout, then send `PR-QUEUE PASS NEO-123` so the next ticket gets CI,
@@ -337,15 +330,15 @@ still be open when it starts.
         the code it exercises are outside your diff. Every time, however
         often (Jason, 2026-11-13: "always"). Add the occurrence and bump
         the ticket's `## Occurrences: N` count, then join the queue again,
-        at the back, unchanged. Tab `cc-state queue`.
+        at the back, unchanged.
       - **Anything else** (no match, or a spec or the code under it touched
         by your diff): brief
         `feature-planner` with the artifacts. It says whether this is an
         outside outage (rerun on a later turn) or something to fix, and
-        what. Report its verdict to Jason, `cc-state answer`, and wait for
+        what. Report its verdict to Jason and wait for
         his lead: no fix, no rejoin until he says. A fix he approves gets a
         delta audit before it rejoins.
-      The same stop (pass, notify, `cc-state answer`) covers a conflict you
+      The same stop (pass, notify, tell Jason) covers a conflict you
       cannot settle, a merge the permission check refuses, or anything else
       that halts the turn. Do not push again until your next turn.
    7. **Green: merge with `pr-close`.** Your turn is the merge authorisation
@@ -363,7 +356,7 @@ still be open when it starts.
       also turns it green. Also confirm the PR's pushed head holds current main:
       `git fetch origin && git merge-base --is-ancestor origin/main "$(gh pr view <pr> --json headRefOid -q .headRefOid)"`
       succeeds. If something merged during your turn, the queue was bypassed:
-      stop (the pass, notify and `cc-state answer` at the end of step 6, no
+      stop (the pass, notify and report at the end of step 6, no
       triage) and tell Jason.
    8. **Notify the merge.** The moment the merge commit exists:
       `notify.sh "NEO-123 merged" "#<pr> is on main: <short title>"`.
@@ -375,10 +368,10 @@ still be open when it starts.
       this message; send it once.
    10. **Tell the queue you are done.** `PR-QUEUE DONE NEO-123 <short sha>`.
    11. **Finish pr-close**: production deploy check, smoke test, Linear,
-       cleanup. When production checks out, `cc-state test` (purple). If the
-       production check fails, notify Jason and `cc-state answer`.
+       cleanup. If the
+       production check fails, notify Jason.
 5. `status`: send `PR-QUEUE STATUS` to the owner. `leave <ticket>`: send
-   `PR-QUEUE LEAVE <ticket>`, then `cc-state clear`.
+   `PR-QUEUE LEAVE <ticket>`.
 
 ## Hard rules
 

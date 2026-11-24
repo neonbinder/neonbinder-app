@@ -12,6 +12,27 @@ import { MAX_PUBLISHED_ROW_NAMES, checkPublishedChecklist } from "./publishedChe
 
 const row = (players: string[], teams: string[] = []) => ({ number: "1", players, teams });
 
+describe("checkPublishedChecklist — NEO-643 names are cleansed on the server too", () => {
+  test("a stray backslash, soft hyphen and zero-width space are gone from players, teams and the variation note", () => {
+    const checked = checkPublishedChecklist({
+      rows: [
+        {
+          number: "1",
+          players: ["Wilmer R\\ios", "Mike\u200b  Trout"],
+          teams: ["Le\\on Mex\u00adico"],
+          variationName: "Photo Var\\iation",
+        },
+      ],
+    })!;
+    expect(checked.rows[0]).toEqual({
+      number: "1",
+      players: ["Wilmer Rios", "Mike Trout"],
+      teams: ["Leon Mexico"],
+      variationName: "Photo Variation",
+    });
+  });
+});
+
 describe("checkPublishedChecklist — names sent per row", () => {
   test("the raw cap is generous next to a card's own caps", () => {
     expect(MAX_PUBLISHED_ROW_NAMES).toBe(40);
@@ -44,5 +65,27 @@ describe("checkPublishedChecklist — names sent per row", () => {
       /Row 1 of section “Base” sends 500000 player names/,
     );
     expect(performance.now() - started).toBeLessThan(500);
+  });
+});
+
+describe("checkPublishedChecklist — NEO-645 the subject a row with no player printed is the card's name", () => {
+  test("is kept, cleansed, on a row with no player; and never on a row with one", () => {
+    const checked = checkPublishedChecklist({
+      rows: [
+        { number: "1", players: [], teams: [], cardName: "Team\u200b  Ca\\rd" },
+        { number: "2", players: ["Mike Trout"], teams: [], cardName: "Team Card" },
+        { number: "3", players: [], teams: [] },
+        { number: "4", players: [], teams: [], cardName: "   " },
+      ],
+    })!;
+    expect(checked.rows.map((r) => r.cardName)).toEqual(["Team Card", undefined, undefined, undefined]);
+  });
+
+  test("a name over a player name's bound refuses the checklist, named by row position", () => {
+    expect(() =>
+      checkPublishedChecklist({
+        rows: [{ number: "1", players: [], teams: [], cardName: "x".repeat(121) }],
+      }),
+    ).toThrow(/card name over 120/);
   });
 });

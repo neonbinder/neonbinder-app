@@ -37,6 +37,7 @@ import {
 // identity fields and `findTeamByFullName` the ONE lookup — see
 // convex/lib/teamRow.ts for why every writer in this file goes through them.
 import {
+  PLACE_TEAM_SEARCH_HITS,
   TEAM_ERA_SCAN_LIMIT,
   findCollidingTeams,
   findTeamsByAlias,
@@ -46,6 +47,7 @@ import {
   resolveTeamForSetYear,
   teamRowFields,
 } from "./lib/teamRow";
+import { teamLocationIs } from "./lib/placeTeam";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
 // NEO-602 (S2): the one era check every team writer applies.
@@ -60,13 +62,18 @@ import {
   eraOverlapReason,
   erasOverlap,
   isWellFormedEra,
+  teamEraProblem,
   teamOptionLabel,
   type TeamEra,
 } from "../lib/teams/team-era";
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
 // NEO-330: the one definition of "this team matches what was typed", shared
 // with Team Management's own one-character filter.
-import { teamFilterReadings, teamMatchesFilter } from "../lib/teams/team-filter";
+import {
+  teamFilterReadings,
+  teamMatchesFilter,
+  teamSearchReadings,
+} from "../lib/teams/team-filter";
 import { clampSearchQuery } from "./lib/searchQueryClamp";
 // NEO-331: the picker's set-context tiers — pure, shared with tests.
 import { rankTeamsForContext } from "../lib/teams/team-rank";
@@ -944,6 +951,60 @@ export const nameHeldAsAliasBy = query({
   },
 });
 
+/** `#rgb` or `#rrggbb`, the only colour form `teams.colors` may hold. */
+const CARRIED_HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+/** An ESPN team id is digits; anything else is not worth a link. */
+const CARRIED_ESPN_ID = /^\d{1,12}$/;
+
+/**
+ * NEO-645 — the part of a lookup's enrichment a created team may keep, checked.
+ *
+ * Returns only what is well-formed: a hex colour, a digits-only ESPN id, a
+ * `Q<digits>` Wikidata id and a whole-year era that does not run backwards. A
+ * value that fails is dropped, never thrown on: it came out of a lookup, not
+ * out of an operator, and refusing the whole create over one swatch would cost
+ * the operator the team.
+ */
+function sanitizeTeamEnrichment(
+  enrichment:
+    | {
+        yearsActive?: { from: number; to?: number };
+        colors?: { primary?: string; secondary?: string };
+        espnId?: string;
+        wikidataId?: string;
+      }
+    | undefined,
+  operatorYears: { from: number; to?: number } | undefined,
+): {
+  yearsActive?: { from: number; to?: number };
+  colors?: { primary?: string; secondary?: string };
+  externalIds?: { wikidataId?: string; espnId?: string };
+} {
+  if (!enrichment) return {};
+  const out: ReturnType<typeof sanitizeTeamEnrichment> = {};
+  if (!operatorYears && enrichment.yearsActive && teamEraProblem(enrichment.yearsActive) === null) {
+    out.yearsActive = {
+      from: enrichment.yearsActive.from,
+      ...(enrichment.yearsActive.to !== undefined ? { to: enrichment.yearsActive.to } : {}),
+    };
+  }
+  const primary = enrichment.colors?.primary?.trim();
+  const secondary = enrichment.colors?.secondary?.trim();
+  const colors = {
+    ...(primary && CARRIED_HEX_COLOR.test(primary) ? { primary } : {}),
+    ...(secondary && CARRIED_HEX_COLOR.test(secondary) ? { secondary } : {}),
+  };
+  if (colors.primary || colors.secondary) out.colors = colors;
+  const wikidataId = enrichment.wikidataId?.trim();
+  const espnId = enrichment.espnId?.trim();
+  const externalIds = {
+    ...(wikidataId && isWikidataQid(wikidataId) ? { wikidataId } : {}),
+    ...(espnId && CARRIED_ESPN_ID.test(espnId) ? { espnId } : {}),
+  };
+  if (externalIds.wikidataId || externalIds.espnId) out.externalIds = externalIds;
+  return out;
+}
+
 /**
  * NEO-236 — Location + Name, never a full string.
  *
@@ -1011,6 +1072,29 @@ export const findOrCreate = mutation({
      * Team Management, not a side effect of a lookup (the leagues precedent).
      */
     aliases: v.optional(v.array(v.string())),
+    /**
+     * NEO-645 — what the entity lookup said about this team, carried onto the
+     * row it creates (the review wizard's commit used to write all of it).
+     *
+     * Assistive, never authoritative (Jason, NEO-301), and creation-only: it is
+     * read on the INSERT branch and ignored when the call finds an existing
+     * team. The operator's own answers always win: `leagueId` / `leagueName`
+     * over `league`, `yearsActive` over `yearsActive`. Every field is checked
+     * and a bad one is DROPPED, not thrown on, because it is a lookup's output
+     * and no operator intent sits behind it.
+     */
+    enrichment: v.optional(
+      v.object({
+        /** Linked by name when the operator answered no league question; never created. */
+        league: v.optional(v.string()),
+        yearsActive: v.optional(v.object({ from: v.number(), to: v.optional(v.number()) })),
+        colors: v.optional(
+          v.object({ primary: v.optional(v.string()), secondary: v.optional(v.string()) }),
+        ),
+        espnId: v.optional(v.string()),
+        wikidataId: v.optional(v.string()),
+      }),
+    ),
   },
   returns: v.id("teams"),
   handler: async (ctx, args): Promise<Id<"teams">> => {
@@ -1178,12 +1262,21 @@ export const findOrCreate = mutation({
      * dialog's team under the sport's top flight with nothing on screen
      * saying so.
      */
+    const operatorLeague = await resolveOperatorLeagueId(ctx, {
+      sportId: args.sportId,
+      leagueId: args.leagueId,
+      leagueName: args.leagueName,
+    });
+    // NEO-645: the New Team form shows the lookup's league as the answer while
+    // nothing else was picked, so that is what is written, link-only (NEO-331):
+    // a league we hold no row for leaves the team blank rather than minting one.
+    // `null` ("No league", said deliberately) is an answer and is never overridden.
+    const suggestedLeague = args.enrichment?.league?.trim();
     const leagueId =
-      (await resolveOperatorLeagueId(ctx, {
-        sportId: args.sportId,
-        leagueId: args.leagueId,
-        leagueName: args.leagueName,
-      })) ?? undefined;
+      (operatorLeague === undefined && suggestedLeague && suggestedLeague.length <= MAX_TEAM_NAME_LENGTH
+        ? (await findLeagueByName(ctx, { name: suggestedLeague, sportId: args.sportId }))?._id
+        : operatorLeague) ?? undefined;
+    const carried = sanitizeTeamEnrichment(args.enrichment, args.yearsActive);
 
     // NEO-284 — bounded and de-duplicated against the full name this row is
     // about to carry. NOT checked for collisions: an alias another team
@@ -1206,7 +1299,14 @@ export const findOrCreate = mutation({
     const id = await ctx.db.insert("teams", {
       ...teamRowFields({ name, location: args.location }),
       sportId: args.sportId,
-      ...(args.yearsActive ? { yearsActive: args.yearsActive } : {}),
+      // The operator's years win over the lookup's (NEO-254).
+      ...(args.yearsActive
+        ? { yearsActive: args.yearsActive }
+        : carried.yearsActive
+          ? { yearsActive: carried.yearsActive }
+          : {}),
+      ...(carried.colors ? { colors: carried.colors } : {}),
+      ...(carried.externalIds ? { externalIds: carried.externalIds } : {}),
       ...(aliases.length ? { aliases } : {}),
       // Undefined when the operator answered "No league" or left the League
       // field blank (NEO-331) — legitimate, and assignable later in Team
@@ -2416,7 +2516,13 @@ export const searchForManagement = query({
     // Bounded before anything reads it — see `clampSearchQuery`.
     const typed = clampSearchQuery(args.query);
     const readings = teamFilterReadings(typed);
-    if (readings.length === 0) return { teams: [], truncated: false };
+    // NEO-643 — main's own reading of the typed text (a hyphen stays inside its
+    // word) is kept beside the comparison one, so no team main returned is
+    // dropped: a stored "K-C Royals" typed in full is still found.
+    const storedReadings = teamSearchReadings(typed);
+    if (readings.length === 0 && storedReadings.length === 0) {
+      return { teams: [], truncated: false };
+    }
 
     const inLeague = (team: Doc<"teams">) =>
       args.leagueId === undefined
@@ -2455,8 +2561,12 @@ export const searchForManagement = query({
     // One search per reading, in order, and the second only if the first kept
     // nothing: "N. C. S" joins to "ncs", which starts no word in "nc state",
     // and is re-asked as "nc s" (NEO-322, as in `search`).
+    //
+    // NEO-643 — the index holds `nameNormalized` as stored (a hyphen inside its
+    // word), so it is asked with the stored reading; `readings`, which reads a
+    // hyphen as a space, is what a hit must then satisfy.
     let keptByName = 0;
-    for (const reading of readings) {
+    for (const reading of storedReadings) {
       if (keptByName > 0) break;
       const hits = await ctx.db
         .query("teams")
@@ -2465,7 +2575,7 @@ export const searchForManagement = query({
         )
         .take(TEAM_MANAGEMENT_SEARCH_SCAN);
       for (const team of hits) {
-        if (!teamMatchesFilter(team, readings)) continue;
+        if (!teamMatchesFilter(team, readings, storedReadings)) continue;
         const before = matched.length;
         keep(team);
         keptByName += matched.length - before;
@@ -3001,7 +3111,12 @@ export const resolveNames = query({
 /** How many search-index rows feed the ranker, and how many rank out by default. */
 const NEAR_MATCH_SEARCH_CANDIDATES = 10;
 const NEAR_MATCH_DEFAULT_LIMIT = 5;
-const NEAR_MATCH_MAX_LIMIT = 25;
+/**
+ * The most a caller may ask for. At least a printed place's candidate count
+ * (`PLACE_TEAM_SEARCH_HITS`): the review step asks for as many near matches as
+ * it lists candidates, so the two counts agree.
+ */
+const NEAR_MATCH_MAX_LIMIT = Math.max(25, PLACE_TEAM_SEARCH_HITS);
 
 /**
  * NEO-212: the "did you mean?" prompt in front of creating a team.
@@ -3057,6 +3172,14 @@ export const nearMatches = query({
        * stays `Link to {name}`.
        */
       matchedAlias: v.optional(v.string()),
+      /**
+       * Collector review — the team's LOCATION is the typed string ("Seattle"
+       * for the Mariners): the string is a place, not a name for this team.
+       * The review wizard reads it to leave "Remember … as a name for this
+       * team" unticked, so a place is not saved as an alias that would later
+       * claim every set where the same word means another team.
+       */
+      locationMatch: v.optional(v.literal(true)),
     }),
   ),
   handler: async (ctx, args) => {
@@ -3093,6 +3216,7 @@ export const nearMatches = query({
         name: string;
         yearsActive?: { from: number; to?: number };
         matchedAlias?: string;
+        locationMatch?: true;
       }
     >();
     const normalized = normalizeTeamName(name);
@@ -3122,6 +3246,7 @@ export const nearMatches = query({
           ? { yearsActive: exact.yearsActive }
           : {}),
         ...(matchedAlias ? { matchedAlias } : {}),
+        ...(teamLocationIs(exact, name) ? { locationMatch: true as const } : {}),
       });
     }
 
@@ -3137,7 +3262,7 @@ export const nearMatches = query({
         .withSearchIndex("search_name", (q) =>
           q.search("nameNormalized", term).eq("sportId", args.sportId),
         )
-        .take(NEAR_MATCH_SEARCH_CANDIDATES);
+        .take(Math.max(NEAR_MATCH_SEARCH_CANDIDATES, limit));
     };
 
     let hits = await searchTeams(name);
@@ -3156,6 +3281,7 @@ export const nearMatches = query({
         _id: hit._id,
         name: teamFullName(hit),
         ...(hit.yearsActive !== undefined ? { yearsActive: hit.yearsActive } : {}),
+        ...(teamLocationIs(hit, name) ? { locationMatch: true as const } : {}),
       });
     }
 
@@ -3187,6 +3313,7 @@ export const nearMatches = query({
         ...(rows[index].matchedAlias
           ? { matchedAlias: rows[index].matchedAlias }
           : {}),
+        ...(rows[index].locationMatch ? { locationMatch: true as const } : {}),
       }));
   },
 });

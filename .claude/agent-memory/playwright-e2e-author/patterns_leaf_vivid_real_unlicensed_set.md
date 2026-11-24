@@ -10,10 +10,10 @@ metadata:
   read is new. A BSC variant type that is not Base/Insert/Parallel (e.g. `Proof`) lists its rows directly; the leaf row's panel
   reads "(Insert)" and its column is "Proofs" (support `Column` carries it).
 - A real set under paused SportLots is one-marketplace: Sync card checklist ends "Kept all N cards from BSC. Nothing to match" and
-  the tidy-up wizard opens straight on "Cards with no team" ("Step 1 of 2") when every player is already known (no name steps).
-  Cancel on a batch with NO decision says "Fetch cancelled" at once (no Discard question): `cancelUndecided`, not `cancelAndDiscard`.
-- The wizard's teams step lists every card whose team nothing answers, "Leave for later" preselected, whether or not the set has
-  an answer; only the set-team HINT (needs >= 8 cards) goes when the set (or a team) answers. The hint sentence is the product's copy.
+  the cards are saved at once (commit-first, NEO-645) and the walk opens on the Team tile of the first card nothing answers when
+  every player is already known (no Player rows). There is no review batch to cancel afterwards.
+- The Team tile lists every card whose team nothing answers, whether or not the set has an answer; the set-team HINT (needs >= 8 cards)
+  goes when the set (or a team) answers. The hint sentence is the product's copy.
 - A pasted checklist (`usePastedChecklist`, textbox "Paste the checklist") can carry one row; the rest of the cards are looked up
   per card inline in the fetch (answered at once from recordings).
 - A real Base can hold hundreds of cards; its fetch looks up only some inline and queues the rest on the background lane

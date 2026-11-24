@@ -16,6 +16,7 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { insertTestCard } from "../lib/testing/card-row";
 import { setRowChecklistSections } from "./lib/publishedChecklistSections";
+import { normalizePlayerName } from "./players";
 
 const modules = (
   import.meta as unknown as {
@@ -147,18 +148,31 @@ async function seed(t: T, shape: "baseParallel" | "linkedInsert") {
 }
 
 let sortOrder = 0;
+// NEO-645: a card whose player is only a pending name is pink and blocks the
+// build, so each card is linked to a real player, as a tidied set's cards are.
 async function card(t: T, selectorOptionId: SO, cardNumber: string, name: string) {
-  return t.run(async (ctx) =>
-    insertTestCard(ctx, {
+  return t.run(async (ctx) => {
+    const sport = (await ctx.db.query("selectorOptions").collect()).find((r) => r.level === "sport")!;
+    const existing = (await ctx.db.query("players").collect()).find((p) => p.name === name);
+    const playerId =
+      existing?._id ??
+      (await ctx.db.insert("players", {
+        name,
+        nameNormalized: normalizePlayerName(name),
+        sportId: sport._id,
+        lastUpdated: SENTINEL,
+      }));
+    return insertTestCard(ctx, {
       selectorOptionId,
       cardNumber,
       cardName: name,
-      pendingPlayerNames: [name],
+      playerIds: [playerId],
+      playerLinks: [{ playerId, nameOnCard: name }],
       platformData: {},
       sortOrder: sortOrder++,
       lastUpdated: SENTINEL,
-    }),
-  );
+    });
+  });
 }
 
 /** Upload one section to the set's checklist and link the row to it. */

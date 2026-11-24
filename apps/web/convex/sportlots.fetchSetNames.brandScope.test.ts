@@ -55,6 +55,15 @@ vi.mock("./credentials", async (importOriginal) => {
   };
 });
 
+// Warm the mocked module once, before any test runs. The adapters import
+// "./credentials" and convex-test's function loader imports it too, and when
+// those two first imports overlap (a BSC and a SportLots side fetched together)
+// vitest builds the async factory twice, and one importer can fall through to
+// the REAL module, so the adapter reads a real token and the sync ends in
+// "error". Vitest's own mocker says this does not work for concurrent imports.
+// Awaiting it here caches the mocked module before anything can race.
+await import("./credentials");
+
 /** dealsets.tpl's radio-button body for a list of (id, label) sets. */
 function dealsetsHtml(sets: Array<[string, string]>): string {
   return sets
@@ -106,6 +115,57 @@ describe("fetchSetNames narrows only when brd is the all-brands sentinel", () =>
       { value: "Series 1", platformValue: "1" },
       { value: "Series 2", platformValue: "2" },
     ]);
+  });
+
+  test("NEO-643: a prefix with junk, a double space or decomposed accents narrows to the same radio ids", async () => {
+    const sets: Array<[string, string]> = [
+      ["1", "Pok\u00E9mon Cards Series 1"],
+      ["2", "Pok\u00E9mon Cards Series 2"],
+      ["3", "Topps Chrome"],
+    ];
+    const expected = [
+      { value: "Series 1", platformValue: "1" },
+      { value: "Series 2", platformValue: "2" },
+    ];
+    const prefixes = [
+      "Pok\u00E9mon Cards",
+      "Pok\u00E9mon  Cards", // double space
+      "Pok\u00E9mon\u200B Cards", // zero-width space
+      "Pok\\\u00E9mon Cards", // backslash junk
+      "Poke\u0301mon Cards", // decomposed accent (NFD)
+      "  Pok\u00E9mon Cards  ",
+    ];
+    for (const prefix of prefixes) {
+      const t = convexTest(schema, modules);
+      stubDealsetsFetch(dealsetsHtml(sets));
+      const result = await t.withIdentity(ADMIN_IDENTITY).action(
+        api.adapters.sportlots.fetchSportLotsSelectorOptions,
+        {
+          level: "insert",
+          parentFilters: { sport: "Hockey", year: "1997", manufacturer: "Pokemon" },
+          platformFilters: { sport: "HK", year: "1997", manufacturer: "All Brands" },
+          brandScope: { setNamePrefix: prefix },
+        },
+      );
+      expect(result.success, JSON.stringify(prefix)).toBe(true);
+      expect(result.options, JSON.stringify(prefix)).toEqual(expected);
+    }
+  });
+
+  test("NEO-643: a prefix that is all junk is refused like an empty one", async () => {
+    const t = convexTest(schema, modules);
+    stubDealsetsFetch(dealsetsHtml([["1", "Bandai Series 1"]]));
+    const result = await t.withIdentity(ADMIN_IDENTITY).action(
+      api.adapters.sportlots.fetchSportLotsSelectorOptions,
+      {
+        level: "insert",
+        parentFilters: { sport: "Hockey", year: "1997", manufacturer: "Bandai" },
+        platformFilters: { sport: "HK", year: "1997", manufacturer: "All Brands" },
+        brandScope: { setNamePrefix: " \\\u200B " },
+      },
+    );
+    expect(result.success).toBe(false);
+    expect(result.options).toEqual([]);
   });
 
   test("a REAL brand's brd id is returned UNTOUCHED even when a brandScope is passed", async () => {

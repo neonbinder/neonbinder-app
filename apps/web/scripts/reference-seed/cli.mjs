@@ -89,6 +89,13 @@ export class RefusedError extends Error {}
  */
 export const SELECTOR_DEPENDANT_TABLES = [
   "slSetReviews",
+  // NEO-645 — a name's answer (`tidyNames`: scopeId, sportId) and each card's
+  // printed names (`cardPrintedNames`: scopeId). Drained by the reset
+  // (`resetTidyNamesBatch`, `resetCardPrintedNamesBatch`), before the selector
+  // rows: unlike `entityReviewSkips`, an answer links players and teams the
+  // reset deletes, so a surviving one would auto-apply in the next run.
+  "tidyNames",
+  "cardPrintedNames",
   // NEO-358 — transient per-column sync notices (parentId); drained by the
   // reset since a stale "could not be reached" notice outlived one on dev.
   "selectorSyncStatus",
@@ -143,7 +150,9 @@ export const SELECTOR_DEPENDANT_TABLES = [
   "publishedChecklists",
   "publishedChecklistLinks",
 ];
-export const SELECTOR_DEPENDANT_UNDRAINED_TABLES = ["entityReviewSkips"];
+export const SELECTOR_DEPENDANT_UNDRAINED_TABLES = [
+  "entityReviewSkips",
+];
 const COUNTED_DEPENDANT_TABLES = [...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES];
 
 // ── Args ────────────────────────────────────────────────────────────────────

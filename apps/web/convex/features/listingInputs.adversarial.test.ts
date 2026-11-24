@@ -1,7 +1,7 @@
 /**
  * NEO-335 Phase 2 — adversarial parity: the title the pre-save step predicts
  * (assessNewCardListing) against the row buildCardRowForInsert writes and
- * deriveCardAttention reads back, at the edges: the operator's answers, the
+ * deriveLegacyCardAttention reads back, at the edges: the operator's answers, the
  * parallel/baseFeatures arguments the commit never passes, teams past the
  * cap, whitespace and unicode in names.
  */
@@ -9,7 +9,7 @@
 import { describe, expect, test } from "vitest";
 import type { Id } from "../_generated/dataModel";
 import { buildCardRowForInsert, type NewCardRow } from "../cardRowCreate";
-import { deriveCardAttention } from "./cardAttention";
+import { deriveLegacyCardAttention } from "./cardAttention";
 import {
   assessNewCardListing,
   checkTitleAnswer,
@@ -38,7 +38,7 @@ function row(over: Partial<NewCardRow> = {}): NewCardRow {
   return {
     selectorOptionId: SELECTOR_ID,
     cardNumber: "9",
-    cardName: "x",
+    cardName: "Card #1",
     platformData: {},
     pendingPlayerNames: [],
     pendingTeamNames: [],
@@ -49,7 +49,7 @@ function row(over: Partial<NewCardRow> = {}): NewCardRow {
   };
 }
 const attention = (r: ReturnType<typeof buildCardRowForInsert>["row"]) =>
-  deriveCardAttention(r).map((i) => i.kind);
+  deriveLegacyCardAttention(r).map((i) => i.kind);
 
 describe("parity with the stored row, with the operator's answers on it", () => {
   const predicted = assessNewCardListing({ cardNumber: "9" }, FIRST_NAME_SET, {

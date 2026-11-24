@@ -78,6 +78,9 @@
 - [Existing-player questions are card steps](existing-player-questions-are-card-steps-not-review-rows.md) — no review row for a resolved name; client-state step like Teams/checklist; prospects + empty careers flood a career-year rule (NEO-574)
 - [Fake code deploys only from main](fake-service-code-deploys-only-from-main.md) — fake capability merges before the PR whose E2E calls it; browser-facing steps go on a /testing SPA route
 - [Set team default: copy-down vs lookup](set-team-default-copy-down-vs-lookup.md) — teamIds copied down + cascaded; NEO-528 defaults looked up; never mix for one attribute
+- [PDF checklist geometry is in pdf.js items](pdf-checklist-geometry-lives-in-pdfjs-items.md) — cell-gap merge hides column splits; one straddling item = overflowed cell; Title Case headings via fontName
+- [Qualified team claims settle before they become strings](qualified-team-claims-settle-before-they-become-strings.md) — commit resolves team strings unrestricted; settle a league-limited claim at fetch with a same-row check, or hold it off `teams`
+- [Card pairing is names-first, two matchers](card-pairing-is-names-first-two-matchers.md) — BSC/SL step 1a-1c + matchPublishedChecklist; number kinds never partition name passes (Onyx 0 of 56)
 - [Title chain facts are hand-passed](title-chain-facts-are-hand-passed-at-the-commit-chunk.md) — new chain fact: 2 explicit commit passes + 2 inputs validators; Tidy Up = coreFits except parallel-copy short-circuit
 - [Runner region sets the probe p50](runner-region-sets-the-probe-p50.md) — shard probe spread is the runner's region; compare load with server-side ping, loop:loop buckets, OCC
 - [Admin close settles a whole report group](admin-close-settles-a-whole-report-group.md) — group-wide admin writes cross workers; give each report-filing spec its own variant + platform
@@ -89,6 +92,9 @@
 - [Teams-step membership is synchronous](teams-step-membership-is-synchronous.md) — decide "who is on the Cards with no team step" from rows + fetch-time preview facts, never evidence; the step counter never shrinks
 - [Preprocess route merge opens an E2E window](preprocess-route-merge-opens-an-e2e-window.md) — bare FastAPI 404 on dev preprocess until release.yml promotes dev; full rerun, never a timeout
 - [No Team defaults share one gate](no-team-defaults-share-one-gate.md) — new auto-"No team" rules feed noTeamCardVerdict in the commit chunk + BSC answer; sport rows cannot hold the set Team
+- [BSC gate key is the rate-limit domain](bsc-gate-key-is-the-rate-limit-domain.md) — real BSC one key (per-IP 429), fake per namespace; team lane carries queuedBy; defer, never sleep in the one slot
+- [Axe cache hits only logged-out screens](axe-result-cache-hits-only-logged-out-screens.md) — ~194 of 3,608 s axe; per-user avatar, per-seed ids, shared CSS bundle defeat exact hashes
+- [Match Cards mid-stream idles the wait line](match-cards-mid-stream-idles-the-page-wait-line.md) — page "Waiting on" idles while the dialog is open; accept the dialog's "N of M done" (NEO-624)
 - [Agent tool allowlists: transcript facts](agent-tool-allowlists-what-the-transcripts-show.md) — Handback always injected; unlisted tool = error; read-only agents can't Write memory; playwright-test MCP never loads
 - [Monitor caps at 30 min](monitor-watches-cap-at-30-minutes.md) — no persistent mode; each line wakes main; print on change, resume state across re-arms
 - [Marketplace ids are never Convex field names](marketplace-ids-are-never-convex-field-names.md) — non-ASCII keys throw client-side, unlogged; arrays of {id,label}; server accepts old shape (NEO-625)

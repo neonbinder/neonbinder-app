@@ -33,4 +33,4 @@ completions in that try's last 20 s (`--window`). All users' calls, not just the
   `mainFrame()`, `url()` (see `scripts/wire-log.test.mjs`); vitest's convex-lib project
   imports `.ts` from `.mjs` fine, and `vi.spyOn(JSON, "parse")` proves a no-parse path.
 
-Related: [[flake-runtime-forensics]], [[action-stall-between-child-calls]].
+Related: [[reference_flake_runtime_forensics]], [[patterns_action_stall_between_child_calls]].

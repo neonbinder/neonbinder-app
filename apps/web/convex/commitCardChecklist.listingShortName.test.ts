@@ -120,7 +120,7 @@ async function seedTree(
 function card(opts: { cardNumber: string; listingTitleKept?: string }) {
   return {
     cardNumber: opts.cardNumber,
-    cardName: `Card ${opts.cardNumber}`,
+    cardName: `Card #${opts.cardNumber}`,
     teams: [],
     players: [],
     platformData: { sportlots: { ref: `SL-${opts.cardNumber}` } },
@@ -203,9 +203,10 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
     await settle(t);
   });
 
-  test("control: the same kept title WITHOUT the batch's short name is not what the server generates, so it is flagged", async () => {
+  test("control: the same kept title WITHOUT the batch's short name is not what the server generates", async () => {
     // The set carries a different box, so the server still builds from a box
-    // (the card is on the step) but not the one the operator was shown.
+    // but not the one the operator was shown. That title fits with nothing left
+    // out, so it is not flagged cut short either (Jason, 2026-11-23).
     const t = convexTest(schema, modules);
     const ids = await seedTree(t, { setNameMetadata: { listingShortName: "Topps Other" } });
     const shown = await shownTitle(t, ids, "1", "Topps Sapphire");
@@ -216,7 +217,7 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
     const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
     expect(row.listingTitle).toBe("Topps Other Hologram Heroes #1 Baseball");
     expect(row.listingTitle).not.toBe(shown.title);
-    expect(row.listingTitleTruncated).toBe(true);
+    expect(row.listingTitleTruncated).toBeUndefined();
     await settle(t);
   });
 
@@ -366,7 +367,7 @@ describe("every title walk reports the insert's name only on the insert ROLE (NE
     const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: ids.leafId,
       cardNumber: "9",
-      cardName: "Card 9",
+      cardName: "Card #9",
     });
     const row = await t.run(async (ctx) => ctx.db.get(cardId));
     expect(row!.listingTitle).toContain(fragment);
@@ -385,7 +386,7 @@ describe("every title walk reports the insert's name only on the insert ROLE (NE
     const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: ids.leafId,
       cardNumber: "9",
-      cardName: "Card 9",
+      cardName: "Card #9",
     });
     const before = await t.run(async (ctx) => ctx.db.get(cardId));
     // NEO-535: born over the cap (no box yet), flagged by its length.

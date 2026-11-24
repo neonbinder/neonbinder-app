@@ -138,16 +138,28 @@ export type CoveragePairResult = CoveragePairInput & { covered: boolean };
  * is nothing to compare against and every pair reads as covered. A vanished
  * player is covered too: there is nothing to add a stint to.
  */
+export type CoverageMemo = {
+  teams: TeamFactsMemo;
+  stintsByPlayer: Map<string, CoverageStint[] | null>;
+};
+export const newCoverageMemo = (): CoverageMemo => ({ teams: new Map(), stintsByPlayer: new Map() });
+
 export async function computeCoverage(
   ctx: Ctx,
   args: {
     sportId: Id<"selectorOptions">;
     setYear: number | null;
     pairs: ReadonlyArray<CoveragePairInput>;
+    /**
+     * Reads shared across calls (the commit chunk asks one card at a time; a
+     * fresh memo per call read every team and player again for each card).
+     */
+    memo?: CoverageMemo;
   },
 ): Promise<CoveragePairResult[]> {
-  const teamMemo: TeamFactsMemo = new Map();
-  const stintsByPlayer = new Map<string, CoverageStint[] | null>();
+  const memo = args.memo ?? newCoverageMemo();
+  const teamMemo = memo.teams;
+  const stintsByPlayer = memo.stintsByPlayer;
   const out: CoveragePairResult[] = [];
   for (const pair of args.pairs) {
     const echo: CoveragePairInput = {

@@ -167,6 +167,22 @@ export async function closeCardDrawer(drawer: Locator): Promise<void> {
 }
 
 /**
+ * Card `number`'s drawer holds exactly `teams` (one "Remove team <name>" chip
+ * each), read from the stored card: the persistence proof for a team written
+ * anywhere else (the Tidy Up walk's Team tile, its Apply to all). An empty
+ * list proves the card holds none. ENTRY the open checklist lists the card.
+ * EXIT the drawer is closed again. 7 s each.
+ */
+export async function expectDrawerTeams(page: Page, number: string, teams: string[]): Promise<void> {
+  const drawer = await openCardDrawer(page, number);
+  for (const team of teams) {
+    await expect(drawer.getByRole("button", { name: `Remove team ${team}`, exact: true })).toBeVisible();
+  }
+  await expect(drawer.getByRole("button", { name: /^Remove team / }), `card #${number} holds ${teams.length} team(s)`).toHaveCount(teams.length);
+  await closeCardDrawer(drawer);
+}
+
+/**
  * The drawer's description, which the server writes with the card's cameos
  * ("Cameo: <name>.") while nobody has edited it. It arrives with the card
  * itself, so it settles before the chips (whose names load on their own).

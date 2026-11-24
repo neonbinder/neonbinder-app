@@ -24,8 +24,9 @@
 //      connects nothing; Profile says eBay is on a break). Both branches end in
 //      hard asserts (R2).
 //   1. The card. In the Set Builder, under a per-attempt hand-made insert whose
-//      name never fits (the same 60-character insert `card-title-uses-short-name-
-//      for-titles` uses for its card C), they add one card for the catalogue's
+//      name never fits (the same 60-character insert
+//      `card-title-cut-order-and-set-name-in-titles-from-the-listing-title-tile`
+//      uses for its card C), they add one card for the catalogue's
 //      George Brett with a team of their own, made in the New team dialog to
 //      play in Major League Baseball: the card takes its league from its team
 //      (NEO-569; a card with a team never reads the set's leagues) and the
@@ -143,7 +144,7 @@ const MANUFACTURER = "Topps";
 const PLAYER = "George Brett";
 /** The catalogue league the minted team plays in, so the card has a league for the listing (NEO-569). */
 const MLB = "Major League Baseball";
-/** The same 60-character insert `card-title-uses-short-name-for-titles` uses: nothing the generator cuts brings the title under 80. */
+/** The same 60-character insert `card-title-cut-order-and-set-name-in-titles-from-the-listing-title-tile` uses: nothing the generator cuts brings the title under 80. */
 const LONG_INSERT = "Commemorative Anniversary Collectors Edition Hologram Series";
 /** The card's number, a single token. */
 const NUM = "C1";

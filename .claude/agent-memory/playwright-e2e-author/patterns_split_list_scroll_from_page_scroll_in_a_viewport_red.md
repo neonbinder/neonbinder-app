@@ -23,7 +23,7 @@ Cheap ways to rule out "dev-only": `vite build --outDir <scratch>` is ~2 s here;
 20-line node static server (SPA fallback, proxy `/api/*` to the dev Vite, because
 the sign-in hop's `/api/auth/testing` exists only under `vite serve`) lets the
 spec run against the PRODUCTION bundle like CI's Vercel preview. A `git archive
-origin/main` snapshot Vite (see [[probe-vite-from-a-head-snapshot]]) answers
+origin/main` snapshot Vite (see [[patterns_probe_vite_from_a_head_snapshot]]) answers
 "did this branch change the height" with one `document.documentElement.scrollHeight`
 probe on each side.
 

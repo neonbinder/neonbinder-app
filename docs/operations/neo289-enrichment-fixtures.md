@@ -371,7 +371,7 @@ already recorded) with no miss.
   `Shuya Yamada` were already recorded.
 
 **NEO-426 entry (2026-11-19): 2026 ONIT Athlete Arizona State Sun Devils Base.**
-The spec `sport-no-teams-listed-team-beats-the-default` commits this set and
+The spec `sport-no-teams-listing-team-holds-back-the-default` commits this set and
 stages 27 of its 29 checklist names as new Baseball players (`Cole Carlon` and
 `Josh Butler` resolve to catalogue players and are never looked up). The staged
 list was read off a run's `entityReviewSkips` (26 skips) plus `Austin Musso`,

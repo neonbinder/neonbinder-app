@@ -223,6 +223,33 @@ async function seedEveryDrainedTable(
       });
     }
 
+    // tidyNames: 2 and cardPrintedNames: 3 (NEO-645) — a name's answer, which
+    // links a player the reset deletes, and the cards that printed names.
+    // Hand inserted: the reset drains the tables, it does not care how rows
+    // got there.
+    for (let i = 0; i < 2; i += 1) {
+      await ctx.db.insert("tidyNames", {
+        scopeId: variantId,
+        kind: "player",
+        nameNormalized: `answered ${i}`,
+        name: `Answered ${i}`,
+        sportId,
+        status: "ready",
+        answer: { kind: "linkPlayer", playerId: playerIds[0], by: "operator" },
+        answerGen: 1,
+      });
+    }
+    for (let i = 0; i < 3; i += 1) {
+      await ctx.db.insert("cardPrintedNames", {
+        cardChecklistId: cardIds[i],
+        scopeId: variantId,
+        kind: "player",
+        nameNormalized: `answered ${i % 2}`,
+        printed: `Answered ${i % 2}`,
+        order: 0,
+      });
+    }
+
     // collectionCopies: 10, collectionContainers: 1 and
     // collectionBuildingSets: 11 (NEO-358) — a collector's copies, the binder
     // they live in, and "Sets I'm building". The global reset drains all three.
@@ -389,6 +416,8 @@ async function tableCounts(t: ReturnType<typeof convexTest>) {
     variantCommonPrices: (await ctx.db.query("variantCommonPrices").collect())
       .length,
     cardTeamLinks: (await ctx.db.query("cardTeamLinks").collect()).length,
+    cardPrintedNames: (await ctx.db.query("cardPrintedNames").collect()).length,
+    tidyNames: (await ctx.db.query("tidyNames").collect()).length,
     selectorOptions: (await ctx.db.query("selectorOptions").collect()).length,
     cardChecklist: (await ctx.db.query("cardChecklist").collect()).length,
     cardCrossListings: (await ctx.db.query("cardCrossListings").collect())
@@ -444,6 +473,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionBuildingSets: 11,
       variantCommonPrices: 2,
       cardTeamLinks: 9,
+      cardPrintedNames: 3,
+      tidyNames: 2,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
@@ -475,6 +506,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionBuildingSets: 11,
       variantCommonPrices: 2,
       cardTeamLinks: 9,
+      cardPrintedNames: 3,
+      tidyNames: 2,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
@@ -517,6 +550,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
+      cardPrintedNamesDeleted: 3,
+      tidyNamesDeleted: 2,
       cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
@@ -541,6 +576,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionBuildingSets: 0,
       variantCommonPrices: 0,
       cardTeamLinks: 0,
+      cardPrintedNames: 0,
+      tidyNames: 0,
       selectorOptions: 0,
       cardChecklist: 0,
       cardCrossListings: 0,
@@ -583,6 +620,9 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     ["resetEntityReviewQueueBatch", "entityReviewQueue"],
     ["resetChecklistCandidatesBatch", "checklistCandidates"],
     ["resetChecklistNameResolutionsBatch", "checklistNameResolutions"],
+    // NEO-645 — the Tidy Up name answers and the printed-name index.
+    ["resetTidyNamesBatch", "tidyNames"],
+    ["resetCardPrintedNamesBatch", "cardPrintedNames"],
     ["resetPlayersBatch", "players"],
     ["resetTeamsBatch", "teams"],
     ["resetFranchisesBatch", "franchises"],
@@ -610,6 +650,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
         collectionBuildingSets: 11,
         variantCommonPrices: 2,
         cardTeamLinks: 9,
+        cardPrintedNames: 3,
+        tidyNames: 2,
         selectorOptions: 3,
         cardChecklist: 5,
         cardCrossListings: 6,
@@ -651,6 +693,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
+      cardPrintedNamesDeleted: 0,
+      tidyNamesDeleted: 0,
       cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
@@ -736,6 +780,8 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
+      cardPrintedNamesDeleted: 0,
+      tidyNamesDeleted: 0,
       cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
@@ -786,6 +832,8 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
+      cardPrintedNamesDeleted: 3,
+      tidyNamesDeleted: 2,
       cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
@@ -808,6 +856,8 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionBuildingSets: 0,
       variantCommonPrices: 0,
       cardTeamLinks: 0,
+      cardPrintedNames: 0,
+      tidyNames: 0,
       selectorOptions: 0,
       cardChecklist: 0,
       cardCrossListings: 0,
@@ -839,6 +889,8 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionBuildingSets: 11,
       variantCommonPrices: 2,
       cardTeamLinks: 9,
+      cardPrintedNames: 3,
+      tidyNames: 2,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
@@ -1089,7 +1141,7 @@ describe("NEO-294: the entity-review tables are drained, across pages", () => {
     let sawPlayersDeleted = false;
     let queueWhenPlayersWent = -1;
     let candidatesWhenPlayersWent = -1;
-    for (let pass = 0; pass < 20 && !sawPlayersDeleted; pass += 1) {
+    for (let pass = 0; pass < 30 && !sawPlayersDeleted; pass += 1) {
       const result = await runReset(t);
       if (result.playersDeleted > 0) {
         sawPlayersDeleted = true;
@@ -1240,6 +1292,9 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     "entityReviewQueue",
     "checklistCandidates",
     "checklistNameResolutions",
+    // NEO-645 — a name's answer (scopeId, sportId) and each card's printed names.
+    "tidyNames",
+    "cardPrintedNames",
     // NEO-496 — a set's publisher checklist (setId) and the rows' section links.
     "publishedChecklists",
     "publishedChecklistLinks",
@@ -1542,6 +1597,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 1,
       cardTeamLinksDeleted: 9,
+      cardPrintedNamesDeleted: 3,
+      tidyNamesDeleted: 2,
       cardSecondaryPlayerLinksDeleted: 1,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,

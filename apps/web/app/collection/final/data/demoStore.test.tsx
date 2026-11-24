@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { extendCatalog, refreshDataIndexes } from "../../prototypes/_shared/data";
 import { initialCollectionState, MAIN_BINDER_ID, SHOW_BOX_ID, TRADE_BINDER_ID, UNSORTED_BOX_ID } from "../store";
 import { DemoCollectionProvider, demoCard, demoVariantId, parseDemoVariantId } from "./demoStore";
 import { cardLabel, compareCards, variantLabel } from "./labels";
@@ -956,5 +957,60 @@ describe("the inventory side (NEO-364)", () => {
     });
     expect(result.current.shelf!.some((c) => c.id === SHOW_BOX_ID)).toBe(false);
     expect(result.current.list!.items.map((i) => i.card.id)).toContain(boxCardId);
+  });
+});
+
+describe("a smart binder fills itself from the fixture cards", () => {
+  const STORAGE_KEY = "nb-collection-demo-store-test";
+  const smartWrapper = ({ children }: { children: ReactNode }) => (
+    <DemoCollectionProvider storageKey={STORAGE_KEY}>{children}</DemoCollectionProvider>
+  );
+  /** A state holding one smart binder on `rule` and one copy of each card, as the provider would load it. */
+  function seedSmart(rule: object, cardIds: string[]) {
+    const state = initialCollectionState();
+    window.sessionStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        ...state,
+        containers: [...state.containers, { id: "binder-smart-probe", kind: "binder", name: "Probe", rule }],
+        copies: cardIds.map((cardId, i) => ({
+          id: `copy-probe-${i}`,
+          cardId,
+          quantity: 1,
+          acquiredAt: "2025-01-01",
+          homeId: MAIN_BINDER_ID,
+        })),
+      }),
+    );
+  }
+  const lines = () => {
+    const { result } = renderHook(() => useContainers(), { wrapper: smartWrapper });
+    return result.current!.find((c) => c.id === "binder-smart-probe")!.count!.lines;
+  };
+
+  it("lists the copies whose card matches its rule, and not a copy whose card id is not in the fixtures", () => {
+    const [first] = initialCollectionState().copies;
+    seedSmart({ kind: "set", setId: demoCard(first.cardId)!.set.id }, [first.cardId, "card-not-in-fixtures"]);
+    expect(lines()).toBe(1);
+  });
+
+  it("finds a card added to the catalog after the first lookup", () => {
+    // A first read builds the card index from the catalog as it is now.
+    const [first] = initialCollectionState().copies;
+    seedSmart({ kind: "set", setId: demoCard(first.cardId)!.set.id }, [first.cardId]);
+    expect(lines()).toBe(1);
+
+    // The demo's sample sets join the catalog late (data/sample `load()`).
+    extendCatalog({
+      sets: [
+        {
+          set: { id: "late-probe-set", sportId: "baseball", year: 2024, season: "2024", brandId: "brand-topps", name: "Late Probe" },
+          base: [[1, "Shohei Ohtani", "dodgers"]],
+        },
+      ],
+    });
+    refreshDataIndexes();
+    seedSmart({ kind: "set", setId: "late-probe-set" }, ["late-probe-set:base:1"]);
+    expect(lines()).toBe(1);
   });
 });

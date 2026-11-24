@@ -14,16 +14,15 @@
  *      refusal used to belong to a Save button; NEO-216 removed that button
  *      (the drawer autosaves per field on blur/Enter), so the cap is enforced
  *      at commit instead — same constant, same wording, same server backstop.
- *   2. The soft bands are WORDS, not just colours, at 55 and 70. This is the
- *      accessibility requirement, so it is asserted on the text. They are
- *      display truncation, not a rule: a title in either band still saves.
+ *   2. There is no soft band below the cap (NEO-645): a title of 55 or 70
+ *      characters shows a plain `N/80` and no "may clip" warning.
  *   3. Regenerate replaces the field with the server's title, PERSISTS it
  *      through the same single-field path, and shows the facts it was built
  *      from — and asks twice before discarding an edit.
  *   4. A row whose auto-title was cut short says so.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -168,25 +167,21 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     renderPanel(makeCard({ listingTitle: titleOfLength(40) }));
 
     expect(screen.getByText("40/80")).toBeTruthy();
-    expect(screen.queryByText("may clip on mobile")).toBeNull();
     expect(screen.queryByText("may clip in search")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("warns in words, not only colour, at the 55-character mobile band", () => {
+  it("shows a plain count, with no clip warning, at 55 and 70 characters (NEO-645)", () => {
     renderPanel(makeCard({ listingTitle: titleOfLength(55) }));
-
     expect(screen.getByText("55/80")).toBeTruthy();
-    expect(screen.getByText("may clip on mobile")).toBeTruthy();
-    // Still saveable: the soft bands are display truncation, not a rule.
+    expect(screen.queryByText(/may clip/)).toBeNull();
+    expect(screen.queryByText(/on mobile/)).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
-  });
+    cleanup();
 
-  it("warns in words at the 70-character search band", () => {
     renderPanel(makeCard({ listingTitle: titleOfLength(70) }));
-
     expect(screen.getByText("70/80")).toBeTruthy();
-    expect(screen.getByText("may clip in search")).toBeTruthy();
+    expect(screen.queryByText(/may clip/)).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -557,7 +552,7 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     renderPanel(
       makeCard({ listingTitle: titleOfLength(78), listingTitleTruncated: true }),
     );
-    expect(screen.getByText("Auto title was cut short — rewrite it")).toBeTruthy();
+    expect(screen.getByText("Auto title was cut short. Rewrite it.")).toBeTruthy();
   });
 
   it("NEO-535: a cut-short title says what was cut instead, and an over-cap one only that it is too long", () => {
@@ -565,7 +560,7 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
       makeCard({ listingTitle: titleOfLength(78), listingTitleTruncated: true }),
     );
     expect(screen.getByText(/^Left out to fit: /)).toBeTruthy();
-    expect(screen.queryByText("Auto title was cut short — rewrite it")).toBeNull();
+    expect(screen.queryByText("Auto title was cut short. Rewrite it.")).toBeNull();
   });
 
   it("NEO-535: an over-cap title is never also called cut short", () => {
@@ -574,7 +569,7 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
       makeCard({ listingTitle: titleOfLength(90), listingTitleTruncated: true }),
     );
     expect(screen.getByRole("alert").textContent).toContain("10 over the 80-character limit");
-    expect(screen.queryByText("Auto title was cut short — rewrite it")).toBeNull();
+    expect(screen.queryByText("Auto title was cut short. Rewrite it.")).toBeNull();
   });
 
   it("NEO-535: Regenerate asks the server to rebuild the description as well", async () => {

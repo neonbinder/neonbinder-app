@@ -14,7 +14,8 @@
  * "Failing" is the builder's title over 80 after every cut, or one that
  * sits in Tidy Up (NEO-609: a Tidy Up cut, which includes a lost first name,
  * is still out). A title built from the box that fits with full names is NOT
- * failing: the box is the operator's own answer and it worked.
+ * failing: the box is the operator's own answer and it worked (the builder
+ * takes the box when its title leaves something out, NEO-637).
  *
  * Pure and browser-safe (the dialog reruns the same order when the operator
  * edits the box). Imports only the generator, the cap and the suffix list.
@@ -174,9 +175,9 @@ export type ParallelCopyTitle = ListingTitleAssessment & {
  *
  * Step 2 is reached only when the builder's title needs Tidy Up (or is over
  * 80). Its description is the box text when the parallel has one and the
- * box-headed title fits (NEO-618: the same rule as `assessListingTitle`), or
- * when the builder's description puts the title over 80; otherwise the
- * builder's own.
+ * title headed by the builder's description leaves something out (NEO-637:
+ * the same rule as `assessListingTitle`, read off the carried words) or runs
+ * over 80; otherwise the builder's own.
  */
 export function assessParallelCopyTitle(
   inputs: ListingCardInputs,
@@ -191,9 +192,8 @@ export function assessParallelCopyTitle(
     const headed = (description: string) => [description, rest].filter(Boolean).join(" ");
     let title = headed(titleDescription(inputs));
     const box = inputs.setShortName?.trim();
-    if (box) {
-      const boxed = headed(box);
-      if (boxed.length <= LISTING_TITLE_MAX || title.length > LISTING_TITLE_MAX) title = boxed;
+    if (box && (title.length > LISTING_TITLE_MAX || leftOutOfTitle(inputs, title).length > 0)) {
+      title = headed(box);
     }
     if (title && title.length <= LISTING_TITLE_MAX) {
       return {

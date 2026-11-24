@@ -19,8 +19,10 @@ import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "../../convex/features/listi
 import {
   buildTitleGroups,
   cardsNeedingTitleReview,
+  retitleDraftsForSetName,
   setNameInTitlesPrefill,
   shortNameFieldApplies,
+  swapSetNameInTitle,
   teamIdNamesFromRefs,
   titleAnswersForCommit,
   titleDraftState,
@@ -139,6 +141,30 @@ describe("names — a data claim, never a guess", () => {
     });
     const [row] = rowsOf(buildTitleGroups([relinked], context()).titleGroups);
     expect(row.title).toContain("Ohtani");
+  });
+
+  test("NEO-591: a name given to a NEW player is titled by the name as typed", () => {
+    const fresh = card("1", {
+      players: ["Shohei Ohtani"],
+      newPlayerByName: [{ name: "shohei  ohtani", ref: "np-one" }],
+    });
+    const names = { newPlayerNameByRef: new Map([["np-one", "Dwight Gooden"]]) };
+    const [row] = rowsOf(buildTitleGroups([fresh], context(), undefined, { names }).titleGroups);
+    expect(row.title).toContain("Gooden");
+    expect(row.title).not.toContain("Ohtani");
+  });
+
+  test("NEO-591: another card's ref is not this card's player", () => {
+    const fresh = card("1", {
+      players: ["Shohei Ohtani"],
+      newPlayerByName: [{ name: "Shohei Ohtani", ref: "np-one" }],
+    });
+    const plain = card("2", { players: ["Shohei Ohtani"] });
+    const names = { newPlayerNameByRef: new Map([["np-one", "Dwight Gooden"]]) };
+    const rows = rowsOf(buildTitleGroups([fresh, plain], context(), undefined, { names }).titleGroups);
+    const byNumber = (n: string) => rows.find((r) => r.cardNumber === n)!;
+    expect(byNumber("1").title).toContain("Gooden");
+    expect(byNumber("2").title).not.toContain("Gooden");
   });
 
   test("a printed name that did not resolve and has no wizard answer is not on the card", () => {
@@ -480,10 +506,11 @@ describe("NEO-535 — Set name in titles on the step", () => {
   test("the box shows whenever the step lists titles, a stored value or not", () => {
     expect(shortNameFieldApplies(cards, context())).toBe(true);
     expect(shortNameFieldApplies(cards, OVER)).toBe(true);
-    // A stored value the builder used is still a title the operator should
-    // see (Jason Q1: such cards appear in the dialog).
+    // A stored value the builder used, whose titles then fit with nothing left
+    // out, is nothing for the operator to check (NEO-645, Jason 2026-11-23); one
+    // whose titles still run over the cap stays on the step (the test below).
     expect(shortNameFieldApplies(cards, context({ listingShortName: "2026 Topps Chrome" }))).toBe(
-      true,
+      false,
     );
     // Nothing listed: no box.
     expect(shortNameFieldApplies(cards, SHORT)).toBe(false);
@@ -590,7 +617,10 @@ describe("a split team in the preview (NEO-606)", () => {
   /**
    * A 50-character "Set name in titles" box: "<box> Shohei Ohtani #1" is 66,
    * "New York Yankees" would make 83, "Yankees" 74. The card is on the step
-   * because its own description lost a first name and the box did not.
+   * only while the box title leaves something out (NEO-645, Jason 2026-11-23:
+   * a title that fits because of the box, with nothing left out, is not
+   * flagged, so it is not listed): the team is the thing out when it has no
+   * split, and nothing is out when it does.
    */
   const BOX = "B".repeat(50);
   const boxed = (extra: Partial<TitleContext> = {}) =>
@@ -612,14 +642,13 @@ describe("a split team in the preview (NEO-606)", () => {
       }),
     );
 
-  test("the preview says 'Yankees' from the server context, exactly as the stored title does", () => {
+  test("with the split from the server context 'Yankees' fits, nothing is left out, and the card is not on the step", () => {
     const ctx = boxed({ teamSplits: [NY] });
-    const [row] = rowsOf(buildTitleGroups([teamCard], ctx).titleGroups);
     const written = stored(ctx, [NY]);
-    expect(row.title).toBe(`${BOX} Shohei Ohtani #1 Yankees`);
-    expect(row.title).toBe(written.title);
-    expect(row.leftOut).toEqual(written.dropped);
-    expect(row.leftOut).toEqual([]);
+    expect(written.title).toBe(`${BOX} Shohei Ohtani #1 Yankees`);
+    expect(written.dropped).toEqual([]);
+    expect(rowsOf(buildTitleGroups([teamCard], ctx).titleGroups)).toEqual([]);
+    expect(cardsNeedingTitleReview([teamCard], ctx)).toEqual([]);
   });
 
   test("without the split the team is dropped whole, in the preview and the stored title alike", () => {
@@ -640,11 +669,17 @@ describe("a split team in the preview (NEO-606)", () => {
       teamSplits: [NY],
     };
     const ctx = boxed();
+    // The split reaches the preview: "Yankees" fits, so nothing is left out and
+    // the card is not listed. Without it the team would be dropped whole.
+    expect(stored(ctx, [NY]).title.endsWith("#1 Yankees")).toBe(true);
+    expect(
+      rowsOf(buildTitleGroups([card("1")], ctx, [{ teamIds: [id] }], { names }).titleGroups),
+    ).toEqual([]);
+    const withoutSplit = { names: { teamNameById: names.teamNameById } };
     const [row] = rowsOf(
-      buildTitleGroups([card("1")], ctx, [{ teamIds: [id] }], { names }).titleGroups,
+      buildTitleGroups([card("1")], ctx, [{ teamIds: [id] }], withoutSplit).titleGroups,
     );
-    expect(row.title).toBe(stored(ctx, [NY]).title);
-    expect(row.title.endsWith("#1 Yankees")).toBe(true);
+    expect(row.leftOut).toEqual(["New York Yankees"]);
   });
 
   test("a team created in the Names phase carries the Location / Name it was created with", () => {
@@ -656,12 +691,15 @@ describe("a split team in the preview (NEO-606)", () => {
       },
     ];
     const ctx = boxed({ teams: [] });
-    const [row] = rowsOf(
-      buildTitleGroups([card("1", { teams: ["NYY"] })], ctx, undefined, { names: { rows } })
-        .titleGroups,
-    );
-    expect(row.title).toBe(stored(ctx, [NY]).title);
-    expect(row.title.endsWith("#1 Yankees")).toBe(true);
+    // "Yankees" fits with the split it was created with: nothing is left out,
+    // so the card is not on the step.
+    expect(stored(ctx, [NY]).title.endsWith("#1 Yankees")).toBe(true);
+    expect(
+      rowsOf(
+        buildTitleGroups([card("1", { teams: ["NYY"] })], ctx, undefined, { names: { rows } })
+          .titleGroups,
+      ),
+    ).toEqual([]);
   });
 
   test("a team with no location (no split) is dropped whole", () => {
@@ -675,5 +713,159 @@ describe("a split team in the preview (NEO-606)", () => {
     );
     expect(row.title).toBe(`${BOX} Shohei Ohtani #1 Baseball`);
     expect(row.leftOut).toEqual(["New York Yankees"]);
+  });
+});
+
+describe("NEO-637 — the box and a title the operator edited", () => {
+  const OLD = `2026 Topps ${FIRST_NAME_SET}`;
+  const NEW = "2026 Topps Chrome Sapphire";
+  const cards: PreviewCardForTitles[] = [
+    { cardNumber: "1", cardName: "Card 1", players: ["Shohei Ohtani"] },
+    { cardNumber: "2", cardName: "Card 2", players: ["Shohei Ohtani"] },
+  ];
+  const ctx = context();
+  const groups = (answers: Array<{ listingTitle?: string } | undefined>) =>
+    buildTitleGroups(cards, ctx, undefined, { answers }).titleGroups;
+
+  describe("swapSetNameInTitle", () => {
+    test("swaps the first whole-word run, any case, and keeps every other word", () => {
+      expect(swapSetNameInTitle("My 2026 topps Chrome RC Ohtani #1", "2026 Topps Chrome", "Score")).toBe(
+        "My Score RC Ohtani #1",
+      );
+    });
+
+    test("is undefined when the old text is not there, or only inside another word", () => {
+      expect(swapSetNameInTitle("My Ohtani title #1", OLD, NEW)).toBeUndefined();
+      expect(swapSetNameInTitle("Scorecard Ohtani", "Score", "Box")).toBeUndefined();
+      expect(swapSetNameInTitle("anything", "  ", NEW)).toBeUndefined();
+    });
+
+    test("start, middle and end of the title", () => {
+      expect(swapSetNameInTitle("Old Set Ohtani #1", "Old Set", "New")).toBe("New Ohtani #1");
+      expect(swapSetNameInTitle("My Old Set Ohtani #1", "Old Set", "New")).toBe("My New Ohtani #1");
+      expect(swapSetNameInTitle("Ohtani #1 Old Set", "Old Set", "New")).toBe("Ohtani #1 New");
+    });
+
+    test("a name ending in punctuation, and non-letter edges around the run", () => {
+      expect(swapSetNameInTitle("Topps Co. Ohtani", "Topps Co.", "Topps")).toBe("Topps Ohtani");
+      expect(swapSetNameInTitle("(Old Set) Ohtani", "Old Set", "New")).toBe("(New) Ohtani");
+      expect(swapSetNameInTitle("Old Set, Ohtani", "Old Set", "New")).toBe("New, Ohtani");
+      // A name that itself ends in a non-letter needs no word edge after it.
+      expect(swapSetNameInTitle("Old Set!Ohtani", "Old Set!", "New")).toBe("NewOhtani");
+    });
+
+    test("leading space in the edit does not hide the opening run", () => {
+      expect(swapSetNameInTitle("  Old Set Ohtani Old Set", "Old Set", "New")).toBe("  New Ohtani Old Set");
+    });
+
+    test("the run at the start wins over a later copy; two copies with none at the start are a guess, so not found", () => {
+      expect(swapSetNameInTitle("Old Set Ohtani Old Set", "Old Set", "New")).toBe("New Ohtani Old Set");
+      expect(swapSetNameInTitle("Ohtani Old Set #1 Old Set", "Old Set", "New")).toBeUndefined();
+    });
+
+    test("a copy inside a longer word does not count towards the repeat", () => {
+      expect(swapSetNameInTitle("Ohtani Old Set #1 Old Setter", "Old Set", "New")).toBe("Ohtani New #1 Old Setter");
+    });
+
+    test("a swap can make the title longer than 80: it is returned as it is, never cut", () => {
+      const long = "N".repeat(79);
+      const swapped = swapSetNameInTitle("Old Ohtani #1", "Old", long);
+      expect(swapped).toBe(`${long} Ohtani #1`);
+      expect(swapped!.length).toBeGreaterThan(LISTING_TITLE_MAX);
+    });
+
+    test("a pasted line break in the new text is one space", () => {
+      expect(swapSetNameInTitle("Old Ohtani", "Old", "New\nSet")).toBe("New Set Ohtani");
+    });
+  });
+
+  describe("retitleDraftsForSetName", () => {
+    test("a hand edit whose row shows the line: the set name is swapped, the rest kept", () => {
+      const edit = `${OLD} Ohtani my own #1 words`;
+      const next = retitleDraftsForSetName([{ listingTitle: edit }], groups([{ listingTitle: edit }]), OLD, NEW);
+      expect(next[0]).toEqual({ listingTitle: `${NEW} Ohtani my own #1 words` });
+    });
+
+    test("a hand edit whose row shows the line but lost the old set name: the edit is dropped (rebuilt)", () => {
+      const edit = "My Ohtani title #1";
+      const next = retitleDraftsForSetName([{ listingTitle: edit }], groups([{ listingTitle: edit }]), OLD, NEW);
+      expect(next[0]).toBeUndefined();
+    });
+
+    test("an edit that lost the box text in effect but carries the builder's description is swapped from that", () => {
+      // The box was edited to "Prior Box" earlier; this title was written
+      // before that, so it still opens with the builder's own description.
+      const edit = `${OLD} Ohtani my own #1 words`;
+      const next = retitleDraftsForSetName([{ listingTitle: edit }], groups([{ listingTitle: edit }]), "Prior Box", NEW);
+      expect(next[0]).toEqual({ listingTitle: `${NEW} Ohtani my own #1 words` });
+    });
+
+    test("the box text in effect wins over the builder's description when both are in the edit", () => {
+      const edit = `Prior Box Ohtani ${OLD} #1`;
+      const next = retitleDraftsForSetName([{ listingTitle: edit }], groups([{ listingTitle: edit }]), "Prior Box", NEW);
+      expect(next[0]).toEqual({ listingTitle: `${NEW} Ohtani ${OLD} #1` });
+    });
+
+    test("dropping the edit keeps the rest of the answer (the variation)", () => {
+      const edit = "My Ohtani title #1";
+      const answers = [{ listingTitle: edit, cardVariation: "Blue" }];
+      const next = retitleDraftsForSetName(answers, groups(answers), OLD, NEW);
+      expect(next[0]).toEqual({ cardVariation: "Blue" });
+    });
+
+    test("a hand edit whose row shows no line is left exactly as typed", () => {
+      const edit = `${OLD} Shohei Ohtani #1 Baseball`;
+      const answers = [{ listingTitle: edit }];
+      const [row] = groups(answers).flatMap((g) => g.cards);
+      expect(row.leftOut).toEqual([]);
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW)).toEqual(answers);
+    });
+
+    test("a blank draft, or one that is just the generated title, is no hand edit", () => {
+      const generated = groups([])[0].cards[1].title;
+      const answers = [{ listingTitle: "   " }, { listingTitle: generated }];
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW)).toEqual(answers);
+    });
+
+    test("a line shared by the group alone (the row's own is empty) counts as showing the line", () => {
+      const answers = [
+        { listingTitle: `${OLD} Ohtani my own #1` },
+        { listingTitle: `${OLD} Ohtani my own #2` },
+      ];
+      const [group] = groups(answers);
+      expect(group.leftOut.length).toBeGreaterThan(0);
+      expect(group.cards.every((c) => c.leftOut.length === 0)).toBe(true);
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW)).toEqual([
+        { listingTitle: `${NEW} Ohtani my own #1` },
+        { listingTitle: `${NEW} Ohtani my own #2` },
+      ]);
+    });
+
+    test("an edit with the old text twice and none at the start falls to the builder's description, then rebuilds", () => {
+      const twice = `Ohtani Prior Box #1 Prior Box`;
+      expect(
+        retitleDraftsForSetName([{ listingTitle: twice }], groups([{ listingTitle: twice }]), "Prior Box", NEW)[0],
+      ).toBeUndefined();
+      const withDescription = `Ohtani ${OLD} #1 Prior Box Prior Box`;
+      expect(
+        retitleDraftsForSetName([{ listingTitle: withDescription }], groups([{ listingTitle: withDescription }]), "Prior Box", NEW)[0],
+      ).toEqual({ listingTitle: `Ohtani ${NEW} #1 Prior Box Prior Box` });
+    });
+
+    test("lineRows decides which rows count as showing the line, whatever the lists say now", () => {
+      const edit = `${OLD} Ohtani my own #1 words`;
+      const answers = [{ listingTitle: edit }];
+      // The lists say the line shows, but this edit began with it not showing.
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW, new Set())).toEqual(answers);
+      // And the other way round: it showed at the start of the edit.
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, NEW, new Set([0]))[0]).toEqual({
+        listingTitle: `${NEW} Ohtani my own #1 words`,
+      });
+    });
+
+    test("an unchanged set name changes nothing", () => {
+      const answers = [{ listingTitle: `${OLD} Ohtani my own #1` }];
+      expect(retitleDraftsForSetName(answers, groups(answers), OLD, OLD)).toEqual(answers);
+    });
   });
 });

@@ -8,10 +8,14 @@ import {
   applyChecklistAnswers,
   buildChecklistPairRequests,
   committable,
+  distinctNumbers,
+  numbersDifferInText,
   pairedRowCard,
+  pickedNumber,
   pairedRowOf,
   revertServerChecklistPair,
   unlinkableServerPair,
+  withoutChecklistNumber,
   type ChecklistLinkRow,
   type ChecklistPairAnswer,
   type ServerPairedRow,
@@ -455,6 +459,40 @@ describe("NEO-496 — undoing the server's checklist pair", () => {
     expect(committable(card)).not.toHaveProperty("checklistRowId");
   });
 
+  test("a Prospect (X) row is a prospect card whose X is one of its teams (NEO-591)", () => {
+    const card = pairedRowCard({ ...pairedRow, teams: ["Dallas Baptist"], prospect: true }, "x");
+    expect(card).toMatchObject({ teams: ["Dallas Baptist"], teamLookup: "checklist", isProspect: true });
+    // The row the operator relinks keeps the claim.
+    expect(pairedRowOf({ ...pairedRow, teams: ["Dallas Baptist"], prospect: true })).toMatchObject({
+      teams: ["Dallas Baptist"],
+      prospect: true,
+    });
+  });
+
+  test("collector review: the printed claim rides on the relinkable row, for display", () => {
+    expect(pairedRowOf({ ...pairedRow, teams: ["Oklahoma Sooners"], prospect: true, claim: "Prospect (Oklahoma)" }).claim).toBe(
+      "Prospect (Oklahoma)",
+    );
+    expect(pairedRowOf(pairedRow)).not.toHaveProperty("claim");
+  });
+
+  test("NEO-591: an Unlink keeps a mixed Prospect row's printed cell for its row line, and the commit never sees it", () => {
+    const card = pairedRowCard(
+      {
+        ...pairedRow,
+        teams: ["Cincinnati Reds", "Frisco"],
+        prospect: true,
+        claim: "Cincinnati Reds / Prospect (Frisco)",
+      },
+      "x",
+    );
+    expect(card.teamCell).toBe("Cincinnati Reds / Prospect (Frisco)");
+    expect(committable(card)).not.toHaveProperty("teamCell");
+    expect(pairedRowCard({ ...pairedRow, teams: ["Dallas Baptist"], prospect: true }, "x")).not.toHaveProperty(
+      "teamCell",
+    );
+  });
+
   test("a No Team row claims no team; a row naming no team claims nothing", () => {
     const noTeam = pairedRowCard({ ...pairedRow, teams: [], noTeam: true }, "x");
     expect(noTeam.teams).toEqual([]);
@@ -464,5 +502,234 @@ describe("NEO-496 — undoing the server's checklist pair", () => {
     expect(silent).not.toHaveProperty("teamLookup");
     expect(silent).not.toHaveProperty("players");
     expect(silent.cardName).toBe("Card #FS-1");
+  });
+});
+
+describe("NEO-591 — distinctNumbers", () => {
+  test("spellings that differ only in case are one number, the first spelling kept", () => {
+    expect(distinctNumbers({ bsc: "38A", sportlots: "38a", checklist: " 38 " })).toEqual(["38A", "38"]);
+    expect(distinctNumbers({ bsc: "nno", checklist: "NNO" })).toEqual(["nno"]);
+    expect(numbersDifferInText({ bsc: "38A", sportlots: "38a" })).toBe(false);
+    expect(pickedNumber({ bsc: "38A", checklist: "38a" })).toBe("38A");
+  });
+});
+
+describe("NEO-591 — names first, numbers confirm", () => {
+  test("committable keeps sourceNumbers (the commit stores them), and still takes the dialog-only fields off", () => {
+    const withNumbers = {
+      cardNumber: "OV-ANFI",
+      cardName: "A",
+      platformData: {},
+      sourceNumbers: { bsc: "OV-ANFI", checklist: "NNO" },
+    } as PairingCard;
+    // Nothing to take off: returned by reference, numbers and all.
+    expect(committable(withNumbers)).toBe(withNumbers);
+    const withLink = { ...withNumbers, checklistRowId: "row-1" } as PairingCard;
+    const out = committable(withLink);
+    expect(out).not.toHaveProperty("checklistRowId");
+    expect(out.sourceNumbers).toEqual({ bsc: "OV-ANFI", checklist: "NNO" });
+    expect(out.cardNumber).toBe("OV-ANFI");
+    // The input is not mutated.
+    expect(withLink.checklistRowId).toBe("row-1");
+  });
+
+  test("committable takes preKept off (the dialog's own business), and keeps the rest", () => {
+    const made = {
+      cardNumber: "38b",
+      cardName: "Ted Williams",
+      platformData: {},
+      isVariation: true,
+      preKept: true,
+    } as PairingCard;
+    const out = committable(made);
+    expect(out).not.toHaveProperty("preKept");
+    expect(out.isVariation).toBe(true);
+    expect(made.preKept).toBe(true);
+  });
+
+  test("committable keeps numberMinted and variationGroup: the commit uses both", () => {
+    const made = {
+      cardNumber: "38b",
+      cardName: "Ted Williams",
+      platformData: {},
+      preKept: true,
+      numberMinted: true,
+      variationGroup: "grp-38",
+    } as PairingCard;
+    const out = committable(made);
+    expect(out.numberMinted).toBe(true);
+    expect(out.variationGroup).toBe("grp-38");
+    expect(out).not.toHaveProperty("preKept");
+  });
+
+  test("a row's variationName survives an Unlink and a relink", () => {
+    const row: ServerPairedRow = {
+      number: "38",
+      players: ["Ted Williams"],
+      teams: [],
+      variationName: "Photo variation",
+      cardName: "Ted Williams",
+    };
+    // Unlink lists the row again as the dialog's row ...
+    const listed = pairedRowOf(row);
+    expect(listed.variationName).toBe("Photo variation");
+    // ... and a relink asks the server about it with the note intact.
+    const [request] = buildChecklistPairRequests(
+      [{ key: "a", cardNumber: "38b" }],
+      new Map([["a", 0]]),
+      [listed],
+      (c) => c.key,
+    );
+    expect(request.row.variationName).toBe("Photo variation");
+  });
+
+  test("a no-player row's cardName (NEO-645) survives an Unlink and a relink", () => {
+    const row: ServerPairedRow = {
+      number: "3",
+      players: [],
+      teams: [],
+      cardName: "Team Card",
+    };
+    // The unlinked row stands as the card it was, named for what it printed ...
+    expect(pairedRowCard(row, "unlinked:1").cardName).toBe("Team Card");
+    // ... and listed again as the dialog's row it keeps the name, so a relink asks about it.
+    const listed = pairedRowOf(row);
+    expect(listed.cardName).toBe("Team Card");
+    const [request] = buildChecklistPairRequests(
+      [{ key: "a", cardNumber: "3" }],
+      new Map([["a", 0]]),
+      [listed],
+      (c) => c.key,
+    );
+    expect(request.row.cardName).toBe("Team Card");
+  });
+
+  test("a row that carries no name sends none (NB's placeholder is no name)", () => {
+    const row: ServerPairedRow = { number: "3", players: [], teams: [], cardName: "Card #3" };
+    expect(pairedRowOf(row).cardName).toBeUndefined();
+  });
+
+  test("withoutChecklistNumber keeps a picker while the numbers left differ in text", () => {
+    // BCP-12 and 12 agree, but the operator may still want either.
+    expect(withoutChecklistNumber({ bsc: "BCP-12", sportlots: "12", checklist: "x" })).toEqual({
+      bsc: "BCP-12",
+      sportlots: "12",
+    });
+  });
+
+  describe("applyChecklistAnswers with the linked rows' numbers", () => {
+    const bscCard = (key: string, cardNumber: string): Card => ({
+      key,
+      cardNumber,
+      platformData: { bsc: { ref: `bsc-${key}` } },
+    });
+    const apply = (cards: Card[], rowNumber: string) =>
+      applyChecklistAnswers(cards, [{ cardKey: cards[0].key }], keyOf, new Map([[cards[0].key, rowNumber]]));
+
+    test("a row with letters outranks the card's digits; both numbers are kept", () => {
+      const [out] = apply([bscCard("a", "38")], "38a");
+      expect(out.cardNumber).toBe("38a");
+      expect(out).toHaveProperty("sourceNumbers", { bsc: "38", checklist: "38a" });
+    });
+
+    test("a card with letters keeps them against a no-number row, and still says the numbers differ", () => {
+      const [out] = apply([bscCard("a", "OV-ANFI")], "NNO");
+      expect(out.cardNumber).toBe("OV-ANFI");
+      expect(out).toHaveProperty("sourceNumbers", { bsc: "OV-ANFI", checklist: "NNO" });
+    });
+
+    test("numbers that agree change nothing and record nothing", () => {
+      const [out] = apply([bscCard("a", "12")], "12");
+      expect(out.cardNumber).toBe("12");
+      expect(out).not.toHaveProperty("sourceNumbers");
+    });
+
+    test("numbers the server already recorded keep their marketplace entries", () => {
+      const card: Card = { ...bscCard("a", "38"), sourceNumbers: { bsc: "38", sportlots: "39" } } as Card;
+      const [out] = apply([card], "38a");
+      expect(out).toHaveProperty("sourceNumbers", { bsc: "38", sportlots: "39", checklist: "38a" });
+    });
+
+    test("38 and 38a are still two numbers to choose between", () => {
+      const [out] = apply([bscCard("a", "38")], "38a");
+      expect(out).toHaveProperty("sourceNumbers", { bsc: "38", checklist: "38a" });
+    });
+
+    test("the operator's pick wins over the rule when it is one of the numbers", () => {
+      const cards = [bscCard("a", "38")];
+      const rows = new Map([["a", "38a"]]);
+      const [picked] = applyChecklistAnswers(cards, [{ cardKey: "a" }], keyOf, rows, new Map([["a", "38"]]));
+      expect(picked.cardNumber).toBe("38");
+      // A pick that is neither printed number is ignored.
+      const [stray] = applyChecklistAnswers(cards, [{ cardKey: "a" }], keyOf, rows, new Map([["a", "99"]]));
+      expect(stray.cardNumber).toBe("38a");
+    });
+
+    test("a number swapped in from the row is flagged minted; one the card keeps is not", () => {
+      const [swapped] = apply([bscCard("a", "38")], "38a");
+      expect(swapped).toHaveProperty("numberMinted", true);
+      const [kept] = apply([bscCard("a", "38a")], "38");
+      expect(kept).not.toHaveProperty("numberMinted");
+    });
+
+    test("without rowNumbers the card's number is untouched, as before", () => {
+      const cards = [bscCard("a", "38")];
+      const [out] = applyChecklistAnswers(cards, [{ cardKey: "a" }], keyOf);
+      expect(out.cardNumber).toBe("38");
+    });
+  });
+
+  describe("revertServerChecklistPair puts the number back", () => {
+    const paired = (
+      revert: ServerPairRevert,
+      extra: Partial<PairingCard> = {},
+    ): PairingCard => ({
+      cardNumber: "38a",
+      cardName: "Ted Williams",
+      platformData: { bsc: { ref: "bsc-38", setId: "s" } },
+      unmatched: "sl",
+      checklistLink: {
+        via: "playerName",
+        checklistNumber: "38a",
+        row: { number: "38a", players: ["Ted Williams"], teams: [], cardName: "Ted Williams" },
+        revert,
+      },
+      ...extra,
+    });
+
+    test("restores revert.cardNumber and drops the checklist's number", () => {
+      const out = revertServerChecklistPair(
+        paired(
+          { teamsFromRow: false, cardNumber: "38" },
+          { sourceNumbers: { bsc: "38", checklist: "38a" } },
+        ),
+      );
+      expect(out?.cardNumber).toBe("38");
+      expect(out).not.toHaveProperty("sourceNumbers");
+    });
+
+    test("a BSC + SportLots pair whose numbers still differ keeps its note", () => {
+      const out = revertServerChecklistPair(
+        paired(
+          { teamsFromRow: false, cardNumber: "38" },
+          { sourceNumbers: { bsc: "38", sportlots: "39", checklist: "38a" } },
+        ),
+      );
+      expect(out?.sourceNumbers).toEqual({ bsc: "38", sportlots: "39" });
+    });
+
+    test("a row that did not change the number leaves it alone", () => {
+      const out = revertServerChecklistPair(paired({ teamsFromRow: false }, { cardNumber: "12" }));
+      expect(out?.cardNumber).toBe("12");
+    });
+  });
+
+  test("withoutChecklistNumber is undefined once nothing differs", () => {
+    expect(withoutChecklistNumber({ bsc: "1", checklist: "2" })).toBeUndefined();
+    expect(withoutChecklistNumber({ bsc: "1", sportlots: "2", checklist: "3" })).toEqual({
+      bsc: "1",
+      sportlots: "2",
+    });
+    expect(withoutChecklistNumber(undefined)).toBeUndefined();
   });
 });

@@ -20,6 +20,7 @@
  * is asserted in `lib/players/career-span.test.ts`.
  */
 
+import { insertAsTidyName } from "../lib/testing/tidy-review-row";
 import { convexTest } from "convex-test";
 import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -466,7 +467,7 @@ describe("NEO-254: the commit prelude narrows on the card's year too", () => {
     ]);
 
     await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
+      insertAsTidyName(ctx, {
         selectorOptionId: ids.variantTypeId,
         batchId: "batch-1",
         createdByUserId: ADMIN_IDENTITY.subject,
@@ -499,7 +500,7 @@ describe("NEO-254: the commit prelude narrows on the card's year too", () => {
     ]);
 
     await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
+      insertAsTidyName(ctx, {
         selectorOptionId: ids.variantTypeId,
         batchId: "batch-1",
         createdByUserId: ADMIN_IDENTITY.subject,
@@ -625,53 +626,6 @@ describe("NEO-254: candidates carry whether they were active in the set's year",
     // Absent, never `false`: the flag states what we can stand behind.
     expect(byId.get(older)!.activeInSetYear).toBeUndefined();
     expect(byId.get(bare)!.activeInSetYear).toBeUndefined();
-  });
-
-  test("getBatch returns the flag — the wizard actually opens", async () => {
-    /*
-     * The regression this exists for.
-     *
-     * `enrichmentValidator` in convex/entityReviewQueue.ts is a hand-kept copy
-     * of the schema's enrichment shape, and Convex validates a function's
-     * RETURN against it. A field written to the row but missing from that copy
-     * is not a type error — it is a runtime "Unexpected field" thrown by every
-     * query that returns a row, so the whole wizard fails to open for any batch
-     * containing a same-name player whose stint covers the set year.
-     *
-     * The sibling tests above read rows through `t.run`, which goes straight to
-     * the database and past every validator, so none of them could catch it.
-     * This one goes through the public query the wizard actually calls.
-     */
-    const t = convexTest(schema, modules);
-    const { sportId, variantTypeId } = await seedSetOfYear(t, "1990");
-    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
-    const modern = await insertBobAllen(t, sportId, [
-      { teamId: padres, fromYear: 1986, toYear: 1994 },
-    ]);
-    await insertBobAllen(t, sportId, [
-      { teamId: padres, fromYear: 1930, toYear: 1937 },
-    ]);
-
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId: variantTypeId,
-      createdByUserId: ADMIN_IDENTITY.subject,
-      sportId,
-      playerNames: ["Bob Allen"],
-      teamNames: [],
-    });
-
-    const rows = await t
-      .withIdentity(ADMIN_IDENTITY)
-      .query(api.entityReviewQueue.getBatch, {
-        selectorOptionId: variantTypeId,
-        batchId,
-      });
-    expect(rows).toHaveLength(1);
-    const candidates = rows[0].enrichment!.existingCandidates ?? [];
-    expect(candidates).toHaveLength(2);
-    expect(
-      candidates.find((c) => c.playerId === modern)!.activeInSetYear,
-    ).toBe(true);
   });
 
   test("with no set year, nothing is flagged and nothing is dropped", async () => {
@@ -1585,7 +1539,7 @@ describe("NEO-424: the commit prelude applies the Hall of Fame tie-break to a na
     await insertFamer(t, ids.sportId, true);
     const operatorsPick = await insertFamer(t, ids.sportId, false);
     await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
+      insertAsTidyName(ctx, {
         selectorOptionId: ids.variantTypeId,
         batchId: "batch-hof",
         createdByUserId: ADMIN_IDENTITY.subject,

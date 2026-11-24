@@ -9,7 +9,7 @@ A planted product break (e.g. dropping `aria-valuetext` from WizardChrome to pro
 `expectWizardStep` can fail) edited in the worktree HMR-reloads every other Vite
 serving that worktree (another agent's screenshots, builders' probes). Instead:
 
-- Serve a HEAD snapshot ([[probe-vite-from-a-head-snapshot]]), `git init` + one
+- Serve a HEAD snapshot ([[patterns_probe_vite_from_a_head_snapshot]]), `git init` + one
   commit INSIDE the scratch snapshot so `git diff` there proves the restore.
 - Run Playwright from the WORKTREE (your edited specs/support) with `APP_URL` at the
   snapshot's port and `--output` in the scratchpad.
@@ -23,4 +23,4 @@ serving that worktree (another agent's screenshots, builders' probes). Instead:
 - Use a WORKER_INDEX other than the one the other session uses (8 is the default);
   workers 8-11 are one user locally, so never run `bootstrap` for it mid-session.
 
-Related: [[a-green-suite-can-mean-the-test-stopped-testing]], [[patterns_local_run_backend_and_vite]]
+Related: a green suite can mean the test stopped testing, [[patterns_local_run_backend_and_vite]]

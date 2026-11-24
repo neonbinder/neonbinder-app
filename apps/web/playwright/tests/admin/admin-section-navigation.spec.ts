@@ -12,7 +12,13 @@ test("Admin — the hub and its Set Builder / Teams sub-tabs", { tag: ["@smoke",
   // The hub's Teams card leads to Team Management.
   await page.getByRole("link", { name: /Resolve team colors, confirm ambiguous matches/ }).click();
   await expect(page.getByRole("heading", { name: "Team Management" })).toBeVisible();
-  await expectAccessible(page, { label: "Team Management" });
+  // NEO-628 (GUIDE "Accessibility checks", one whole-page check per state): the Team
+  // Management page itself is owned by admin/team-management-filter; here only what this
+  // spec drives, the section tabs, is checked.
+  await expectAccessible(page, {
+    within: page.getByRole("navigation", { name: "Admin sections" }),
+    label: "Admin sections on Team Management",
+  });
 
   // The sub-tabs switch sections without bouncing through the hub.
   await page.getByRole("link", { name: "Set Builder" }).click();

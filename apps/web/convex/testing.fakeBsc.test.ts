@@ -426,11 +426,11 @@ describe("clearMyBscFaults", () => {
 describe("clearBscCallGate", () => {
   const gateRows = (t: ReturnType<typeof convexTest>) =>
     t.run(async (ctx) => ctx.db.query("marketplaceCallGates").collect());
-  const openGate = (t: ReturnType<typeof convexTest>) =>
+  const openGate = (t: ReturnType<typeof convexTest>, scope: string) =>
     t.run(async (ctx) => {
       await ctx.db.insert("marketplaceCallGates", {
         platform: "bsc",
-        scope: "deployment",
+        scope,
         tokens: 0,
         refilledAt: Date.now(),
         openUntil: Date.now() + 60_000,
@@ -442,27 +442,70 @@ describe("clearBscCallGate", () => {
         updatedAt: Date.now(),
       });
     });
+  const gateKeyOf = (userId: string) => `ns:${fakeBscNamespaceFor(userId, CLOUD_URL)}`;
 
-  test("clears the deployment's gate for a signed-in caller on the fake", async () => {
+  test("clears the CALLER's own gate on the fake, and only that one", async () => {
     useFakeEnv();
     const t = convexTest(schema, modules);
-    await openGate(t);
-    expect(await gateRows(t)).toHaveLength(1);
+    await openGate(t, gateKeyOf(USER_A));
+    await openGate(t, gateKeyOf(USER_B));
+    await openGate(t, "deployment");
+    expect(await gateRows(t)).toHaveLength(3);
     expect(await t.withIdentity({ subject: USER_A }).action(api.testing.clearBscCallGate, {})).toEqual({ deleted: 1 });
-    expect(await gateRows(t)).toHaveLength(0);
+    expect((await gateRows(t)).map((r) => r.scope).sort()).toEqual([gateKeyOf(USER_B), "deployment"].sort());
+    // Again: nothing of the caller's left.
+    expect(await t.withIdentity({ subject: USER_A }).action(api.testing.clearBscCallGate, {})).toEqual({ deleted: 0 });
+    expect(await gateRows(t)).toHaveLength(2);
     // The gate is not the fake's: nothing is sent to it.
     expect(calls).toEqual([]);
   });
 
   test("refuses off a testing deployment, an anonymous caller, and a deployment on the real BSC, and leaves the gate", async () => {
     const t = convexTest(schema, modules);
-    await openGate(t);
+    await openGate(t, "deployment");
     await expect(t.withIdentity({ subject: USER_A }).action(api.testing.clearBscCallGate, {})).rejects.toThrow(/not enabled/);
     vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
     await expect(t.action(api.testing.clearBscCallGate, {})).rejects.toThrow(/Not authenticated/);
     await expect(t.withIdentity({ subject: USER_A }).action(api.testing.clearBscCallGate, {})).rejects.toThrow(
       /real BuySportsCards/,
     );
+    expect(await gateRows(t)).toHaveLength(1);
+  });
+
+  test("resetMyTestState clears the caller's gate row with their namespace, not another user's", async () => {
+    useFakeEnv();
+    const t = convexTest(schema, modules);
+    await openGate(t, gateKeyOf(USER_A));
+    await openGate(t, gateKeyOf(USER_B));
+    await openGate(t, "deployment");
+
+    await t.withIdentity({ subject: USER_A }).action(api.testing.resetMyTestState, {});
+
+    expect((await gateRows(t)).map((r) => r.scope).sort()).toEqual([gateKeyOf(USER_B), "deployment"].sort());
+    expect(calls).toEqual([{ fn: "resetNamespace", args: { ns: fakeBscNamespaceFor(USER_A, CLOUD_URL) } }]);
+  });
+
+  test("resetMyTestState on a misconfigured fake does not throw over the gate row, and leaves every row alone", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    vi.stubEnv("CONVEX_CLOUD_URL", CLOUD_URL);
+    vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+    // Not the pinned neonbinder-fake-bsc-* host: misconfigured, not fake.
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://evil.example.com");
+    expect(resolveBscTarget(process.env).mode).toBe("misconfigured");
+    const t = convexTest(schema, modules);
+    await openGate(t, gateKeyOf(USER_A));
+    await openGate(t, "deployment");
+
+    await expect(t.withIdentity({ subject: USER_A }).action(api.testing.resetMyTestState, {})).resolves.toBeDefined();
+
+    expect(await gateRows(t)).toHaveLength(2);
+  });
+
+  test("resetMyTestState on the real BSC touches no gate row", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    const t = convexTest(schema, modules);
+    await openGate(t, "deployment");
+    await t.withIdentity({ subject: USER_A }).action(api.testing.resetMyTestState, {});
     expect(await gateRows(t)).toHaveLength(1);
   });
 });

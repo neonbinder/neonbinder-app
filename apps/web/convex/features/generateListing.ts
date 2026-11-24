@@ -42,15 +42,14 @@
  *    (rows 1-3) comes back only when
  *    no real token (rows 9+) is still out. The number may come back without
  *    its "#" when that is the only way it fits.
- * 5. Still over 80 after the whole list, or still needing Tidy Up (a Tidy Up
- *    cut the refill could not undo; NEO-618): when the set has box text ("Set
- *    name in titles", `setShortName`), build again from it and rerun the
- *    list. Over 80, the box version is taken whatever it comes to; needing
- *    Tidy Up, only when the box version fits. Still over: STOP. The over-cap
- *    title is returned as it stands (`fits: false`), the card is flagged `titleOverLimit` by its length, and
- *    the operator fixes it in the Card titles dialog. Description words are
- *    never cut: a title that drops "Dugout Collection" is a title for a
- *    different card.
+ * 5. The result is over 80, or leaves something out ("Left out to fit":
+ *    `leftOutOfTitle` is not empty, NEO-637): when the set has box text ("Set name in
+ *    titles", `setShortName`), build again from it and rerun the list; that
+ *    version is the title, whatever it comes to. Still over 80: STOP. The
+ *    over-cap title is returned as it stands (`fits: false`), the card is
+ *    flagged `titleOverLimit` by its length, and the operator fixes it in the
+ *    Card titles dialog. Description words are never cut: a title that drops
+ *    "Dugout Collection" is a title for a different card.
  *
  * Never cut: year, maker, set words, insert name, parallel name, players'
  * surnames, `/N`. Removing only the "#" is never reported as left out.
@@ -63,6 +62,8 @@ import { singularTypeName, singularWord } from "../listingShortName";
 export { singularTypeName };
 import { isGenerationalSuffix } from "../../lib/players/name-fragment";
 import { teamFullName } from "../../lib/teams/team-name";
+import { cardSubjectName } from "../../lib/cards/unnamed-card";
+import { foldNameForCompare } from "../../lib/entities/normalize-name";
 import { parallelAfterInsert, parallelOpensWithInsert, roughlySays } from "../listingShortName";
 
 /** NEO-606 — a team row's Location / Name, as `ListingCardInputs.teamSplits` carries it. */
@@ -101,6 +102,18 @@ export type ListingCardInputs = {
    * 81 go before them. The description states them on a line of their own.
    */
   cameoNames?: string[];
+  /**
+   * NEO-645 (Jason, 2026-11-22: "the title generation should use the name and
+   * then the cameo if it fits"; 2026-11-23: "whatever name we put on a card
+   * should always show up ... If there is a name we include it in title") —
+   * the card's own name. Whenever the card has one (`cardSubjectName`: not
+   * blank, not NB's "Card #N", and not just its players' own names said
+   * again), it stands ahead of the players and cameos, and a team the name
+   * already says is not added. Never cut, like a surname. The variant's word,
+   * Base included, stays whenever it fits and is the first word the cut drops
+   * (Jason, 2026-11-23).
+   */
+  subjectName?: string;
   /** Mirrors the year node's value verbatim — same field `features.season` holds. */
   year?: string;
   manufacturer?: string;
@@ -138,9 +151,8 @@ export type ListingCardInputs = {
    * NEO-535 — the set's box text ("Set name in titles"): the WHOLE set
    * description (year, maker, set, insert, parallel) as the operator typed it.
    * Used verbatim, nothing prepended, and only when the builder's own title
-   * is over the cap or still needs Tidy Up (a whole team, the number, SP,
-   * RELIC, a first name, RC or AUTO cut) and the box version fits (see
-   * `assessListingTitle`). The chain reading (`titleChainFacts`) has already
+   * leaves something out ("Left out to fit": `leftOutOfTitle` is not empty)
+   * or is over the cap; see `assessListingTitle`. The chain reading (`titleChainFacts`) has already
    * appended the insert's and parallel's names when the value sits above them.
    */
   setShortName?: string;
@@ -741,6 +753,8 @@ type TitleState = {
   players: Array<{ full: string; short?: string; firstOut: boolean }>;
   /** NEO-528 — the cameos, after the players; each whole name in or out. */
   cameos: Array<{ name: string; in: boolean }>;
+  /** NEO-645 — a non-player card's own name, ahead of its cameos. Never cut. */
+  subject?: string;
   number?: { text: string; mode: "hash" | "bare" | "out" };
   tail: TailToken[];
 };
@@ -755,6 +769,9 @@ function renderTitle(state: TitleState): string {
   const players = state.players.map((p) => (p.firstOut && p.short ? p.short : p.full));
   // NEO-528 — the people also pictured follow the card's own, in one run.
   for (const cameo of state.cameos) if (cameo.in) players.push(cameo.name);
+  // NEO-645 — a non-player card's own name stands where its player would, and
+  // the cameos follow it as a run of their own: no "&" joins a name to a person.
+  if (state.subject) out.push(state.subject);
   if (players.length > 0) out.push(players.join(" & "));
   if (state.number && state.number.mode !== "out") {
     out.push(state.number.mode === "hash" ? `#${state.number.text}` : state.number.text);
@@ -777,6 +794,49 @@ function renderTitle(state: TitleState): string {
   return out.filter(Boolean).join(" ") || "#";
 }
 
+/**
+ * NEO-645 — the name the title carries: `subjectName`, unless it is no name
+ * (blank, "Card #N") or says nothing the players and cameos do not
+ * (`cardSubjectName`). The caller that read the card may already have judged it
+ * with the printed spellings of the players; this repeats the check on the NB
+ * names so a caller that did not still cannot say a person twice.
+ */
+function subjectOf(inputs: ListingCardInputs): string | undefined {
+  return cardSubjectName({
+    cardName: inputs.subjectName,
+    playerNames: distinctNames(inputs.playerNames),
+    cameoNames: distinctNames(inputs.cameoNames),
+  });
+}
+
+/**
+ * NEO-645 — does the name already say this team? Its full name, or its
+ * nickname: the split's own, else the full name's last word ("Royals Team
+ * Card" says Kansas City Royals). Said once, whichever way.
+ */
+function subjectSaysTeam(
+  subject: string,
+  team: string,
+  nickname: string | undefined,
+): boolean {
+  if (subjectSays(subject, team)) return true;
+  return subjectSays(subject, nickname ?? foldedWords(team).slice(-1).join(" "));
+}
+
+function foldedWords(text: string): string[] {
+  return foldNameForCompare(text).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+/** Does the subject's name contain `text` as a run of whole words? */
+function subjectSays(subject: string, text: string): boolean {
+  const said = foldedWords(subject);
+  const phrase = foldedWords(text);
+  return (
+    phrase.length > 0 &&
+    said.some((_, i) => phrase.every((w, j) => said[i + j] === w))
+  );
+}
+
 /** The full title's state, before any cut, for one description. */
 function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   state: TitleState;
@@ -789,11 +849,13 @@ function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   }));
   const cardNumber = inputs.cardNumber?.trim();
   const own = new Set(players.map((p) => p.full.toLowerCase()));
+  const subject = subjectOf(inputs);
   const cameos = distinctNames(inputs.cameoNames)
-    .filter((name) => !own.has(name.toLowerCase()))
+    .filter((name) => !own.has(name.toLowerCase()) && !(subject && subjectSays(subject, name)))
     .map((name) => ({ name, in: true }));
   const state: TitleState = {
     parts,
+    ...(subject ? { subject } : {}),
     levels: parts.levels.map((level) => ({
       abbreviated: false,
       typeIn: !!level.typeName,
@@ -843,6 +905,10 @@ function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   for (const team of inputs.teamNames ?? []) {
     const trimmed = team.trim();
     if (!trimmed) continue;
+    // NEO-645 — a team the subject's name already says is not said twice
+    // ("Boston Red Sox" card, Boston Red Sox team; "Royals Team Card", Kansas
+    // City Royals): the name stands once, and the team is not added.
+    if (subject && subjectSaysTeam(subject, trimmed, nicknames.get(trimmed))) continue;
     pushUnlessSaid("team", trimmed);
     // NEO-606 — a split team can give up its location before it goes.
     const nickname = nicknames.get(trimmed);
@@ -1203,31 +1269,31 @@ function cutToFit(
  * NEO-535 — the listing title, and what it had to give up.
  *
  * The builder's title comes first. The box text ("Set name in titles",
- * `setShortName`) replaces the builder's description only when:
+ * `setShortName`) replaces the builder's description when the builder's
+ * title shows the yellow "Left out to fit" line, that is when
+ * `leftOutOfTitle(inputs, builder.title)` is not empty (NEO-637, Jason
+ * 2026-11-21; it replaces NEO-618's "Tidy Up and the boxed version fits"). The
+ * box follows the rule the Card titles dialog's line follows, so a title that
+ * says nothing was left out is not touched, and one that says something was
+ * takes the box whatever the boxed version comes to (an over-cap boxed title
+ * is the one returned: it is the text the operator chose and will edit).
  *
- *   (a) the builder's title is still over the cap after every cut, or
- *   (b) the builder's title needs Tidy Up (`tidyUp`: a Tidy Up cut is still
- *       out after the refill, a first name included) and the box version
- *       fits (NEO-618, Jason 2026-11-19; NEO-535 asked for a first name
- *       saved, which was one Tidy Up cut among several).
+ * One more case, from NEO-535, which the line cannot see: a title still over
+ * the cap after every cut. A card with nothing left to cut (one-word player,
+ * no team or number) is over the cap because the description alone is too
+ * long, so nothing is "left out"; that is the case the box exists for.
  *
- * Never on a title that fits with nothing Tidy Up cut, and never when the
- * box version does not fit while the builder's does. The rule lives here so the
- * pre-save Card titles step, the insert and Regenerate cannot disagree.
- * When the box version is over the cap too, it is the one returned: it is
- * the text the operator chose and will edit.
+ * The rule lives here so the pre-save Card titles step, the insert and
+ * Regenerate cannot disagree.
  */
 export function assessListingTitle(inputs: ListingCardInputs): ListingTitleAssessment {
   const builder = cutToFit(inputs, builderDescriptionParts(inputs));
   let chosen = builder;
   let boxUsed = false;
   const box = inputs.setShortName?.trim();
-  if (box && (!builder.fits || builder.tidyUp)) {
-    const boxed = cutToFit(inputs, boxDescriptionParts(box));
-    if (!builder.fits || boxed.fits) {
-      chosen = boxed;
-      boxUsed = true;
-    }
+  if (box && (!builder.fits || leftOutOfTitle(inputs, builder.title).length > 0)) {
+    chosen = cutToFit(inputs, boxDescriptionParts(box));
+    boxUsed = true;
   }
   const firstNameLost = chosen.firstNamesLost > 0;
   return {

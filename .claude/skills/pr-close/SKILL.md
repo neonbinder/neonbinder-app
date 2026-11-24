@@ -55,7 +55,10 @@ gate run if an earlier one failed.
   ```
   It must print `success`. Anything else (empty, `failure`, `skipped`) → stop;
   tell the user to re-run PR Pipeline on it or push. No exceptions.
-- Any check not green → stop. Tell the user to fix it or run `/pr-watch <PR>` first;
+  An inert-only PR (docs, `.claude/` outside agents, root `*.md`; NEO-627) skips E2E on its own
+  pushes, so it merges through the merge queue (3q), or in this flow with the
+  `run-e2e` label so a real `E2E / e2e` result exists.
+- Any check not green → stop. Tell the user to fix it or wait for CI to finish first;
   do not merge a red PR.
 - `mergeable != MERGEABLE` → stop, report the conflict.
 
@@ -91,12 +94,11 @@ else, this step and the rest of the skill apply exactly as written.
 - Step 2's pre-flight changes: the PR checks that matter are the cheap ones
   (lint, typecheck, unit, hygiene); E2E is not expected on the PR itself. A
   `CONFLICTING` PR still stops here. Never use `--admin` or merge around the queue.
-- **Then follow the queue to the end with `pr-watch --queue <PR>`** (tab
-  `cc-state queue` while waiting, `cc-state ci` once its group is running).
+- **Then follow the queue to the end** with the background queue-follow command in the monorepo `CLAUDE.md` (merge queue, step 6).
   The verdicts:
-  - `DONE MERGED`: continue below with the merge commit it prints (confirm with
+  - MERGED: continue below with the merge commit (read it with
     `gh pr view <PR> --json mergeCommit --jq .mergeCommit.oid`).
-  - `DONE EJECTED` (GitHub removed it itself): the PR did not merge. Do not continue the gates. Treat it
+  - EJECTED (GitHub removed it itself): the PR did not merge. Do not continue the gates. Treat it
     as a red per the `pr-queue` skill's GitHub-queue flow step 5 (artifacts;
     a known `ci-fail` signature is bumped and re-enqueued unchanged; anything
     else goes to the planner and Jason, with no fix or re-enqueue until he
@@ -106,13 +108,12 @@ else, this step and the rest of the skill apply exactly as written.
     for the PR's `Preview Cleanup` run to finish before `gh pr merge`.
     Re-enqueueing after a code fix also needs the delta audit and local gates
     first (the `pr-queue` bar).
-  - `DONE REMOVED` / `NOT_QUEUED`: stop and tell Jason; never re-enqueue.
+  - REMOVED, or never queued: stop and tell Jason; never re-enqueue.
 - After `MERGED`, **keep everything else in this skill**: Mac notification
   (`notify.sh`, as below), then gate 2 (production verify), the smoke test,
   the Linear close-out and gate 5 (worktree cleanup). Skip only the "MAIN
   MOVED" message and the `PR-QUEUE DONE` message: there is no queue session
   and no stale-base problem to announce (the queue rebuilds on current main).
-  On production `READY` and the smoke test, `cc-state test`.
 
 #### Claude-run queue (`MERGE_QUEUE` off) — who asked for this run decides
 **On this session's own verified `pr-queue` turn, the turn IS the authorization**
@@ -163,8 +164,7 @@ seconds if empty — the API can lag right after merge).
 
 If any later gate fails, send a Mac notification
 (`REASON='one-line reason' notify.sh 'NEO-123 prod check failed' "$REASON"`) and
-set the tab red (`cc-state answer`). When gate 2 and the smoke test pass, set the
-tab purple (`cc-state test`).
+tell Jason.
 
 ### 4. Gate 2 — verify the production deploy actually succeeded
 
@@ -295,8 +295,8 @@ deliberately left alone and why.
 - **Before enqueueing, `ci-mode.sh --check-ruleset` must print `queue=live`**; if not, the
   variable is stale and the Claude-run flow applies.
 - **`MERGE_QUEUE=true`: enqueueing is the approval, and the verdict comes from
-  `pr-watch --queue`, never from the cheap PR checks.** Do not say merged or
-  start gate 2 before `DONE MERGED`.
+  following the queue, never from the cheap PR checks.** Do not say merged or
+  start gate 2 before MERGED.
 - **Never merge a PR the user did not ask you to merge.** If they invoked this skill on
   the PR, that is the authorization — merge without re-asking. If you initiated the
   close-out yourself, the step-3 confirmation is mandatory.

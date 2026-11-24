@@ -185,7 +185,9 @@ export type BscGateRefusal = {
 };
 
 /**
- * The deployment-wide call gate (`bscCallGate.ts`, `bscCallGateFor(ctx)`).
+ * The call gate (`bscCallGate.ts`, `bscCallGateFor(ctx, key)`), bound to ONE
+ * key, the rate-limit domain of the calls made through it (NEO-628: the one
+ * `"deployment"` key against real BSC, `ns:<namespace>` against the fake).
  * Kept as an interface so this module stays runtime-free and testable.
  */
 export interface BscCallGate {
@@ -222,7 +224,7 @@ export interface BscFetchOptions {
    * the gate's classification. A literal at every call site, never the raw path.
    */
   pathTemplate: string;
-  /** The deployment-wide breaker and token bucket. Required: no call bypasses it. */
+  /** The breaker and token bucket of the call's key. Required: no call bypasses it. */
   gate: BscCallGate;
   /**
    * A grant a wave caller already holds (`gate.acquire(chunk.length)`). Without
@@ -232,7 +234,9 @@ export interface BscFetchOptions {
   /**
    * Fake mode only: the caller's run on the fake, sent as `x-nb-fake-ns` when
    * the request carries no BSC token. The caller's namespace when it knows
-   * its user, else this deployment's prefix. Ignored in real mode.
+   * its user, else this deployment's prefix. Ignored in real mode. NEO-628:
+   * the SAME value the call's gate was keyed on (`bscCallDomainFor`), so the
+   * namespace a call is sent as and the gate that paces it cannot differ.
    */
   fakeNs?: string;
   /** Tests only; defaults to `process.env`, read on every call. */

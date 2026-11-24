@@ -24,3 +24,10 @@ disclose; gate the context on role, not just signed-in.
 public query stays deployed, often without the new one's clamps (here
 `teams.list`, uncapped `take(args.limit ?? 100)`). Delete it in the same PR or
 clamp it.
+
+(c) Held shape seen later (NEO-645, `players.search` `contextCardId`): the
+signed-out early return first, then `if (args.contextCardId) await
+requireAdmin(ctx)` BEFORE the card read, and the context also widens the read
+window, so the gate covers the extra index load too. Throwing for a non-admin
+(rather than silently ranking context-free) is fine; pin both the refusal and
+the admin answer in `publicFunctionAuth.test.ts`.

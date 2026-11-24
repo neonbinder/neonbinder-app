@@ -10,6 +10,9 @@
  * Wikidata rather than replacing it.
  */
 
+import { cleanseExternalName } from "../../lib/entities/cleanse-name";
+import { orderedEntityNameCompareKey } from "../../lib/entities/normalize-name";
+
 const ESPN_API_BASE = "https://site.web.api.espn.com/apis/site/v2/sports";
 
 // NEO-96: `SPORT_TO_ESPN_LEAGUE`, a display-name-keyed map, used to live here
@@ -50,8 +53,22 @@ export interface EspnTeamInfo {
   league: string;
 }
 
-function normalize(s: string): string {
-  return s.trim().toLowerCase();
+/**
+ * NEO-643 — the ONE reading of a team name for the displayName lookup, applied
+ * to both sides: the shared ordered matcher fold (case, accents, junk,
+ * punctuation and spacing), so a name that differs from ESPN's only in those
+ * still finds its team. Ordered, not sorted: "San Diego Padres" and "Padres San
+ * Diego" are not the same franchise name.
+ */
+const normalize = orderedEntityNameCompareKey;
+
+/**
+ * NEO-643 — a display name or location off ESPN, cleansed before it is stored
+ * or compared. An all-junk value is no value (`undefined`).
+ */
+function cleanseEspnText(raw: string | undefined): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  return cleanseExternalName(raw) || undefined;
 }
 
 /**
@@ -136,7 +153,19 @@ export async function fetchEspnTeamList(
 
   const entries = (data.sports?.[0]?.leagues?.[0]?.teams ?? [])
     .map((t) => t.team)
-    .filter((t): t is NonNullable<typeof t> => !!t);
+    .filter((t): t is NonNullable<typeof t> => !!t)
+    // NEO-643: the two name fields are cleansed once, here, so the memo, the
+    // lookup below and every caller of the list see the same clean text. The
+    // id and the colours are keys/values and pass through untouched.
+    .map((t): EspnTeamListEntry => {
+      const displayName = cleanseEspnText(t.displayName);
+      const location = cleanseEspnText(t.location);
+      return {
+        ...t,
+        displayName,
+        location,
+      };
+    });
   // An empty list is a shape change or an off-season quirk, not an answer —
   // leave it uncached so the next caller asks again.
   if (entries.length > 0) teamListCache.set(league.path, entries);
@@ -144,12 +173,12 @@ export async function fetchEspnTeamList(
 }
 
 /**
- * Look up a team's current location + colors on ESPN by exact (case-insensitive)
+ * Look up a team's current location + colors on ESPN by exact (folded)
  * display-name match within its sport's current team list. Returns null when
- * the sport isn't mapped, the fetch fails, or no team in the league's
- * current roster matches — all no-throw, matching the rest of this
- * codebase's adapter conventions (a miss here just means "fall back to
- * Wikidata", not an error).
+ * the sport isn't mapped, the fetch fails, the name folds to nothing, or no
+ * team (or more than one) in the league's current roster matches. All
+ * no-throw, matching the rest of this codebase's adapter conventions (a miss
+ * here just means "fall back to Wikidata", not an error).
  *
  * `teamName` is the COMPOSED FULL name ("San Diego Padres"): ESPN's
  * `displayName` is a full name, and NEO-236 split ours into `location` +
@@ -168,9 +197,16 @@ export async function fetchEspnTeamInfo(
   const teams = await fetchEspnTeamList(league);
   if (!teams) return null;
 
+  // NEO-643: a name that folds to nothing ("\\", punctuation only) names no
+  // team, and the lookup needs EXACTLY ONE franchise under the folded name:
+  // with two (a fold that merges "St. Louis" and "St Louis" entries, say) the
+  // first-in-list-order would be a coin flip, so none is returned and the
+  // caller falls back to Wikidata like any other miss.
   const target = normalize(teamName);
-  const match = teams.find((t) => t.displayName && normalize(t.displayName) === target);
-  if (!match) return null;
+  if (target === "") return null;
+  const matches = teams.filter((t) => t.displayName && normalize(t.displayName) === target);
+  if (matches.length !== 1) return null;
+  const match = matches[0];
 
   return {
     espnId: match.id,

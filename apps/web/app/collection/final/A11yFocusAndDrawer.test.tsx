@@ -59,8 +59,6 @@ const pageUrl = () => screen.getByRole("status", { name: "Page URL" }).textConte
 const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
 const checklist = () => screen.getByRole("region", { name: "2024 Topps Chrome Base" });
 const detailsButtons = () => within(checklist()).getAllByRole("button", { name: /^Details for / });
-/** Lets the requestAnimationFrame focus moves run. */
-const frames = () => act(() => new Promise<void>((r) => setTimeout(r, 40)));
 
 beforeEach(() => {
   window.sessionStorage.clear();
@@ -180,7 +178,11 @@ describe("the keyboard is parked, never dropped", () => {
     await waitFor(() => expect(document.activeElement?.getAttribute("aria-label") ?? "").toMatch(/^Add another copy of /));
   });
 
-  it("Remove moves it to the next copy's Edit, and to the 'Your copies' heading after the last", async () => {
+  // Each store write re-renders the whole page (about 180 ms unloaded, five
+  // times that on a busy CI runner), so each test below pays for as few writes
+  // as it needs and holds no real timer: the old single test did an add, two
+  // removes and a 40 ms sleep per remove, and timed out at 5 s under load.
+  it("Remove moves it to the next copy's Edit", async () => {
     renderDemo([BASE_CHECKLIST]);
     fireEvent.click(detailsButtons()[0]);
     const drawer = screen.getByRole("dialog");
@@ -200,15 +202,18 @@ describe("the keyboard is parked, never dropped", () => {
     removes()[0].focus();
     fireEvent.click(removes()[0]);
     await waitFor(() => expect(document.activeElement).toBe(nextEdit));
+  });
 
-    // Remove the rest: after the last, the heading holds it.
-    while (removes().length > 0) {
-      const count = removes().length;
-      removes()[0].focus();
-      fireEvent.click(removes()[0]);
-      await waitFor(() => expect(removes()).toHaveLength(count - 1));
-      await frames();
-    }
+  it("Remove moves it to the 'Your copies' heading after the last copy", async () => {
+    renderDemo([BASE_CHECKLIST]);
+    fireEvent.click(detailsButtons()[0]);
+    const drawer = screen.getByRole("dialog");
+    const removes = () => within(drawer).queryAllByRole("button", { name: /^Remove / });
+    // The demo's first card is already in hand, on one line: removing it is the last.
+    expect(removes()).toHaveLength(1);
+    removes()[0].focus();
+    fireEvent.click(removes()[0]);
+    await waitFor(() => expect(removes()).toHaveLength(0));
     await waitFor(() => expect(document.activeElement?.textContent).toMatch(/^Your copies/));
   });
 
@@ -338,7 +343,6 @@ describe("NEO-377: a row click on a card you own", () => {
     fireEvent.click(single![0]);
     const drawer = await screen.findByRole("dialog");
     expect(within(drawer).getByRole("form", { name: /^Edit / })).toBeTruthy();
-    await frames();
     await waitFor(() => expect(within(drawer).getByRole("form", { name: /^Edit / }).contains(document.activeElement)).toBe(true));
   });
 

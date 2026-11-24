@@ -40,6 +40,7 @@ import { mutation } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
+import { regenerateListingNow } from "./tidyListingText";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
 import { generateListingDescription } from "./features/generateListing";
 import {
@@ -276,6 +277,69 @@ export async function setCardSecondaryPlayers(
   return { secondaryPlayerIds: ids, strippedPrimary: plan.strippedPrimary, changed, descriptionRefreshed };
 }
 
+/** The players a card carries as cameos, in stored order. */
+export function cameoIdsOf(card: Pick<CardRow, "secondaryPlayerIds">): Array<Id<"players">> {
+  return card.secondaryPlayerIds ?? [];
+}
+
+/**
+ * NEO-645 — a player is never both a card's own player and a cameo. `card`
+ * with every cameo that is now one of its players taken out (the same card
+ * object when there is none), for building listing text from a card whose
+ * players are about to change. Pure.
+ */
+export function withoutPrimaryCameos<
+  C extends Pick<CardRow, "secondaryPlayerIds" | "playerIds" | "playerLinks">,
+>(card: C): C {
+  const cameos = card.secondaryPlayerIds;
+  if (!cameos || cameos.length === 0) return card;
+  const primary = primaryPlayerIdsOf(card);
+  const kept = cameos.filter((id) => !primary.has(id as string));
+  if (kept.length === cameos.length) return card;
+  return { ...card, secondaryPlayerIds: kept.length > 0 ? kept : undefined };
+}
+
+/**
+ * Write what `withoutPrimaryCameos` says, through the writer (field and index
+ * rows). `card` is the card AS IT NOW READS, its players already written. The
+ * caller rebuilds the listing text itself (the walk's write does), so the
+ * description is left to it. A no-op, with no read, for a card with no cameo
+ * that is also its player.
+ */
+export async function dropCameosNowPrimary(
+  ctx: WriteCtx,
+  card: CardRow,
+  cache?: StoredCardReadCache,
+): Promise<{ changed: boolean }> {
+  if (withoutPrimaryCameos(card) === card) return { changed: false };
+  const result = await setCardSecondaryPlayers(ctx, card, card.secondaryPlayerIds ?? [], {
+    cache,
+    dropMissing: true,
+    description: "leave",
+  });
+  return { changed: result.changed };
+}
+
+/**
+ * NEO-645 T3 — add ONE player to a card's cameos, keeping the ones it has,
+ * through the writer. The caller rebuilds the listing text itself (the walk's
+ * `regenerateListing`), so the description is left to it. A player already a
+ * cameo changes nothing; one that is the card's own player is refused by the
+ * writer's rule (stripped, never stored), and a full list throws.
+ */
+export async function addCardCameo(
+  ctx: WriteCtx,
+  card: CardRow,
+  playerId: Id<"players">,
+  cache?: StoredCardReadCache,
+): Promise<{ changed: boolean }> {
+  const result = await setCardSecondaryPlayers(ctx, card, [...cameoIdsOf(card), playerId], {
+    cache,
+    description: "leave",
+  });
+  return { changed: result.changed };
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // A card BORN with cameos (NEO-528 round 3)
 // ───────────────────────────────────────────────────────────────────────────
@@ -412,6 +476,13 @@ export const setSecondaryPlayers = mutation({
   args: {
     cardId: v.id("cardChecklist"),
     playerIds: v.array(v.id("players")),
+    /**
+     * NEO-645 T4 — the Tidy Up walk's cameo write: rebuild the title and
+     * description from the card as this write leaves it, always (a typed title
+     * is overwritten). Only the walk sends it; the Set Builder drawer keeps
+     * the rule above (the description only, and only an untouched one).
+     */
+    regenerateListing: v.optional(v.literal(true)),
   },
   returns: v.object({
     secondaryPlayerIds: v.array(v.id("players")),
@@ -428,6 +499,7 @@ export const setSecondaryPlayers = mutation({
     const card = await ctx.db.get(args.cardId);
     if (!card) throw new ConvexError("That card isn't in Neon Binder anymore.");
     const result = await setCardSecondaryPlayers(ctx, card, args.playerIds);
+    if (args.regenerateListing) await regenerateListingNow(ctx, card._id);
     // Ids and counts only.
     console.log(
       JSON.stringify({

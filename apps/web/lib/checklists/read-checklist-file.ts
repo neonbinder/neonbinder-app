@@ -21,6 +21,7 @@
 import {
   PUBLISHED_CHECKLIST_MAX_TEXT,
   parsePublishedChecklist,
+  isLastFirstHeader,
   parsePublishedChecklistCells,
   type ChecklistCellsInput,
   type PublishedChecklistOptions,
@@ -28,6 +29,7 @@ import {
 } from "./parse-published-checklist";
 import { checklistSections, type ChecklistSections } from "./checklist-sections";
 import { hasHiddenNameChars } from "../../convex/lib/publishedChecklistSections";
+import { hidesAColumnGap } from "./pdf-text-runs";
 import type { PdfRead } from "./read-pdf-lines";
 import type { XlsxRead, XlsxRefusal } from "./read-xlsx";
 
@@ -240,13 +242,25 @@ export async function readChecklistFile(
     }
   }
   const last = out.lines[out.lines.length - 1];
+  const withRuns = out.lines.some(
+    (l) => l.items !== undefined && (hidesAColumnGap(l.items) || isLastFirstHeader(l.cells)),
+  );
   return {
     ok: true,
     input: {
       kind: "cells",
       cells: {
         format: "pdf",
-        records: out.lines.map((l) => ({ line: l.line, page: l.page, cells: l.cells, xs: l.xs })),
+        // The text runs go along only for a document that names Last Name and
+        // First Name columns, or whose cells merged a gap wider than a word
+        // space (NEO-591): any other PDF is read as cells alone, as before.
+        records: out.lines.map((l) => ({
+          line: l.line,
+          page: l.page,
+          cells: l.cells,
+          xs: l.xs,
+          ...(withRuns && l.items ? { items: l.items } : {}),
+        })),
         ...(out.truncatedAfterPage !== undefined && last ? { truncatedAfterLine: last.line } : {}),
       },
     },

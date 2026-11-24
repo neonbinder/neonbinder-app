@@ -320,6 +320,16 @@ export type CardTeamPickInput = {
    * Absent (or empty) means the caller has no player evidence to offer.
    */
   cards?: ReadonlyArray<ReadonlyArray<ReadonlyArray<Stint>>>;
+  /**
+   * NEO-591 — `true` for rows that are only CANDIDATES for a printed PLACE
+   * ("Seattle": the Pilots and the Mariners both have that location). A place
+   * names no era, so the set year may rule out a team that did not exist yet
+   * but never CHOOSES between eras: with no player on any card holding a stint
+   * on any row, the answer is `null` and the operator decides, where a printed
+   * team NAME would fall back to the year's pick (rule 4 of `pickCardTeam`).
+   * Off by default: a name's year pick is the established rule.
+   */
+  playersMustDecide?: boolean;
 };
 
 /**
@@ -364,6 +374,9 @@ export type CardTeamPickInput = {
  *      when the year's pick matched the name only by alias while another
  *      eligible row holds the name as its OWN primary name: then `null`. An
  *      alias is a side entry; the printed name is that other team's name.
+ *      A printed PLACE (`playersMustDecide`, NEO-591) skips this step: the
+ *      year never chooses between the place's eras, so with no player evidence
+ *      the answer is `null`.
  *
  * Pure and era/stint-only: it reads `yearsActive`, stints and the two id sets,
  * never a name.
@@ -426,7 +439,10 @@ export function pickCardTeam<T extends TeamEraRow & { _id: string }>(
     return { row, via: "players", agreesWithYear };
   }
 
-  // 4. No player says anything: the set year picks, with one guard.
+  // 4. No player says anything: the set year picks, with one guard. A printed
+  //    place has no name for the year to be matched against, so there the year
+  //    never picks between eras and the operator is asked.
+  if (input.playersMustDecide) return null;
   if (!yearPick) return null;
   if (
     aliasOnlyIds.has(yearPick.row._id) &&

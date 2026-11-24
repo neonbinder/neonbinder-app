@@ -6,7 +6,7 @@ metadata:
 ---
 
 BSC's storefront search (`search/shop/results`, recipe in the capture tool and
-[[capture-checklist-slug-probe]]) with filters `{sport, year, setName, variant}`
+[[patterns_pick_a_fixture_name_from_bsc_facets_and_the_resolver]]) with filters `{sport, year, setName, variant}`
 and `size: 1` returns `aggregations.variantName` (`label|slug|count`) for the
 whole set: every insert, insert parallel and parallel in one ~0.3 s call.
 

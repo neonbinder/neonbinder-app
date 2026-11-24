@@ -36,3 +36,7 @@
 - [Retiring a features key](retiring-a-features-key.md) — every mint/copy point of a features key incl. backfillCardFeatures seed list; strip leaves sport rows
 - [Concurrent reads are batched](convex-concurrent-reads-are-batched.md) — Promise.all reads go to storage in batches (16 OSS); "system operations" error = 15 s syscall wall time
 - [Base parallels are insert rows](base-parallels-are-insert-rows.md) — a base-set parallel is an insert row under a Parallel(s) type; per-parallel fields/backfills cover insert AND parallel levels
+- [Removing a human pause exposes races](removing-a-human-pause-exposes-races.md) — no wizard between stage and commit: runAfter continuations and pool lookups now race the commit
+- [NEO-645 tidyNames schema](project_neo645_tidy_names_schema.md) — per-leaf name answers + cardPrintedNames fan-out index; CAS fan-out, order field, no lastUpdated bump
+- [Gate flags need a full union](gate-flags-need-a-full-union.md) — a fact that decides "skip the review" is a union on every row; absence = unknown = open
+- [Convex tests have no static gate](convex-tests-have-no-static-gate.md) — convex/*.test.ts escapes tsconfig + eslint; grep dead helpers/literals; branch-only literal removal order

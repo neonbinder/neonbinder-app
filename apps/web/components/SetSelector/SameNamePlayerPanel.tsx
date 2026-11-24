@@ -239,7 +239,7 @@ export function candidateLinkLabel(
  */
 export function pickStepIntro(count: number, scanCapped: boolean): string {
   return scanCapped
-    ? `More than ${count} answer to that name — here are the first ${count}. Can't see them? Link to Existing searches them all.`
+    ? `More than ${count} answer to that name. Here are the first ${count}. Can't see them? Link to Existing searches them all.`
     : `We've got ${count} on file under that name. Pick the one on this card.`;
 }
 

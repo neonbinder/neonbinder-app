@@ -348,7 +348,7 @@ function rowSignature(row: Player): string {
  *
  * The primary button says this label as its visible text. A panel row says
  * it only when it has no facts to speak (see `panelPickLabel`), and the panel
- * then adds `— same name` to a same-name row, so a row never reads exactly
+ * then adds `· same name` to a same-name row, so a row never reads exactly
  * like the primary even though the primary's row is now in the list too.
  */
 function openLabelsFor(matches: ReadonlyArray<NearMatch>): Map<string, string> {
@@ -622,7 +622,7 @@ function AddPlayerForm({
    * row, tagged "same name" and described like the others (b. 1960 · Padres
    * 1982–2001), and the primary stays as the keyboard shortcut (Enter) to the
    * same row. The two controls keep distinct accessible names: the row adds
-   * its facts and `— same name`, the primary does not. The wizard still filters
+   * its facts and `· same name`, the primary does not. The wizard still filters
    * its promoted row out; this screen no longer mirrors it.
    */
   /**
@@ -639,7 +639,7 @@ function AddPlayerForm({
    * and a label from here would say the birth year twice. A row with none
    * keeps this map's label, so two fact-less Bob Allens read
    * `…, no birth year (1 of 2)` on the primary and
-   * `…, no birth year (1 of 2) — same name` / `(2 of 2) — same name` in the
+   * `…, no birth year (1 of 2) · same name` / `(2 of 2) · same name` in the
    * list. See `panelPickLabel`.
    */
   const openLabels = openLabelsFor(matches ?? []);
@@ -654,7 +654,7 @@ function AddPlayerForm({
    * hit (no "same name" tag) with nothing on file. That row says the words its
    * second line shows, "nothing on file yet", so the two controls never share
    * a name. A same-name row needs no such help: the panel always ends its name
-   * with `— same name`, and the primary never does.
+   * with `· same name`, and the primary never does.
    */
   const panelPickLabel = (name: string, m: NearMatch) => {
     if (speakPlayerDescription({ birthYear: m.birthYear, career: m.career })) {
@@ -1856,7 +1856,7 @@ function PlayerDetail({
               href={qidUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-sm text-neon-blue-text underline underline-offset-2 focus-outline rounded-sm"
+              className="inline-flex min-h-6 items-center text-sm text-neon-blue-text underline underline-offset-2 focus-outline rounded-sm"
             >
               Wikidata {qid}
               <span className="sr-only"> (opens in new tab)</span>
@@ -2070,7 +2070,7 @@ function PlayerDetail({
             {stints.map((stint, index) => (
               <li
                 key={`${stint.teamId}-${stint.fromYear}`}
-                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-1.5 text-sm text-ink-2"
+                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-1 text-sm text-ink-2"
               >
                 {/* NEO-235 — the stint row is a way INTO the team.
                     Correcting a stint usually means the team behind it needs
@@ -2085,15 +2085,17 @@ function PlayerDetail({
                     would split it into two text nodes for both of those. The
                     visible text IS the accessible name, so no aria-label —
                     `title` carries the destination for a pointer instead. */}
-                <span className="truncate">
-                  <Link
-                    to={`/admin/teams?team=${stint.teamId}`}
-                    title={`Open ${teamName(stint.teamId)} in Team Management`}
-                    className="rounded-sm text-neon-blue-text underline underline-offset-2 transition-colors hover:decoration-2 focus-outline"
-                  >
-                    {teamName(stint.teamId)} · {stintRange(stint)}
-                  </Link>
-                </span>
+                {/* NEO-645 — the link is its own 24px-tall target and its text
+                    wraps. It used to sit in a `truncate` span as a bare line
+                    of text (~20px tall), which axe's target-size rule fails on
+                    a phone; a long team name was also clipped there. */}
+                <Link
+                  to={`/admin/teams?team=${stint.teamId}`}
+                  title={`Open ${teamName(stint.teamId)} in Team Management`}
+                  className="inline-flex min-h-6 min-w-0 items-center justify-self-start rounded-sm text-neon-blue-text underline underline-offset-2 transition-colors wrap-anywhere hover:decoration-2 focus-outline"
+                >
+                  {teamName(stint.teamId)} · {stintRange(stint)}
+                </Link>
                 <button
                   type="button"
                   onClick={() => removeStint(index)}

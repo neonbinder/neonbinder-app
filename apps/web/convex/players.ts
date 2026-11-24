@@ -74,9 +74,11 @@ import {
 // NEO-253: the one normalisation of an entity name, shared with teams,
 // leagues, the commit prelude and the browser-side review wizard.
 import {
+  entityNameCompareReadings,
   entityNameQueryReadings,
   normalizeEntityName,
 } from "../lib/entities/normalize-name";
+import { storedNameMatchesTyped } from "../lib/entities/name-search";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
 // NEO-592: bounded concurrency for independent reads inside one query.
@@ -86,6 +88,7 @@ import { clampSearchQuery } from "./lib/searchQueryClamp";
 import { refreshDescriptionsAfterRename } from "./cardDescriptionFanOut";
 // NEO-528: the also-pictured index, for the sport-removal guard.
 import { cardSecondaryPlayerLinkPage } from "./cardSecondaryPlayers";
+import { recheckCareerGaps } from "./tidyCareerGap";
 // NEO-463: a one-word name that is a fuller-named player's first or last name.
 import {
   fragmentMatches,
@@ -227,6 +230,8 @@ const playerDocValidator = v.object({
     wikidataId: v.optional(v.string()),
   })),
   createdByUserId: v.optional(v.string()),
+  // NEO-591: the raw doc reaches `getInternal`'s caller unstripped.
+  creationRef: v.optional(v.string()),
   lastUpdated: v.number(),
 });
 
@@ -245,12 +250,14 @@ function toPublicPlayer<
   T extends {
     createdByUserId?: string;
     alsoSportIds?: ReadonlyArray<Id<"selectorOptions">>;
+    creationRef?: string;
   },
->(doc: T): Omit<T, "createdByUserId" | "alsoSportIds"> {
-  // Destructure to peel both off — `_` slots are discarded, explicitly marked
-  // unused for the linter.
+>(doc: T): Omit<T, "createdByUserId" | "alsoSportIds" | "creationRef"> {
+  // Destructure to peel them off — `_` slots are discarded, explicitly marked
+  // unused for the linter. NEO-591: `creationRef` is a commit-retry token,
+  // never part of a public shape.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { createdByUserId: _omit, alsoSportIds: _omitSports, ...rest } = doc;
+  const { createdByUserId: _omit, alsoSportIds: _omitSports, creationRef: _omitRef, ...rest } = doc;
   return rest;
 }
 
@@ -2824,14 +2831,16 @@ export const search = query({
         return args.sportId ? search.eq("sportId", args.sportId) : search;
       })
       .take(limit);
-    const readings = entityNameQueryReadings(term);
+    // NEO-643 — a hyphen is a space in typed text: "smith jo" finds a stored
+    // "smith-jones", whose key keeps the hyphen inside its token, so the key's
+    // tokens are split on the hyphen here (the key itself is untouched). Main's
+    // own reading of the typed text rides along (`storedNameMatchesTyped`), so
+    // typing a stored "J-P Arencibia" in full still finds it.
+    const readings = entityNameCompareReadings(term);
+    const storedReadings = entityNameQueryReadings(term);
     /** Every typed token is the prefix of one of the name's tokens. */
-    const matchesEveryToken = (nameNormalized: string) => {
-      const nameTokens = nameNormalized.split(" ");
-      return readings.some(
-        (tokens) => tokens.length > 0 && tokens.every((t) => nameTokens.some((n) => n.startsWith(t))),
-      );
-    };
+    const matchesEveryToken = (nameNormalized: string) =>
+      storedNameMatchesTyped(nameNormalized, readings, storedReadings);
 
     /*
      * NEO-313 — a multi-sport member of THIS sport is a player of this sport.
@@ -2846,7 +2855,7 @@ export const search = query({
      * read; nothing here looks at another sport.
      *
      * NEO-322 — under either reading of the typed text
-     * (`entityNameQueryReadings`), so "J. T. R", one keystroke short of
+     * (`entityNameCompareReadings`), so "J. T. R", one keystroke short of
      * "J. T. Re", still finds "jt realmuto" instead of looking for "jtr".
      */
     /*
@@ -2865,7 +2874,7 @@ export const search = query({
      * is left. So the person typed in full is never pushed out by namesakes.
      */
     const memberDocs: Doc<"players">[] = [];
-    if (args.sportId && readings[0].length > 0) {
+    if (args.sportId && (readings[0].length > 0 || storedReadings[0].length > 0)) {
       const members = await ctx.db
         .query("playerSports")
         .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
@@ -4232,6 +4241,88 @@ export const MAX_CAREER_STINT_APPENDS = 200;
  * does not belong to, or that would push the career past the cap is skipped
  * and counted, never written. Counts only; the caller logs ids.
  */
+type CareerStintAppend = {
+  playerId: Id<"players">;
+  teamId: Id<"teams">;
+  fromYear: number;
+  toYear?: number;
+};
+
+/** `appendCareerStints`'s body, shared with the public `addStint`. */
+export async function appendCareerStintsImpl(
+  ctx: MutationCtx,
+  stints: ReadonlyArray<CareerStintAppend>,
+): Promise<{ added: number; existing: number; skipped: number }> {
+  if (stints.length > MAX_CAREER_STINT_APPENDS) {
+    throw new Error(
+      `appendCareerStints: ${stints.length} stints exceeds the ${MAX_CAREER_STINT_APPENDS}-stint limit`,
+    );
+  }
+  const maxYear = maxCareerYear();
+  for (const stint of stints) {
+    assertCareerStintYears(stint.fromYear, stint.toYear, maxYear);
+  }
+  const byPlayer = new Map<string, Array<CareerStintAppend>>();
+  for (const stint of stints) {
+    const key = stint.playerId as string;
+    const list = byPlayer.get(key);
+    if (list) list.push(stint);
+    else byPlayer.set(key, [stint]);
+  }
+  let added = 0;
+  let existing = 0;
+  let skipped = 0;
+  const teamSport = new Map<string, Id<"selectorOptions"> | null>();
+  for (const stints of byPlayer.values()) {
+    const player = await ctx.db.get(stints[0].playerId);
+    if (!player) {
+      skipped += stints.length;
+      continue;
+    }
+    const sportIds = new Set<string>([
+      player.sportId as string,
+      ...(await additionalSportIds(ctx, player._id)),
+    ]);
+    const current = player.teamYears ?? [];
+    const seen = new Set(
+      current
+        .filter((s) => s.fromYear !== undefined)
+        .map((s) => `${s.teamId}|${s.fromYear}`),
+    );
+    const next = [...current];
+    for (const stint of stints) {
+      const key = `${stint.teamId}|${stint.fromYear}`;
+      if (seen.has(key)) {
+        existing++;
+        continue;
+      }
+      let sport = teamSport.get(stint.teamId as string);
+      if (sport === undefined) {
+        sport = (await ctx.db.get(stint.teamId))?.sportId ?? null;
+        teamSport.set(stint.teamId as string, sport);
+      }
+      if (sport === null || !sportIds.has(sport as string) || next.length >= MAX_PLAYER_TEAM_YEARS) {
+        skipped++;
+        continue;
+      }
+      seen.add(key);
+      next.push({
+        teamId: stint.teamId,
+        fromYear: stint.fromYear,
+        ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+      });
+      added++;
+    }
+    if (next.length !== current.length) {
+      await ctx.db.patch(player._id, {
+        teamYears: sortTeamYears(next),
+        lastUpdated: Date.now(),
+      });
+    }
+  }
+  return { added, existing, skipped };
+}
+
 export const appendCareerStints = internalMutation({
   args: {
     stints: v.array(
@@ -4248,57 +4339,225 @@ export const appendCareerStints = internalMutation({
     existing: v.number(),
     skipped: v.number(),
   }),
+  handler: async (ctx, args) => appendCareerStintsImpl(ctx, args.stints),
+});
+
+/**
+ * NEO-645 — Add to career: append ONE stint to a player from the career tile
+ * (and the inline New team form, whose `findOrCreate` result is the `teamId`).
+ *
+ * The public, operator-facing wrapper over `appendCareerStints` (which stays
+ * the internal writer of `players.teamYears`).
+ *
+ * ## Contract
+ *
+ * - `requireAdmin`. Years are held to the bounds every other writer holds
+ *   (`assertCareerStintYears`).
+ * - Additive and idempotent, exactly as `appendCareerStints`: a stint whose
+ *   `(teamId, fromYear)` the player already has is left alone and reported as
+ *   `existing`; nothing existing is edited or removed. The merged list is stored
+ *   in the one canonical order (`sortTeamYears`) and stays within
+ *   `MAX_PLAYER_TEAM_YEARS`. A team in a sport the player does not belong to, or
+ *   a missing player or team, is `skipped`, never written.
+ * - Then re-check the `careerGap` of the OPEN card (`cardId`): when the new
+ *   stint now covers the card's team by the card's year (`careerCoversCardTeam`,
+ *   J2: today's rule, not a [Y-1, Y] window) the card's `{ kind: "careerGap" }`
+ *   check for this (player, team) is removed from `tidyChecks`. Then schedule the
+ *   same re-check for the leaf's OTHER single-player cards for that player.
+ * - `tidyChecks` writes never bump the card's `lastUpdated`. The player row's
+ *   `lastUpdated` does bump (a career changed).
+ * - NEO-307: a team creation that would clash with another team's alias is the
+ *   caller's job (`teams.findOrCreate` returns the holder to link); the
+ *   `teamId` here is always an existing row.
+ *
+ * Returns the `appendCareerStints` counts.
+ */
+export const addStint = mutation({
+  args: {
+    playerId: v.id("players"),
+    teamId: v.id("teams"),
+    fromYear: v.number(),
+    toYear: v.optional(v.number()),
+    /** The open card; its `careerGap` check is re-evaluated after the write. */
+    cardId: v.id("cardChecklist"),
+  },
+  returns: v.object({
+    added: v.number(),
+    existing: v.number(),
+    skipped: v.number(),
+  }),
   handler: async (ctx, args) => {
-    if (args.stints.length > MAX_CAREER_STINT_APPENDS) {
+    await requireAdmin(ctx);
+    // The one writer of `teamYears` appends, with every bound it holds.
+    const result = await appendCareerStintsImpl(ctx, [
+      {
+        playerId: args.playerId,
+        teamId: args.teamId,
+        fromYear: args.fromYear,
+        ...(args.toYear !== undefined ? { toYear: args.toYear } : {}),
+      },
+    ]);
+    // A stint that was already there can still be what the card was waiting on.
+    if (result.added + result.existing > 0) {
+      const card = await ctx.db.get(args.cardId);
+      if (card) {
+        await recheckCareerGaps(ctx, card, args.playerId);
+        // The leaf's other cards for this player, paged and scheduled.
+        await ctx.scheduler.runAfter(0, internal.tidyCards.recheckCareerGapPage, {
+          leafId: card.selectorOptionId,
+          playerId: args.playerId,
+          cursor: null,
+        });
+      }
+    }
+    return result;
+  },
+});
+
+// ===========================================================================
+// NEO-591 — the career check's "New player named X": the commit-side piece
+// that mints the player the operator said a card's printed name really means.
+// ===========================================================================
+
+/** New players one `commitCardChecklist` may mint through the career check. */
+export const MAX_CAREER_NEW_PLAYERS = 50;
+
+/**
+ * Longest `creationRef` a "New player named X" answer may carry. The commit's
+ * ref format is `^[A-Za-z0-9_-]{1,MAX_CREATION_REF_LENGTH}$`; the per-card
+ * `newPlayerByName[].ref` is held to the same length at the boundary.
+ */
+export const MAX_CREATION_REF_LENGTH = 32;
+
+/**
+ * NEO-591 — mint the players the operator chose as "New player named X" in the
+ * wizard's career check, each with the career the operator staged, and hand
+ * back ref → id.
+ *
+ * Its own commit phase, AFTER the prelude's resolve walk and BEFORE the career
+ * stints and the chunks. The order is load-bearing: minting earlier would put
+ * a second same-name row in front of `sameNamePlayers`, which would drop every
+ * OTHER card carrying that name to "unreviewed"; and a stint naming a team the
+ * batch just created needs the id the prelude minted.
+ *
+ * ## Retry adoption by `creationRef`
+ *
+ * The client mints `ref` once per new-player answer, so a Confirm retried from
+ * the same wizard state carries the same ref. Before inserting, the same-name
+ * rows (the index `sameNamePlayers` reads) are scanned for one that carries
+ * this ref AND was created by the same operator, and that row is ADOPTED: a
+ * commit that died after this phase never leaves two rows for one answer. The
+ * ref is never read anywhere else and never shown.
+ *
+ * ## What the row is
+ *
+ * name, nameNormalized (`normalizePlayerName`), the set's sport, the operator
+ * as creator, the staged career in the one canonical order (`sortTeamYears`),
+ * and the ref. No birth year, no Wikidata id and NO enrichment is scheduled:
+ * the operator staged this career by hand, and `enqueueEnrichment` is
+ * creation-only for a lookup nobody asked for (Jason, 2026-09-02).
+ *
+ * A stint whose team is gone or belongs to another sport is skipped and
+ * counted, never written. Counts only in the log; ids, never names.
+ *
+ * The caller (`commitCardChecklist`) has already held every name, ref, year
+ * and count to its rules and run the NEO-463 fragment check before any phase
+ * wrote; this re-checks the shape it cannot do without (the sport row, the
+ * team's sport, the career cap).
+ */
+export const createCareerNewPlayers = internalMutation({
+  args: {
+    sportId: v.id("selectorOptions"),
+    userId: v.string(),
+    players: v.array(
+      v.object({
+        ref: v.string(),
+        name: v.string(),
+        stints: v.array(
+          v.object({
+            teamId: v.id("teams"),
+            fromYear: v.number(),
+            toYear: v.optional(v.number()),
+          }),
+        ),
+      }),
+    ),
+  },
+  returns: v.object({
+    players: v.array(
+      v.object({
+        ref: v.string(),
+        id: v.id("players"),
+        name: v.string(),
+        created: v.boolean(),
+      }),
+    ),
+    stintsAdded: v.number(),
+    stintsSkipped: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    if (args.players.length > MAX_CAREER_NEW_PLAYERS) {
       throw new Error(
-        `appendCareerStints: ${args.stints.length} stints exceeds the ${MAX_CAREER_STINT_APPENDS}-stint limit`,
+        `createCareerNewPlayers: ${args.players.length} players exceeds the ${MAX_CAREER_NEW_PLAYERS}-player limit`,
       );
     }
+    const sportRow = await ctx.db.get(args.sportId);
+    if (!sportRow || sportRow.level !== "sport") {
+      throw new Error("createCareerNewPlayers: a player must be created under a sport.");
+    }
     const maxYear = maxCareerYear();
-    for (const stint of args.stints) {
-      assertCareerStintYears(stint.fromYear, stint.toYear, maxYear);
-    }
-    const byPlayer = new Map<string, Array<(typeof args.stints)[number]>>();
-    for (const stint of args.stints) {
-      const key = stint.playerId as string;
-      const list = byPlayer.get(key);
-      if (list) list.push(stint);
-      else byPlayer.set(key, [stint]);
-    }
-    let added = 0;
-    let existing = 0;
-    let skipped = 0;
-    const teamSport = new Map<string, Id<"selectorOptions"> | null>();
-    for (const stints of byPlayer.values()) {
-      const player = await ctx.db.get(stints[0].playerId);
-      if (!player) {
-        skipped += stints.length;
-        continue;
+    for (const player of args.players) {
+      if (player.stints.length > MAX_PLAYER_TEAM_YEARS) {
+        throw new Error(
+          `createCareerNewPlayers: a player has ${player.stints.length} career stints; the limit is ${MAX_PLAYER_TEAM_YEARS}.`,
+        );
       }
-      const sportIds = new Set<string>([
-        player.sportId as string,
-        ...(await additionalSportIds(ctx, player._id)),
-      ]);
-      const current = player.teamYears ?? [];
+      for (const stint of player.stints) {
+        assertCareerStintYears(stint.fromYear, stint.toYear, maxYear);
+      }
+    }
+    const teamSport = new Map<string, Id<"selectorOptions"> | null>();
+    const sportOfTeam = async (teamId: Id<"teams">) => {
+      let sport = teamSport.get(teamId as string);
+      if (sport === undefined) {
+        sport = (await ctx.db.get(teamId))?.sportId ?? null;
+        teamSport.set(teamId as string, sport);
+      }
+      return sport;
+    };
+
+    const out: Array<{ ref: string; id: Id<"players">; name: string; created: boolean }> = [];
+    let stintsAdded = 0;
+    let stintsSkipped = 0;
+    for (const entry of args.players) {
+      const name = entry.name.trim();
+      const nameNormalized = normalizePlayerName(name);
+      // Bounded, like `sameNamePlayers`: the key is a dedup key, not unique.
+      const sameName = await ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", nameNormalized).eq("sportId", args.sportId),
+        )
+        .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
+      const adopted = sameName.find(
+        (p) => p.creationRef === entry.ref && p.createdByUserId === args.userId,
+      );
+
+      // The stints this call may write: team still there and in this sport,
+      // one per (team, fromYear), within the career cap.
+      const held = adopted?.teamYears ?? [];
       const seen = new Set(
-        current
+        held
           .filter((s) => s.fromYear !== undefined)
           .map((s) => `${s.teamId}|${s.fromYear}`),
       );
-      const next = [...current];
-      for (const stint of stints) {
+      const next = [...held];
+      for (const stint of entry.stints) {
         const key = `${stint.teamId}|${stint.fromYear}`;
-        if (seen.has(key)) {
-          existing++;
-          continue;
-        }
-        let sport = teamSport.get(stint.teamId as string);
-        if (sport === undefined) {
-          sport = (await ctx.db.get(stint.teamId))?.sportId ?? null;
-          teamSport.set(stint.teamId as string, sport);
-        }
-        if (sport === null || !sportIds.has(sport as string) || next.length >= MAX_PLAYER_TEAM_YEARS) {
-          skipped++;
+        if (seen.has(key)) continue;
+        const sport = await sportOfTeam(stint.teamId);
+        if (sport !== args.sportId || next.length >= MAX_PLAYER_TEAM_YEARS) {
+          stintsSkipped++;
           continue;
         }
         seen.add(key);
@@ -4307,15 +4566,32 @@ export const appendCareerStints = internalMutation({
           fromYear: stint.fromYear,
           ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
         });
-        added++;
+        stintsAdded++;
       }
-      if (next.length !== current.length) {
-        await ctx.db.patch(player._id, {
-          teamYears: sortTeamYears(next),
-          lastUpdated: Date.now(),
-        });
+
+      if (adopted) {
+        if (next.length !== held.length) {
+          await ctx.db.patch(adopted._id, {
+            teamYears: sortTeamYears(next),
+            lastUpdated: Date.now(),
+          });
+        }
+        out.push({ ref: entry.ref, id: adopted._id, name: adopted.name, created: false });
+        continue;
       }
+
+      const id = await ctx.db.insert("players", {
+        name,
+        nameNormalized,
+        sportId: args.sportId,
+        ...(next.length > 0 ? { teamYears: sortTeamYears(next) } : {}),
+        creationRef: entry.ref,
+        createdByUserId: args.userId,
+        lastUpdated: Date.now(),
+      });
+      // NOT enqueued for enrichment — see the note above.
+      out.push({ ref: entry.ref, id, name, created: true });
     }
-    return { added, existing, skipped };
+    return { players: out, stintsAdded, stintsSkipped };
   },
 });

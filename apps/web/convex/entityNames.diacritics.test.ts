@@ -324,64 +324,78 @@ describe("the location-composed team key folds accents (NEO-236 + NEO-253)", () 
   });
 });
 
-describe("the review-queue resume key agrees across accents (NEO-253)", () => {
+
+describe("startBatch cleanses incoming names (NEO-643)", () => {
   /**
-   * A resume reconciles the batch against the incoming names by
-   * `kind` + normalized name. The names come back from a re-fetch or a second
-   * pairing session, so their SPELLING can legitimately change between the two
-   * Confirms — SportLots supplies accents, BSC does not, and which side won a
-   * given merge is not stable. Keyed unfolded, the second Confirm dropped the
-   * operator's decision on the ground and inserted a fresh `pending` row
-   * alongside it.
+   * BSC writes "Wilmer R\ios" for Ríos. The row must be stored (and shown) as
+   * "Wilmer Rios", keyed the same as a clean spelling, and a resume that sends
+   * the backslash form again must find the SAME row rather than add a second.
    */
-  test("resuming with the other spelling keeps the row and its decision", async () => {
+  test("a backslash or soft hyphen never reaches a stored row, and a resume keeps one row", async () => {
     const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(USER);
     const selectorOptionId = await seedSport(t);
 
     const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
       createdByUserId: USER.subject,
       sportId: selectorOptionId,
-      playerNames: ["José Ramírez"],
-      teamNames: ["Montréal Expos"],
+      playerNames: ["Wilmer R\\ios", "  Mike\u200b   Trout "],
+      teamNames: ["Le\\on Mex\u00adico"],
     });
 
-    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
-      selectorOptionId,
-      batchId,
-    });
-    expect(rows).toHaveLength(2);
-    const playerRow = rows.find((r) => r.kind === "player")!;
-    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
-      reviewRowId: playerRow._id,
-      action: "create",
-    });
+    // `getBatch` is retired (NEO-645): read the batch's rows straight off the table.
+    const readBatch = () =>
+      t.run((ctx) =>
+        ctx.db
+          .query("entityReviewQueue")
+          .withIndex("by_selector_option_and_batch", (q) =>
+            q.eq("selectorOptionId", selectorOptionId).eq("batchId", batchId),
+          )
+          .collect(),
+      );
+    const rows = await readBatch();
+    expect(rows.map((r) => r.name).sort()).toEqual(["Leon Mexico", "Mike Trout", "Wilmer Rios"]);
 
     const resumed = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
       createdByUserId: USER.subject,
       sportId: selectorOptionId,
-      playerNames: ["Jose Ramirez"],
-      teamNames: ["Montreal Expos"],
+      playerNames: ["Wilmer Ríos", "Mike Trout"],
+      teamNames: ["Leon Mexico"],
     });
     expect(resumed).toBe(batchId);
+    const after = await readBatch();
+    expect(after.map((r) => r._id).sort()).toEqual(rows.map((r) => r._id).sort());
 
-    const after = await asAdmin.query(api.entityReviewQueue.getBatch, {
+    await drainScheduled(t);
+  });
+
+  test("a name that NFC lengthens past the bound is refused, by length and not by echo", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSport(t);
+    // 100 characters raw, 200 once composed: U+0958 composes to two characters.
+    const long = "\u0958".repeat(100);
+    expect(long.length).toBeLessThanOrEqual(120);
+    for (const lists of [{ playerNames: [long], teamNames: [] }, { playerNames: [], teamNames: [long] }]) {
+      const attempt = t.mutation(internal.entityReviewQueue.startBatch, {
+        selectorOptionId,
+        createdByUserId: USER.subject,
+        sportId: selectorOptionId,
+        ...lists,
+      });
+      await expect(attempt).rejects.toThrow(/once cleansed; the limit is 120/);
+      await expect(attempt).rejects.not.toThrow(/\u0958/);
+    }
+    // At the bound exactly is fine.
+    const ok = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
-      batchId,
+      createdByUserId: USER.subject,
+      sportId: selectorOptionId,
+      playerNames: ["A".repeat(120)],
+      teamNames: [],
     });
-    // Still two rows, the SAME two rows, and the decision survived.
-    expect(after).toHaveLength(2);
-    expect(after.map((r) => r._id).sort()).toEqual(
-      rows.map((r) => r._id).sort(),
-    );
-    expect(
-      after.find((r) => r.kind === "player")?.decision,
-    ).toEqual({ action: "create" });
+    expect(typeof ok).toBe("string");
 
-    // Both `startBatch` calls scheduled
-    // `wikidataPool:enqueueEntityReviewLookups`. See the file note.
     await drainScheduled(t);
   });
 });

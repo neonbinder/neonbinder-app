@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
+import { PDF_MAX_LINE_ITEMS } from "./pdf-text-runs";
 import {
   PDF_MAX_FILE_BYTES,
   PDF_MAX_PAGE_ITEMS,
@@ -28,8 +29,12 @@ describe("groupPageItems — Topps columns by x-gap", () => {
       item("Los Angeles Dodgers®", 298, 686),
     ]);
     expect(lines).toEqual([
-      { cells: ["BASE CARDS"], xs: [53] },
-      { cells: ["1", "Shohei Ohtani", "Los Angeles Dodgers®"], xs: [53, 132.6, 298] },
+      { cells: ["BASE CARDS"], xs: [53], items: [{ text: "BASE CARDS", x: 53, end: 103, size: 10 }] },
+      {
+        cells: ["1", "Shohei Ohtani", "Los Angeles Dodgers®"],
+        xs: [53, 132.6, 298],
+        items: [{ text: "1", x: 53, end: 58, size: 10 }, { text: "Shohei Ohtani", x: 132.6, end: 197.6, size: 10 }, { text: "Los Angeles Dodgers®", x: 298, end: 398, size: 10 }],
+      },
     ]);
   });
 
@@ -41,7 +46,13 @@ describe("groupPageItems — Topps columns by x-gap", () => {
       // Touching run: no space added.
       item("Jr.", 180.1, 500),
     ]);
-    expect(lines).toEqual([{ cells: ["Bobby WittJr."], xs: [132.6] }]);
+    expect(lines).toEqual([
+      {
+        cells: ["Bobby WittJr."],
+        xs: [132.6],
+        items: [{ text: "Bobby", x: 132.6, end: 157.6, size: 10 }, { text: "Witt", x: 160.1, end: 180.1, size: 10 }, { text: "Jr.", x: 180.1, end: 195.1, size: 10 }],
+      },
+    ]);
   });
 
   it("puts items on one baseline within half a font height on one line, top to bottom", () => {
@@ -67,7 +78,14 @@ describe("groupPageItems — Topps columns by x-gap", () => {
       item("Craig Biggio", 132.6, 300),
       item("Houston  Astros®", 298, 300),
     ]);
-    expect(lines).toEqual([{ cells: ["Craig Biggio", "Houston Astros®"], xs: [132.6, 298] }]);
+    // The runs keep the raw text (the double space) and leave the blank run out.
+    expect(lines).toEqual([
+      {
+        cells: ["Craig Biggio", "Houston Astros®"],
+        xs: [132.6, 298],
+        items: [{ text: "Craig Biggio", x: 132.6, end: 192.6, size: 10 }, { text: "Houston  Astros®", x: 298, end: 378, size: 10 }],
+      },
+    ]);
   });
 
   it("starts a new cell at a gap of twice the font size, never under 12 pt", () => {
@@ -113,7 +131,15 @@ describe("readPdfLines — with pdf.js stood in", () => {
     expect(out).toEqual({
       ok: true,
       pages: 1,
-      lines: [{ page: 1, line: 1, cells: ["1", "Shohei Ohtani"], xs: [53, 132.6] }],
+      lines: [
+        {
+          page: 1,
+          line: 1,
+          cells: ["1", "Shohei Ohtani"],
+          xs: [53, 132.6],
+          items: [{ text: "1", x: 53, end: 58, size: 10 }, { text: "Shohei Ohtani", x: 132.6, end: 197.6, size: 10 }],
+        },
+      ],
     });
     expect(fake.getDocument).toHaveBeenCalledWith(
       expect.objectContaining({ disableFontFace: true, enableXfa: false }),
@@ -228,4 +254,29 @@ describe("readPdfLines — the real pdf.js on the Topps-layout sample (probe P2)
     expect(teamCard?.xs[1]).toBeCloseTo(298, 0);
     expect(out.pages).toBe(2);
   }, 20_000);
+});
+
+describe("groupPageItems — the runs kept per line are bounded (S4)", () => {
+  /** `n` runs side by side on one baseline, each 6 pt wide and 6 pt apart (one cell). */
+  const crowded = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      str: "x",
+      transform: [10, 0, 0, 10, i * 12, 500],
+      width: 6,
+      height: 10,
+    }));
+
+  it("keeps a line's runs up to PDF_MAX_LINE_ITEMS", () => {
+    const [line] = groupPageItems(crowded(PDF_MAX_LINE_ITEMS));
+    expect(line.items).toHaveLength(PDF_MAX_LINE_ITEMS);
+  });
+
+  it("keeps none for a line over it, and the cells are unchanged", () => {
+    const over = groupPageItems(crowded(PDF_MAX_LINE_ITEMS + 1));
+    expect(over).toHaveLength(1);
+    expect(over[0].items).toEqual([]);
+    expect(over[0].cells.length).toBeGreaterThan(0);
+    const exact = groupPageItems(crowded(PDF_MAX_LINE_ITEMS));
+    expect(exact[0].cells.length).toBeGreaterThan(0);
+  });
 });

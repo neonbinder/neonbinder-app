@@ -256,6 +256,19 @@ async function seed(t: T): Promise<Fixture> {
     const skipIn = await skip(insB, "CHECKLIST");
     await skip(baseVt, "CHECKLIST");
 
+    // ── NEO-645: a name row in the doomed subtree, one beside it on the base ──
+    const tidyName = (scopeId: SO, name: string) =>
+      ctx.db.insert("tidyNames", {
+        scopeId,
+        kind: "player",
+        nameNormalized: name.toLowerCase(),
+        name,
+        sportId: sport,
+        status: "ready",
+      });
+    const tidyIn = await tidyName(insB, "Someone Tidy");
+    await tidyName(baseVt, "Someone Tidy");
+
     // ── sync status: one keyed on a subtree row, one on the variant type
     //    (its insert column, naming a subtree row), one on the sibling ─────
     const statusIn = await ctx.db.insert("selectorSyncStatus", {
@@ -325,6 +338,8 @@ async function seed(t: T): Promise<Fixture> {
         entityReviewQueue: [qPlayer, qTeam],
         checklistCandidates: [cand],
         entityReviewSkips: [skipIn],
+        tidyNames: [tidyIn],
+        cardPrintedNames: [],
         selectorSyncStatus: [statusIn, statusVt],
         publishedChecklistLinks: [linkInsA, linkParA2],
       },
@@ -401,6 +416,10 @@ async function danglingReferences(t: T): Promise<string[]> {
     for (const row of await ctx.db.query("entityReviewSkips").collect()) {
       await check(`entityReviewSkips ${row._id}.selectorOptionId`, row.selectorOptionId);
     }
+    for (const row of await ctx.db.query("tidyNames").collect()) {
+      await check(`tidyNames ${row._id}.scopeId`, row.scopeId);
+      await check(`tidyNames ${row._id}.sportId`, row.sportId);
+    }
     for (const row of await ctx.db.query("checklistCandidates").collect()) {
       await check(`checklistCandidates ${row._id}.selectorOptionId`, row.selectorOptionId);
     }
@@ -464,6 +483,7 @@ const EXPECTED_TOTALS = {
   entityReviewQueue: 2,
   checklistCandidates: 1,
   entityReviewSkips: 1,
+  tidyNames: 1,
   selectorSyncStatus: 2,
 };
 
@@ -555,7 +575,8 @@ describe("NEO-304: dry run", () => {
         parentId: f.insertVt,
         bsc: {},
         sportlots: {},
-        holds: { cards: 1, skips: 1 },
+        // A legacy skip and (NEO-645) a name row: both are the operator's rulings.
+        holds: { cards: 1, skips: 2 },
       },
       {
         id: f.parA1,
@@ -723,6 +744,7 @@ describe("NEO-304: armed run", () => {
         entityReviewQueue: 0,
         checklistCandidates: 0,
         entityReviewSkips: 0,
+        tidyNames: 0,
         selectorSyncStatus: 0,
       },
     });
@@ -772,6 +794,7 @@ describe("NEO-304: armed run", () => {
       entityReviewQueue: 0,
       checklistCandidates: 0,
       entityReviewSkips: 0,
+      tidyNames: 0,
       selectorSyncStatus: 0,
     };
     let calls = 0;

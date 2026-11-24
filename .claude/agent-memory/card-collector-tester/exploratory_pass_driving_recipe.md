@@ -26,3 +26,5 @@ few workers and keep the profile of the one that works.
   Confirm (BSC preselected) to get past it.
 
 Related: [[pasted-checklist-format-traps]]
+
+With the Chrome browser tools (2026-11-22): a hand-made set under Baseball > 2024 > Topps reaches the Tidy Up walk with real NB/Wikidata lookups. Set level "Paste one instead" (sections like BASE / FUTURE STARS), then + Custom "Insert" type, Reconcile Inserts: tick "Show all checklist sections", Keep all, Save. Open an insert and press the card-list fetch button (accessible name "Sync card checklist"). The walk opens by itself after the save; `?tidy=` holds the position. Use a sport with real players, not a hand-made sport, if you want lookups. Viewing a registry set's walk is read-only only if you answer nothing; close it with Esc.
