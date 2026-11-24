@@ -3,13 +3,15 @@ import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { pickTeamForYear } from "../../../../lib/teams/team-era";
+import { stintCountsForYear } from "../../../../convex/lib/careerCoverage";
 import NeonButton from "../../../modules/NeonButton";
 import { UNKNOWN_TEAM_AMBIGUOUS } from "../../CareerTeamEntry";
 import UndatedCareerTeams from "../../UndatedCareerTeams";
 import { useInlinePart } from "../inline-stack";
 import type { TidyCardContext, TidyRow } from "../tile-types";
 import { WRAP_LABEL_CLASS } from "../TidyTile";
-import AddStintEntry from "./AddStintEntry";
+import { useBeforeSave } from "../before-save";
+import AddStintEntry, { type StintPrefill } from "./AddStintEntry";
 import { careerLineText } from "./copy";
 import InlineNewTeam, { teamLookupCarryOf, type TeamLookupCarry } from "./InlineNewTeam";
 import type { TidyWrite } from "./tidy-write";
@@ -37,6 +39,16 @@ type Resolution =
  *    (`UndatedCareerTeams`), and joins the career once it has some;
  *  - "+ Add stint" adds any other team NB holds, by hand.
  *
+ * NEO-657 (Jason, 2026-11-23: "When adding a new player IF we know the team on
+ * the card we should automatically create a new stint for the player for the
+ * year of the card. It should be open and editable so that if that is not the
+ * right years the admin can fix it."): when the card carries exactly one NB
+ * team and the set has a year, "+ Add stint" is open under the career already
+ * holding that team and the year as both From and To, unless the career has a
+ * stint for that team that counts for the year (`stintCountsForYear`, the
+ * career-gap rule). "+ Add" writes it as shown; Esc closes it and writes
+ * nothing; Save & next with it still open adds what it shows.
+ *
  * Teams are matched by NB's rows (era by the stint's year), never by guessing a
  * name into a new row. Nothing here creates a team except the operator's own
  * New team form.
@@ -46,12 +58,14 @@ export default function NewPlayerCareerRow({
   context,
   playerId,
   leafId,
+  setYear,
   write,
 }: {
   row: TidyRow;
   context: Ctx;
   playerId: string;
   leafId: Id<"selectorOptions">;
+  setYear: number | undefined;
   write: TidyWrite;
 }) {
   const player = context.players.find((p) => p.playerId === playerId);
@@ -63,6 +77,27 @@ export default function NewPlayerCareerRow({
 
   const addStint = useMutation(api.players.addStint);
   const convex = useConvex();
+  // What the open prefilled "+ Add stint" form would add right now (null when
+  // it is closed, or holds nothing addable). Save & next adds it as shown.
+  const [draft, setDraft] = useState<{
+    teamId: Id<"teams">;
+    fromYear: number;
+    toYear?: number;
+  } | null>(null);
+  useBeforeSave(draft !== null, async () => {
+    if (!draft || !player) return true;
+    return write.run(
+      () =>
+        addStint({
+          playerId: player.playerId,
+          teamId: draft.teamId,
+          fromYear: draft.fromYear,
+          ...(draft.toYear !== undefined ? { toYear: draft.toYear } : {}),
+          cardId: row._id,
+        }),
+      "Couldn't add that stint. Try again.",
+    );
+  });
   const [resolved, setResolved] = useState<Record<string, Resolution>>({});
   const [notNow, setNotNow] = useState<ReadonlySet<string>>(new Set());
   const [newTeamFor, setNewTeamFor] = useState<CareerEntry | null>(null);
@@ -124,6 +159,17 @@ export default function NewPlayerCareerRow({
         }),
       "Couldn't add that stint. Try again.",
     );
+
+  // NEO-657: the card's team, when the card carries exactly one NB team (the
+  // tidy context's own `onCard`, never a name), for the set's year.
+  const cardTeams = context.teams.filter((t) => t.onCard);
+  const cardTeam = cardTeams.length === 1 ? cardTeams[0] : undefined;
+  const prefill: StintPrefill | undefined =
+    cardTeam &&
+    setYear !== undefined &&
+    !player.stints.some((s) => s.teamId === cardTeam.teamId && stintCountsForYear(s, setYear))
+      ? { teamId: cardTeam.teamId, name: cardTeam.name, fromYear: setYear, toYear: setYear }
+      : undefined;
 
   const visible = careerTeams.filter((e) => !notNow.has(keyOf(e)));
   const addable = visible.filter((e) => {
@@ -323,6 +369,9 @@ export default function NewPlayerCareerRow({
           </NeonButton>
         )}
         <AddStintEntry
+          key={prefill ? "prefilled" : "plain"}
+          prefill={prefill}
+          onDraft={setDraft}
           playerName={player.name}
           sportId={player.sportId}
           leafId={leafId}

@@ -133,6 +133,7 @@ export default function CareerTeamEntry({
   disabled = false,
   knownTeamsOnly = false,
   onDone,
+  onDraftChange,
 }: {
   /** NEO-96: the sport-level selectorOptions row id, not its display name. */
   sportId: Id<"selectorOptions">;
@@ -218,6 +219,14 @@ export default function CareerTeamEntry({
    * moves on (the Career check step goes to its next line).
    */
   onDone?: () => void;
+  /**
+   * NEO-657 — the entry the form would add RIGHT NOW (the same one + Add
+   * reports), or null while the team, the years or the pair is not addable. A
+   * host that wants to add what is on screen when the operator moves on reads
+   * it from here. Fires on a change only, and with null when the form goes
+   * away; held in a ref, so an inline handler is safe.
+   */
+  onDraftChange?: (draft: CareerTeamAdded | null) => void;
 }) {
   const suffix = label ? ` for ${label}` : "";
   const initialName = initialTeam ?? "";
@@ -554,6 +563,31 @@ export default function CareerTeamEntry({
     toNum === undefined ||
     (Number.isInteger(toNum) && toNum <= maxYear && toNum >= fromNum);
   const canAdd = trimmedName !== "" && fromValid && toValid && teamKnown && !disabled;
+
+  /* NEO-657 — what + Add would report, whether or not the host is `disabled`. */
+  const draftReady = trimmedName !== "" && fromValid && toValid && teamKnown;
+  const draftKey = draftReady
+    ? `${resolvedTeamId ?? ""}|${trimmedName}|${fromNum}|${toNum ?? ""}`
+    : "";
+  const onDraftChangeRef = useRef(onDraftChange);
+  useEffect(() => {
+    onDraftChangeRef.current = onDraftChange;
+  }, [onDraftChange]);
+  useEffect(() => {
+    onDraftChangeRef.current?.(
+      draftKey === ""
+        ? null
+        : {
+            name: trimmedName,
+            fromYear: fromNum,
+            ...(toNum !== undefined ? { toYear: toNum } : {}),
+            ...(resolvedTeamId ? { teamId: resolvedTeamId } : {}),
+          },
+    );
+    // The key stands for the entry; the values it is made of are not deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey]);
+  useEffect(() => () => onDraftChangeRef.current?.(null), []);
 
   const commit = () => {
     if (!canAdd) return;

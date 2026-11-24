@@ -1821,3 +1821,52 @@ describe("CareerTeamEntry — whose stint, and only teams that exist (NEO-591)",
     expect((addButton() as HTMLButtonElement).disabled).toBe(true);
   });
 });
+
+describe("CareerTeamEntry — what + Add would add, reported to the host (NEO-657)", () => {
+  const PADRES = "t-padres" as unknown as Id<"teams">;
+  const fromBox = () => screen.getByLabelText("From year") as HTMLInputElement;
+  const toBox = () => screen.getByLabelText("To year (optional)") as HTMLInputElement;
+  const mount = (onDraftChange: (d: unknown) => void) =>
+    render(
+      <CareerTeamEntry
+        sportId={SPORT_ID}
+        stagedNames={[]}
+        knownTeamsOnly
+        onAdd={vi.fn()}
+        onDraftChange={onDraftChange}
+        load={{ token: 1, name: "San Diego Padres", teamId: PADRES, fromYear: 2026, toYear: 2026 }}
+      />,
+    );
+
+  it("opening with a stint loaded reports it at once, saved team included", () => {
+    const onDraftChange = vi.fn();
+    mount(onDraftChange);
+    expect(onDraftChange).toHaveBeenLastCalledWith({
+      name: "San Diego Padres",
+      fromYear: 2026,
+      toYear: 2026,
+      teamId: PADRES,
+    });
+  });
+
+  it("follows a changed year, and reports null while the years are not addable", () => {
+    const onDraftChange = vi.fn();
+    mount(onDraftChange);
+    fireEvent.change(fromBox(), { target: { value: "2025" } });
+    expect(onDraftChange).toHaveBeenLastCalledWith({
+      name: "San Diego Padres",
+      fromYear: 2025,
+      toYear: 2026,
+      teamId: PADRES,
+    });
+    fireEvent.change(toBox(), { target: { value: "2020" } });
+    expect(onDraftChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("reports null when the form goes away", () => {
+    const onDraftChange = vi.fn();
+    const view = mount(onDraftChange);
+    view.unmount();
+    expect(onDraftChange).toHaveBeenLastCalledWith(null);
+  });
+});

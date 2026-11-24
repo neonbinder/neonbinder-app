@@ -10,24 +10,47 @@ import { useInlinePart } from "../inline-stack";
  * added (`knownTeamsOnly`); a team it lacks is made first, in the row's New
  * team form. `onAdd` writes the stint to the player (`players.addStint`) and
  * resolves true when it went through, which closes the form.
+ *
+ * NEO-657 — `prefill` opens the form already holding a stint (a team NB holds,
+ * and its years). It is the same form and the same `onAdd`: the operator
+ * changes what is wrong, then "+ Add" (or Enter on a year) writes it, and
+ * closing it (Esc) writes nothing. While it is that open prefilled form,
+ * `onDraft` hears what + Add would add, so the walk's Save & next can add it as
+ * shown. Closing it, or reopening with "+ Add stint", is a plain empty form
+ * with no `onDraft`.
  */
+export type StintPrefill = {
+  teamId: Id<"teams">;
+  /** The team's full name, as the form shows it. */
+  name: string;
+  fromYear: number;
+  toYear?: number;
+};
+
 export default function AddStintEntry({
   playerName,
   sportId,
   leafId,
   disabled,
   onAdd,
+  prefill,
+  onDraft,
 }: {
   playerName: string;
   sportId: Id<"selectorOptions">;
   leafId: Id<"selectorOptions">;
   disabled: boolean;
   onAdd: (entry: CareerTeamAdded & { teamId: Id<"teams"> }) => Promise<boolean>;
+  prefill?: StintPrefill;
+  onDraft?: (draft: (CareerTeamAdded & { teamId: Id<"teams"> }) | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(prefill !== undefined);
+  /** The form is the one opened with the prefill and nothing has closed it. */
+  const [prefilled, setPrefilled] = useState(prefill !== undefined);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const close = () => {
     setOpen(false);
+    setPrefilled(false);
     requestAnimationFrame(() => buttonRef.current?.focus({ preventScroll: true }));
   };
   const scopeRef = useRef<HTMLDivElement | null>(null);
@@ -44,6 +67,19 @@ export default function AddStintEntry({
           label={playerName}
           disabled={disabled}
           onDone={close}
+          {...(prefilled && prefill
+            ? {
+                load: {
+                  token: 1,
+                  name: prefill.name,
+                  teamId: prefill.teamId,
+                  fromYear: prefill.fromYear,
+                  ...(prefill.toYear !== undefined ? { toYear: prefill.toYear } : {}),
+                },
+                onDraftChange: (draft: CareerTeamAdded | null) =>
+                  onDraft?.(draft?.teamId ? { ...draft, teamId: draft.teamId } : null),
+              }
+            : {})}
           onAdd={async (entry) => {
             if (!entry.teamId) return;
             const ok = await onAdd({ ...entry, teamId: entry.teamId });
