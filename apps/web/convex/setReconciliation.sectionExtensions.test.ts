@@ -19,8 +19,8 @@ describe("matchChecklistSections: several extensions of a name are a tie", () =>
     const result = matchChecklistSections(
       [sec("Future Stars")],
       [
-        { target: bscItem("a"), labels: ["Future Stars Die-Cut"] },
-        { target: bscItem("b"), labels: ["Future Stars Gold Foil"] },
+        { target: bscItem("a"), labels: ["Future Stars Die"] },
+        { target: bscItem("b"), labels: ["Future Stars Gold"] },
       ],
     );
     expect(result.matches).toEqual([]);
@@ -47,8 +47,8 @@ describe("matchChecklistSections: several extensions of a name are a tie", () =>
     const result = matchChecklistSections(
       [sec("Future Stars")],
       [
-        { target: bscItem("a"), labels: ["Future Stars Die-Cut"] },
-        { target: bscItem("b"), labels: ["Future Stars Gold Foil"] },
+        { target: bscItem("a"), labels: ["Future Stars Die"] },
+        { target: bscItem("b"), labels: ["Future Stars Gold"] },
         { target: bscItem("c"), labels: ["Future Stars"] },
       ],
     );
