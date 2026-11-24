@@ -1,8 +1,12 @@
 // ONE FEATURE (NEO-645 Q1 = A, the career tier): a card that would save with no team, whose player
 // has exactly ONE team in the career window of the set's year ([year - 1, year]), gets that team
-// written by the commit itself. The card is not stopped for it: its Team tile is plain, names the
-// team and carries the purple note "Team filled from the player's career". A player with TWO teams
-// in the window gets nothing written, and his card's Team tile is pink, asking.
+// written by the commit itself. The card is not stopped for it: its Team tile is plain and names the
+// team. A player with TWO teams in the window gets nothing written, and his card's Team tile is pink,
+// asking, with both career teams offered and none preselected.
+//
+// NEO-656 (J6, Jason 2026-11-23): the purple "Team filled from the player's career" note is gone. A
+// note nothing on the card can rebuild does not exist: the card holds the team, not who wrote it. The
+// fill itself is unchanged. The spec asserts the fill AND the note's absence on the filled card.
 //
 // The rule: convex/features/teamFillOnCommit.ts `planCardFill` (career tier) over
 // convex/lib/teamFill.ts `careerTeamVerdict` ("oneTeamInWindow"), applied in the commit's insert path
@@ -10,18 +14,20 @@
 // order: batch, then stored, then career). Rule 8 is not exercised: the checklist's team cells are
 // BLANK, which is no claim (a "No Team" cell would be one and would hold the fill back).
 //
-// Why card #1 is in the walk at all: the fill is a purple note and never a stop, so a filled card
-// with nothing else is never shown (the note renders only in the walk's tiles). Card #1's filled
+// Why card #1 is in the walk at all: the fill is never a stop, so a filled card with nothing else is
+// never shown. Card #1's filled
 // team is a single token padded to 70 characters (the `CNAL` trick, SET-REGISTRY), so its listing
 // title has to give the team up: a BLUE "Listing title" check, nothing pink. That blue item is the
 // card's one reason to be in the walk; the Team tile is what this spec reads.
 //
 // Positive and negative (R2), one fetch:
 //   - #1 `Ann Tfp<token>`: one stint, the long team, 2020-2025. One team in [2024, 2025]: FILLED.
-//     Team tile not pink, group `Team <long team>`, the purple note, Save & next usable.
+//     Team tile not pink, group `Team <long team>`, no note, Save & next usable. The one stint covers
+//     2025, so the card has no live Career gap and Save & next writes nothing to the career. Its cut
+//     title stays blue after Save & next (nothing records it as seen, NEO-656 B20).
 //   - #2 `Bob Tfq<token>`: two stints, `Tfm<token>` 2020-2025 and `Tfn<token>` 2025. Two teams in
 //     the window (the commit passes no league rank, so nothing breaks the tie): NOT filled. Team
-//     tile pink, both career teams offered as chips, no fill note. Both stints cover 2025 itself on
+//     tile pink, both career teams offered as chips under the tie heading, none preselected. Both stints cover 2025 itself on
 //     purpose: the tile's chips read the set year alone (`cardChecklist.suggestedTeamsForCard`), so
 //     with a stint ending in 2024 the tile would offer the other team alone. This spec proves the
 //     COMMIT's rule; which chips the tile preselects is the tile's own rule, not read here.
@@ -45,6 +51,7 @@ import { drillToCustom, escapeRe, setBuilderReady, syncChecklistButton } from ".
 import {
   expectCardSettled,
   expectCardsLeft,
+  expectTidyEndScreen,
   finishTidyWalk,
   mustFixLine,
   pinkTile,
@@ -60,10 +67,10 @@ import type { Page } from "@playwright/test";
 
 const YEAR = "2025";
 
-/** The purple note on a card whose team the commit filled from the career (tidy/parts/copy.ts `teamFillText`). */
-const CAREER_FILL_NOTE = "Team filled from the player's career";
-/** Either fill note: the negative card must carry neither. */
-const ANY_FILL_NOTE = /^Team filled from the player's (career|other cards)$/;
+/** The retired purple fill notes ("Team filled from the player's career / other cards", J6): no card shows one. */
+const ANY_FILL_NOTE = /Team filled from/;
+/** The Team tile's career heading when two teams cover the season (tidy/parts/copy.ts `TIE_HEADING`). */
+const TIE_HEADING = "From the career. More than one team that season, so pick the one on the card.";
 
 /**
  * On /admin/players (loaded): add `name` under `sport` and give him one stint per entry, each team
@@ -106,7 +113,7 @@ async function addPlayerWithNewTeamStints(
 }
 
 test(
-  "Tidy Up — a teamless card whose player has one team in the set year's window gets that team at the commit with a purple note and no stop; two teams in the window are left for the operator",
+  "Tidy Up — a teamless card whose player has one team in the set year's window gets that team at the commit, with no stop and no note; two teams in the window are left for the operator",
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const T = env.ATTEMPT_TOKEN;
@@ -158,7 +165,9 @@ test(
     await expect(team).not.toHaveAccessibleDescription(/To fix/);
     const filled = team.getByRole("group", { name: `Team ${LONG}`, exact: true });
     await expect(filled.getByText(LONG, { exact: true })).toBeVisible();
-    await expect(team.getByRole("note").filter({ hasText: ANY_FILL_NOTE })).toHaveText(CAREER_FILL_NOTE);
+    // J6: no note says who filled it, in the tile or anywhere in the walk (the team line above is the positive).
+    await expect(team.getByRole("note")).toHaveCount(0);
+    await expect(walk.getByText(ANY_FILL_NOTE)).toHaveCount(0);
     await expect(team.getByRole("button", { name: "No team on this card", exact: true })).toHaveCount(0);
     // The card's one stop is the blue title cut, which the long team caused.
     await expect(tidyTile(page, "Listing title")).toHaveAccessibleDescription(/To check/);
@@ -172,19 +181,23 @@ test(
     await expectCardsLeft(page, 1);
     await expect(pinkTile(page, "Team"), "no team was written, so the operator is asked").toHaveCount(1);
     await expect(team).toHaveAccessibleDescription(/To fix/);
+    // The career group reads the player's live stints: both teams, the tie heading, none suggested.
+    await expect(team.getByText(TIE_HEADING, { exact: true })).toBeVisible();
     for (const name of [EARLY, LATE]) {
       await expect(
         team.getByRole("button", { name: new RegExp(`^${escapeRe(name)}( · .+)?$`) }),
         `${name} is offered from the career`,
       ).toBeVisible();
     }
-    await expect(team.getByRole("note").filter({ hasText: ANY_FILL_NOTE })).toHaveCount(0);
+    await expect(team.getByRole("button", { name: /, suggested( · .+)?$/ }), "a tie preselects nothing").toHaveCount(0);
+    await expect(walk.getByText(ANY_FILL_NOTE)).toHaveCount(0);
     await expect(team.getByRole("button", { name: "No team on this card", exact: true })).toBeVisible();
     await expect(mustFixLine(page)).toBeVisible();
     await expect(tidyFooterButton(page, "saveAndNext", { usable: true })).toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, two career teams in the window, nothing filled" });
     await skipCard(page);
-    await expect(walk.getByText(/^1 card skipped, not ready to list/)).toBeVisible();
+    // B20: by live level. #2 is still pink (skipped); #1's cut title is still blue (nothing records it seen).
+    await expectTidyEndScreen(page, { fixed: 0, skipped: 1, stillToCheck: 1 });
     await finishTidyWalk(page);
 
     // ── Read back: #1 carries the long team, #2 carries none ──

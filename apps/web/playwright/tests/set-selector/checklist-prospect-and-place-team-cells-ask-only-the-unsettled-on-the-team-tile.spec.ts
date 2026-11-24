@@ -9,7 +9,9 @@
 //     without asking (its Team tile is plain; the card is in the walk only for its blue Career
 //     check: Colt Keith never played for the Sooners);
 //   - "Prospect (Dbp<token>)" (#3): X is a team NB has no row for, so it is a pink printed-name row
-//     like any unknown team, answered by "+ New team" (the form opens on X) and "Create team";
+//     like any unknown team, answered by "+ New team" (the form opens on X) and "Create team". The
+//     new team is in no career, so the moment it is on the card his Career group turns up blue: the
+//     gap is read from live data (NEO-656 J5/B22), not stored at the commit;
 //   - "Cincinnati Reds / Prospect (Oklahoma Sooners)" (#6): a mixed cell. The preview reads it as
 //     printed (before 1a4def6c it read "Prospect (Cincinnati Reds / Oklahoma Sooners)"), and the
 //     card carries both teams and is a Prospect Card (plain Team tile, blue Career check);
@@ -18,7 +20,7 @@
 //     no walk stop;
 //   - "Chicago" on a second Seiya Suzuki card (#7): five MLB teams are located there and his one
 //     stint among them is the Cubs, so his card commits with the Chicago Cubs and makes no walk
-//     stop (NEO-645: a link NeonBinder made is a purple note at most, never a stop);
+//     stop (a link NeonBinder made is never a stop, and no note says NB made it: NEO-656 J1/J6);
 //   - "New York" (#5): several MLB teams are located there and Seiya Suzuki (a Cub) has a stint on
 //     none of them, so nothing settles it. The Team tile asks "Which team: New York" with the
 //     place's MLB teams of every era (the Mets and the Yankees, which the set year would not
@@ -27,8 +29,8 @@
 //     team claim left (NEO-639: only a team the data names holds a guess back), so his other card
 //     in the set (#7, the Cubs) PRESELECTS the Cubs ("Seiya Suzuki played here", "Suggested from
 //     the player's other cards": the wizard's batch evidence leads, NEO-645 C8), never written: the
-//     tile stays pink and Save & next held until a team is clicked (which saves it). The operator skips it; it commits
-//     teamless and stays badged (the commit wrote no Cubs either: "New York" was a claim then).
+//     tile stays pink and Save & next held until a chip is clicked (a click saves it, J9). The
+//     operator skips it; it stays teamless and badged (the commit wrote no Cubs either: "New York" was a claim then).
 // The leaf's checklist preview reads each claim as printed, never "We'll look it up": none of
 // these cards is looked up.
 // R2: the walk's stops are proved by the exact set of card numbers it shows AND its count
@@ -43,10 +45,11 @@
 // (#6, Matt McLain) carries the mixed cell and a seventh (#7, Seiya Suzuki again) prints Chicago.
 // Uploaded through the leaf's "Add the official checklist" and synced: a checklist-only fetch (the
 // set has no marketplace id; the checklist is the one source), so the Sync commits the cards and
-// the walk opens on its own. The blue Career checks are answered "Keep as is" before Save & next:
-// since NEO-645 C8, Save & next with a career gap open ADDS the stint to the player (main's
-// default), and the catalogue players' careers are not this spec's to write (a written Sooners
-// stint would also drop that card's stop on the next attempt).
+// the walk opens on its own. The blue Career cards are SKIPPED: Save & next with a career gap open
+// ADDS the stint to the player (main's default, NEO-656 D14), there is no "Keep as is" any more
+// (J6), and the catalogue players' careers are not this spec's to write (a written Sooners stint
+// would also drop that card's stop on the next attempt). Nothing records a card as seen, so the end
+// screen counts each skipped blue card "still to check" (B20).
 //
 // FIXTURE (R7a, SET-REGISTRY.md prefix `psp`): ONE hand-made set per attempt, `psp<token>`, under
 // the REAL `Baseball` › 2024 › `Topps` (the team and player lookups read the set's sport and
@@ -77,12 +80,13 @@ import {
 import {
   expectCardSettled,
   expectCardsLeft,
+  expectTidyEndScreen,
   finishTidyWalk,
   mustFixLine,
   pinkTile,
-  saveAndNext,
   settleWalkAfterCommit,
   skipCard,
+  suggestedTeamChip,
   tidyCardIdentity,
   tidyFooterButton,
   tidyTile,
@@ -216,15 +220,16 @@ test(
         const career = tidyTile(page, "Career");
         await expect(career).toHaveAccessibleDescription(/To check/);
         await expect(mustFixLine(page)).toHaveCount(0);
-        // One gap, the Sooners (each player's catalogue career holds his pro club only). C8: Save &
-        // next would add it, so "Keep as is" answers it first; it acts at once and the tile goes.
+        // One gap, the Sooners (each player's catalogue career holds his pro club only). Save & next
+        // would add it to a catalogue player, and there is no "Keep as is" (J6): Skip, writing nothing.
         const player = number === KNOWN.number ? KNOWN.player : MIXED.player;
         const line = career.getByRole("group", { name: `Career ${player}`, exact: true });
         await expect(line).toHaveCount(1);
+        await expect(line.getByText(`No ${SOONERS} in the career by ${target.year}.`, { exact: true })).toBeVisible();
         await expect(line.getByText("Save & next adds it to the career.", { exact: true })).toBeVisible();
-        await line.getByRole("button", { name: "Keep as is", exact: true }).click();
-        await expect(career, "Keep as is answered the career gap at once").toHaveCount(0);
-        await saveAndNext(page);
+        await expect(line.getByRole("button", { name: "Add to career", exact: true })).toBeVisible();
+        await expect(career.getByRole("button", { name: "Keep as is" })).toHaveCount(0);
+        await skipCard(page);
         continue;
       }
 
@@ -244,7 +249,18 @@ test(
         await expect(row.getByRole("button", editRow(minted))).toBeVisible();
         await expect(row.getByRole("button", { name: "Not a team", exact: true })).toHaveCount(0);
         await expect(pinkTile(page, "Team")).toHaveCount(0);
-        await saveAndNext(page);
+        // J5/B22: the gap is live. The team just saved is in no career, so his Career group turns up
+        // blue on this card now (nothing pink; Save & next is usable, and would add the stint).
+        const career = tidyTile(page, "Career");
+        await expect(career).toHaveAccessibleDescription(/To check/);
+        await expect(
+          career
+            .getByRole("group", { name: `Career ${UNKNOWN.player}`, exact: true })
+            .getByText(`No ${minted} in the career by ${target.year}.`, { exact: true }),
+        ).toBeVisible();
+        await expect(tidyFooterButton(page, "saveAndNext", { usable: true })).toBeVisible();
+        // A catalogue player's career is not this spec's to write: Skip (the team stays saved).
+        await skipCard(page);
         continue;
       }
 
@@ -270,14 +286,14 @@ test(
       // "Not a team": New York is the operator's ruling. The card is now a card with no team and no
       // team claim, so the team on his other card in the set (#7, the Cubs) is preselected, with its
       // provenance (the batch's evidence before his career, as main's wizard; NEO-645 C8). A
-      // preselect is not a write: the tile stays pink and Save & next held until a team is clicked
-      // (which saves it) or "No team on this card" is pressed.
+      // preselect is not a write: the tile stays pink and Save & next held until a chip is clicked
+      // (a click saves it, J9; there is no Save button) or "No team on this card" is pressed.
       await place.getByRole("button", { name: "Not a team", exact: true }).click();
       await expect(place.getByText(`${AMBIGUOUS.cell} is not a team.`, { exact: true })).toBeVisible();
       await expect(place.getByRole("button", editRow(AMBIGUOUS.cell))).toBeVisible();
       await expect(placeTeams).toHaveCount(0);
       await expect(teamTile.getByText("Suggested from the player's other cards.", { exact: true })).toBeVisible();
-      const cubs = teamTile.getByRole("button", { name: `${BY_PLAYER.team}, suggested · ${AMBIGUOUS.player} played here`, exact: true });
+      const cubs = suggestedTeamChip(page, BY_PLAYER.team, `${AMBIGUOUS.player} played here`);
       await expect(cubs).toBeVisible();
       await expect(teamTile.getByRole("button", { name: /^Save teams?$/ })).toHaveCount(0);
       await expect(teamTile.getByRole("button", { name: "No team on this card", exact: true })).toBeVisible();
@@ -289,12 +305,14 @@ test(
     }
     expect([...seen].sort(), "the walk stopped on exactly the unsettled and the blue cards").toEqual([...STOPS].sort());
 
-    // The end screen counts the one card skipped. Back is the last card shown, Forward the end again.
-    await expect(walk.getByText("1 card skipped, not ready to list", { exact: true })).toBeVisible();
+    // The end screen counts each walked card by its live level (B20): #5 still pink (skipped), the
+    // three Career gaps (#2, #3, #6) still blue. Back is the last card shown, Forward the end again.
+    const END = { fixed: 0, skipped: 1, stillToCheck: 3 };
+    await expectTidyEndScreen(page, END);
     await page.goBack();
     await expect(tidyCardIdentity(page)).toHaveText(lastIdentity);
     await page.goForward();
-    await expect(walk.getByText("1 card skipped, not ready to list", { exact: true })).toBeVisible();
+    await expectTidyEndScreen(page, END);
     await finishTidyWalk(page);
 
     // ── 4. Read back: the rows, then each card's drawer ──

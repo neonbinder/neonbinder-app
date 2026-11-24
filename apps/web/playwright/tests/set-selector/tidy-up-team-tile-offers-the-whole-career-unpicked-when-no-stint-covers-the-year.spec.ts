@@ -34,7 +34,7 @@
 //
 // R3 - not here: "Other team…" search picks (`tidy-up-team-tile-other-team-links-existing-teams-…`),
 // a career chip PRESELECTED by a covering stint (`checklist-prospect-and-place-team-cells-…`), the
-// Q1-A fill at the commit (`tidy-up-team-fill-writes-the-one-career-team-with-a-note`), Skip / Esc /
+// Q1-A fill at the commit (`tidy-up-team-fill-writes-the-one-career-team-in-the-window`), Skip / Esc /
 // Enter (`tidy-up-walk-one-card-at-a-time`). The listing's era chips ("The listing names …") need a
 // BSC team hint, written only on a marketplace-linked card: unit-tested.
 //

@@ -46,5 +46,14 @@ After NEO-656 (2026-11-24) the walk's "N cards left" and the pill are live count
   reasons); in `lib/cards/card-search.ts` drop `live` from `deriveCardAttention(card, live)` (the
   "attention" search count falls below the pill's).
 
+- **A team created in the walk turns the card blue at once** (the minted team is in no career):
+  after "+ New team" › "Create team" on a single-player catalogue card, expect the Career tile
+  ("No <team> in the career by <year>.") and Skip; Save & next would write the stint. Plant that
+  proves the live read, not the open-time one: in `useLeafCareerGaps.ts` change the `pairs` memo deps
+  `[cards]` to `[(cards ?? []).length]` (a frozen `[cards === undefined]` freezes on the empty list
+  and fails at the cards-left count instead).
+- **Retired purple fill note (J6):** prove the absence with `tile.getByRole("note")` count 0 beside
+  the filled team's group; plant a `<p role="note">` under TeamTile's unrowed team line.
+
 **How to apply:** rewriting any NEO-645 walk spec whose counts assumed fan-out or a sticky blue.
 Related: [[neo656-tidy-walk-helpers-skip-apply-end-screen]], [[patterns-walk-keeps-a-card-that-clears-on-screen]].
