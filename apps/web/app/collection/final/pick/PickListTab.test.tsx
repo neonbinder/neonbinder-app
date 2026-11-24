@@ -47,6 +47,16 @@ function renderPick(url = PICK_URL) {
   );
 }
 
+// NEO-616: FinalCollectionPage loads the Pick List with React.lazy, so the first
+// test to open the tab paid the cold dynamic import (a ~2000-line module and its
+// graph) inside findByRole's 1 s window, and a loaded full run lost that race.
+// Load the modules once here (a hook has its own 60 s budget, not a test's 1 s
+// wait or 5 s test) and every test finds them already resolved.
+beforeAll(async () => {
+  await import("./PickListTab");
+  await import("./convexPickStore");
+}, 60_000);
+
 const pageUrl = () => new URLSearchParams(screen.getByRole("status", { name: "Page URL" }).textContent!.split("?")[1]);
 const toggle = (name: RegExp) => screen.getByRole("button", { name });
 

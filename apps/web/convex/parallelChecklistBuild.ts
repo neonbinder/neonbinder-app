@@ -136,6 +136,8 @@ import {
   teamDefaultOf,
 } from "./lib/selectorTeams";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, blocksParallelBuild } from "./features/cardAttention";
+import { preferCardNumber } from "../lib/cards/card-number";
+import { checklistRowFactsForCards, type ChecklistRowFacts } from "./lib/variantPrintRun";
 import { listCardPrintedNames } from "./cardPrintedNames";
 import {
   cardKey,
@@ -1760,6 +1762,12 @@ export const insertParallelCardsPage = internalMutation({
         bsc: v.optional(copyLinkValidator),
         sportlots: v.optional(copyLinkValidator),
         printRun: v.optional(v.number()),
+        /**
+         * NEO-616 — the parallel's own number, for a card whose marketplace or
+         * checklist number differs from its source's only in the prefix. Absent:
+         * the copy takes its source's number.
+         */
+        cardNumber: v.optional(v.string()),
         keepSku: v.optional(v.string()),
       }),
     ),
@@ -2059,7 +2067,7 @@ export const insertParallelCardsPage = internalMutation({
           ...(row.cardOverride ? { cardOverride: true as const } : {}),
         })),
         selectorOptionId: args.parallelId,
-        cardNumber: source.cardNumber,
+        cardNumber: copy.cardNumber ?? source.cardNumber,
         cardName: source.cardName,
         // NEO-254 — the pair, together (the source's, or the parallel's
         // default player on a copy that had none).
@@ -2701,6 +2709,38 @@ export const buildParallelChecklist = action({
       };
     }
 
+    // NEO-616 — where SportLots states no run for a card, the parallel's OWN
+    // linked checklist rows may (a file such as a foil x colour layout prints
+    // one per card); and a row whose number differs from its source card's
+    // only in the prefix gives the copy that number (Jason, 2026-11-24). Read
+    // for every build, SportLots runs or not: a stored checklist too big to
+    // read, or a read that fails, leaves every run and number as it would have
+    // been without the checklist. SportLots wins a run where it has one.
+    let checklistFacts = new Map<Id<"cardChecklist">, ChecklistRowFacts>();
+    try {
+      const stored = await ctx.runQuery(internal.publishedChecklists.rowsForLeaf, {
+        selectorOptionId: args.parallelId,
+      });
+      if (stored.kind === "rows" && stored.rows.length > 0) {
+        checklistFacts = checklistRowFactsForCards(
+          insertCards.cards.map((c) => ({
+            id: c._id,
+            cardNumber: c.cardNumber,
+            players: c.namesOnCard,
+          })),
+          stored.rows,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          msg: "parallel_checklist_runs_unread",
+          parallelId: args.parallelId,
+          error: err instanceof Error ? err.name : "unknown",
+        }),
+      );
+    }
+
     type Copy = {
       sourceCardId: Id<"cardChecklist">;
       expect: { cardNumber: string; cardName: string; namesOnCard: string[] };
@@ -2708,6 +2748,8 @@ export const buildParallelChecklist = action({
       bsc?: { ref: string; setId?: string };
       sportlots?: { ref: string; setId?: string };
       printRun?: number;
+      /** NEO-616 — the parallel's own number, when it differs from its source's only in the prefix. */
+      cardNumber?: string;
       keepSku?: string;
       variationOfCardId?: Id<"cardChecklist">;
       sortOrder: number;
@@ -2736,6 +2778,28 @@ export const buildParallelChecklist = action({
       };
       const bsc = link("bsc");
       const sl = link("sportlots");
+      // NEO-616 — a card linked by a number that differs from its source's
+      // only in the prefix keeps that number (the parallel's own printing),
+      // not the source's. Both sides: the number NB prefers (letters, then
+      // digits, BSC first on a tie). Else the parallel's own checklist row.
+      const prefixNumberOn = (side: PlatformSide): string | undefined => {
+        const outcome = outcomeOn(side);
+        return outcome?.kind === "linked" && outcome.via === "prefix"
+          ? outcome.card.cardNumber.trim()
+          : undefined;
+      };
+      const bscNumber = prefixNumberOn("bsc");
+      const slNumber = prefixNumberOn("sportlots");
+      const candidateNumber =
+        bscNumber !== undefined && slNumber !== undefined
+          ? preferCardNumber(bscNumber, slNumber)
+          : (bscNumber ?? slNumber ?? checklistFacts.get(card._id)?.cardNumber);
+      // Wrapper rule 7 (Jason, 2026-11-18): letters over digits. A side that
+      // printed a bare "1" (SportLots strips prefixes) never replaces the
+      // source's lettered "89B-1"; a lettered "T88-12" does replace a bare "12".
+      const preferredNumber =
+        candidateNumber !== undefined ? preferCardNumber(candidateNumber, card.cardNumber) : undefined;
+      const ownNumber = preferredNumber !== card.cardNumber ? preferredNumber : undefined;
       // J2 — only when a side was asked; an unlinked copy takes every card.
       if (!bsc && !sl && toFetch.length > 0) {
         listPush(lists.leftOff, label);
@@ -2764,9 +2828,15 @@ export const buildParallelChecklist = action({
         }),
         ...(bsc ? { bsc: { ref: bsc.ref, ...(bsc.setId ? { setId: bsc.setId } : {}) } } : {}),
         ...(sl ? { sportlots: { ref: sl.ref, ...(sl.setId ? { setId: sl.setId } : {}) } } : {}),
-        // M3 — the print run is the PARALLEL's, and only SportLots states it
-        // per card. NB has no parallel-level print run to fall back on.
-        ...(sl?.printRun !== undefined ? { printRun: sl.printRun } : {}),
+        // M3 — the print run is the PARALLEL's. SportLots states it per card
+        // and wins; failing that, the parallel's own linked checklist rows
+        // (NEO-616).
+        ...(sl?.printRun !== undefined
+          ? { printRun: sl.printRun }
+          : checklistFacts.get(card._id)?.printRun !== undefined
+            ? { printRun: checklistFacts.get(card._id)!.printRun }
+            : {}),
+        ...(ownNumber !== undefined ? { cardNumber: ownNumber } : {}),
         ...(card.variationOfCardId ? { variationOfCardId: card.variationOfCardId } : {}),
         sortOrder: card.sortOrder,
       });
@@ -2911,6 +2981,7 @@ export const buildParallelChecklist = action({
             ...(c.bsc ? { bsc: c.bsc } : {}),
             ...(c.sportlots ? { sportlots: c.sportlots } : {}),
             ...(c.printRun !== undefined ? { printRun: c.printRun } : {}),
+            ...(c.cardNumber !== undefined ? { cardNumber: c.cardNumber } : {}),
             ...(c.keepSku ? { keepSku: c.keepSku } : {}),
           })),
           remap,
@@ -2953,6 +3024,22 @@ export const buildParallelChecklist = action({
       missing + changedSources > 0
         ? classify(oldRefsBySide, landedRefs)
         : classified;
+
+    // NEO-616 — the parallel's own print run, from the cards it now holds.
+    // The build is already done: a failure here is logged, never the build's.
+    try {
+      await ctx.runMutation(internal.variantPrintRun.refreshVariantPrintRun, {
+        selectorOptionId: args.parallelId,
+      });
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          msg: "parallel_print_run_refresh_failed",
+          parallelId: args.parallelId,
+          error: err instanceof Error ? err.name : "unknown",
+        }),
+      );
+    }
 
     const copied = newIdOf.size;
     const result: BuildParallelResult = {

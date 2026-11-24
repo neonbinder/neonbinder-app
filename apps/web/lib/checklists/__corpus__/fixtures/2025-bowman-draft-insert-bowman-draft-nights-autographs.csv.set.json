@@ -1,0 +1,30 @@
+{
+  "file": "2025-bowman-draft-insert-bowman-draft-nights-autographs.csv",
+  "mode": "set",
+  "options": {"setYear":"2025","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"BDNA-EW,Eli Willits,Washington Nationals","reason":"Not under any section heading"},
+      {"line":3,"text":"BDNA-GF,Gavin Fien,Texas Rangers","reason":"Not under any section heading"},
+      {"line":4,"text":"BDNA-KA,Kade Anderson,Seattle Mariners","reason":"Not under any section heading"},
+      {"line":5,"text":"BDNA-SH,Seth Hernandez,Pittsburgh Pirates","reason":"Not under any section heading"},
+      {"line":6,"text":"BDNA-XN,Xavier Neyens,Houston Astros","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"BDNA-EW,Eli Willits,Washington Nationals","reason":"Not under any section heading"},
+      {"line":3,"text":"BDNA-GF,Gavin Fien,Texas Rangers","reason":"Not under any section heading"},
+      {"line":4,"text":"BDNA-KA,Kade Anderson,Seattle Mariners","reason":"Not under any section heading"},
+      {"line":5,"text":"BDNA-SH,Seth Hernandez,Pittsburgh Pirates","reason":"Not under any section heading"},
+      {"line":6,"text":"BDNA-XN,Xavier Neyens,Houston Astros","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

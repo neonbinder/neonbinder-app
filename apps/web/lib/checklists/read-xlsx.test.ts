@@ -439,6 +439,18 @@ describe("readXlsx — refusals", () => {
   });
 });
 
+/**
+ * NEO-616: CPU time this process has spent (user + system, ms), not wall time.
+ * These budgets guard against quadratic or amplified work; a wall clock also
+ * counts the time a loaded parallel run leaves the worker waiting for a core
+ * (5.4 s against a 5 s limit), which says nothing about the parser. Vitest's
+ * `forks` pool gives each test file its own process, so nothing else is counted.
+ */
+function cpuMs(): number {
+  const { user, system } = process.cpuUsage();
+  return (user + system) / 1000;
+}
+
 describe("readXlsx — hostile shapes stay bounded", () => {
   /** A sheet of `rows` rows, each `cols` cells all pointing at shared string 0. */
   function amplifier(rows: number, cols = 50): Uint8Array {
@@ -451,9 +463,9 @@ describe("readXlsx — hostile shapes stay bounded", () => {
     const zip = amplifier(1000);
     expect(zip.length).toBeLessThan(8 * 1024);
     const heapBefore = process.memoryUsage().heapUsed;
-    const started = performance.now();
+    const started = cpuMs();
     const read = readXlsx(zip);
-    const ms = performance.now() - started;
+    const ms = cpuMs() - started;
     const heapGrowth = process.memoryUsage().heapUsed - heapBefore;
     if (!read.ok) throw new Error(`refused: ${read.reason}`);
     expect(read.rows).toHaveLength(1000);
@@ -492,11 +504,11 @@ describe("readXlsx — hostile shapes stay bounded", () => {
     );
   });
 
-  /** Reads `zip` and returns how long it took; it must read, not throw. */
+  /** Reads `zip` and returns the CPU time it took; it must read, not throw. */
   function timed(zip: Uint8Array): { ms: number; read: ReturnType<typeof readXlsx> } {
-    const started = performance.now();
+    const started = cpuMs();
     const read = readXlsx(zip);
-    return { ms: performance.now() - started, read };
+    return { ms: cpuMs() - started, read };
   }
 
   // 100,000 unclosed tags: before the cursor scan each one re-scanned the

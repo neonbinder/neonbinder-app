@@ -504,6 +504,77 @@ describe("buildParallelChecklist — the happy path", () => {
     // M5/M3 — the linked SportLots card is the only source of printRun.
     expect(copy.printRun).toBe(99);
     expect(copy.selectorOptionId).toBe(parallelId);
+    // The same number on both: the copy keeps the insert's own.
+    expect(copy.cardNumber).toBe("1");
+  });
+
+  test("a card the marketplace numbers with another prefix is copied under the parallel's own number (NEO-616)", async () => {
+    // Jason, 2026-11-24: "if just the prefix varies then it is still a
+    // prallel and should keep its proper number not reuse the base".
+    const t = convexTest(schema, modules);
+    const { sport, insert } = await seedTree(t);
+    const parallelId = await seedParallel(t, insert);
+    const griffey = await insertPlayer(t, sport, "Ken Griffey Jr.");
+    await insertCard(t, insert, {
+      cardNumber: "89B-1",
+      cardName: "Ken Griffey Jr.",
+      playerIds: [griffey],
+      playerLinks: [{ playerId: griffey, nameOnCard: "Ken Griffey Jr." }],
+    });
+    bscState.cards = [
+      {
+        cardNumber: "89M-1",
+        cardName: "Ken Griffey Jr.",
+        players: ["Ken Griffey Jr."],
+        platformRef: "bsc-ref-1",
+        sourceBscSetSlug: "anime-kanji",
+      },
+    ];
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
+
+    expect(result.status).toBe("built");
+    expect(result.copied).toBe(1);
+    const copies = await cardsOn(t, parallelId);
+    expect(copies).toHaveLength(1);
+    expect(copies[0].cardNumber).toBe("89M-1");
+    expect(copies[0].platformData.bsc).toEqual({ ref: "bsc-ref-1", src: "b0" });
+  });
+
+  test("a marketplace's bare number links the card but never replaces a lettered one (NEO-616, rule 7)", async () => {
+    // Wrapper rule 7 (Jason, 2026-11-18): letters over digits; a side that
+    // stripped the prefix "just took the lazy way".
+    const t = convexTest(schema, modules);
+    const { sport, insert } = await seedTree(t);
+    const parallelId = await seedParallel(t, insert);
+    const griffey = await insertPlayer(t, sport, "Ken Griffey Jr.");
+    await insertCard(t, insert, {
+      cardNumber: "89B-1",
+      cardName: "Ken Griffey Jr.",
+      playerIds: [griffey],
+      playerLinks: [{ playerId: griffey, nameOnCard: "Ken Griffey Jr." }],
+    });
+    bscState.cards = [
+      {
+        cardNumber: "1",
+        cardName: "Ken Griffey Jr.",
+        players: ["Ken Griffey Jr."],
+        platformRef: "bsc-ref-1",
+        sourceBscSetSlug: "anime-kanji",
+      },
+    ];
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
+
+    expect(result.status).toBe("built");
+    const copies = await cardsOn(t, parallelId);
+    expect(copies).toHaveLength(1);
+    expect(copies[0].cardNumber).toBe("89B-1");
+    expect(copies[0].platformData.bsc).toEqual({ ref: "bsc-ref-1", src: "b0" });
   });
 
   test("imageUrls is never copied onto the parallel's new row", async () => {

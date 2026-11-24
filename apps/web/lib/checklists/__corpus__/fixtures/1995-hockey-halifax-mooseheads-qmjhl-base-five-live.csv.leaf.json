@@ -1,0 +1,34 @@
+{
+  "file": "1995-hockey-halifax-mooseheads-qmjhl-base-five-live.csv",
+  "mode": "leaf",
+  "options": {"setYear":"1995","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"4","players":["Jamie Brown"],"teams":["Halifax Mooseheads"]},
+      {"number":"5","players":["Elias Abrahamsson"],"teams":["Halifax Mooseheads"]},
+      {"number":"6","players":["Didier Tremblay"],"teams":["Halifax Mooseheads"]},
+      {"number":"7","players":["Chris Halverson"],"teams":["Halifax Mooseheads"]},
+      {"number":"8","players":["Chris Peyton"],"teams":["Halifax Mooseheads"]},
+      {"number":"9","players":["Frederic Belanger"],"teams":["Halifax Mooseheads"]},
+      {"number":"10","players":["Joel Theriault"],"teams":["Halifax Mooseheads"]},
+      {"number":"11","players":["Mark Lynk"],"teams":["Halifax Mooseheads"]},
+      {"number":"12","players":["Derrick Pyke"],"teams":["Halifax Mooseheads"]},
+      {"number":"13","players":["Steve Mongrain"],"teams":["Halifax Mooseheads"]},
+      {"number":"14","players":["David Carson"],"teams":["Halifax Mooseheads"]},
+      {"number":"15","players":["Jody Shelley"],"teams":["Halifax Mooseheads"]},
+      {"number":"16","players":["Daniel Payette"],"teams":["Halifax Mooseheads"]},
+      {"number":"17","players":["Brian Surette"],"teams":["Halifax Mooseheads"]},
+      {"number":"18","players":["Etienne Drapeau"],"teams":["Halifax Mooseheads"]},
+      {"number":"19","players":["Billy Manley"],"teams":["Halifax Mooseheads"]},
+      {"number":"20","players":["Jan Melichercik"],"teams":["Halifax Mooseheads"]},
+      {"number":"21","players":["Nicolas Maheux"],"teams":["Halifax Mooseheads"]},
+      {"number":"22","players":["Eric Houde"],"teams":["Halifax Mooseheads"]},
+      {"number":"23","players":["Shawn MacKenzie"],"teams":["Halifax Mooseheads"]},
+      {"number":"NNO","players":["Title Card"],"teams":["Halifax Mooseheads"],"noNumber":true}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

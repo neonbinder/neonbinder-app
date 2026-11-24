@@ -1,0 +1,18 @@
+{
+  "file": "prospect-team-cells.csv",
+  "mode": "leaf",
+  "options": {"mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"1","players":["Gunnar Henderson"],"teams":[],"noTeam":true,"prospect":true},
+      {"number":"2","players":["Colt Keith"],"teams":["Oklahoma"],"prospect":true},
+      {"number":"3","players":["Bobby Witt Jr."],"teams":["Dallas Baptist"],"prospect":true},
+      {"number":"4","players":["J.P. Crawford"],"teams":["Seattle"]},
+      {"number":"5","players":["Seiya Suzuki"],"teams":["Chicago"]}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

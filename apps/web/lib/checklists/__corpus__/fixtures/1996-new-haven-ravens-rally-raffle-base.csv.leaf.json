@@ -1,0 +1,22 @@
+{
+  "file": "1996-new-haven-ravens-rally-raffle-base.csv",
+  "mode": "leaf",
+  "options": {"setYear":"1996","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"12","players":["Edgard Velazquez"],"teams":["New Haven Ravens"]},
+      {"number":"13","players":["Roger Miller"],"teams":["New Haven Ravens"]},
+      {"number":"16","players":["Chris Sexton"],"teams":["New Haven Ravens"]},
+      {"number":"19","players":["Rodney Pedraza"],"teams":["New Haven Ravens"]},
+      {"number":"21","players":["Jamey Wright"],"teams":["New Haven Ravens"]},
+      {"number":"22","players":["Todd Helton"],"teams":["New Haven Ravens"]},
+      {"number":"23","players":["John Thomson"],"teams":["New Haven Ravens"]},
+      {"number":"34","players":["Derrick Gibson"],"teams":["New Haven Ravens"]},
+      {"number":"NNO","players":["raffle entry card"],"teams":[],"noNumber":true,"noTeam":true}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

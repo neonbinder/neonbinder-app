@@ -1,0 +1,37 @@
+{
+  "file": "1995-hockey-roanoke-express-echl-base-one-live.csv",
+  "mode": "leaf",
+  "options": {"setYear":"1995","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"NNO","players":["Daniel Berthiaume"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Dave Stewart"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Paul Croteau"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Matt DelGuidice"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Nick Jones"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Mike Stacchi"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Chris Potter"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Dave Holum"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Tim Christian"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Loco"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Tim Hanley"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Jeff Jestadt"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Craig Herr"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Jason Clarke"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Frank Anzalone"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Brian Gallentine"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Duane Harmer"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["L.P. Charbonneau"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Ilya Dubkov"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Marty Schriner"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Team Photo"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Michael Smith"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Jeff Jablonski"],"teams":["Roanoke Express"],"noNumber":true},
+      {"number":"NNO","players":["Jon Larson"],"teams":["Roanoke Express"],"noNumber":true}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

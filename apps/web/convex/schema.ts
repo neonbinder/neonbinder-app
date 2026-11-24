@@ -819,6 +819,22 @@ export const selectorOptionFields = {
    * NB data only: no adapter or sync reads or writes it.
    */
   lastCardAt: v.optional(v.number()),
+  /**
+   * NEO-616 — the print run this variant's cards share ("/5"): set when the
+   * most common run among the row's own cards covers at least 90% of them
+   * (variations and unnumbered cards count in the total), cleared otherwise.
+   * Meaningful on the card-bearing levels (`variantType`, `insert`,
+   * `parallel`); absent elsewhere and on a row whose cards share no run.
+   *
+   * Derived from the cards, never typed: `convex/variantPrintRun.ts` computes
+   * it (`refreshVariantPrintRun`) at the end of a parallel build, after a card
+   * edit, delete or add, and after a re-sync changes a card's run; the armed
+   * backfill (`backfillVariantPrintRun`) fills and repairs the rest. It is
+   * NOT a card count: it moves no `lastUpdated` and takes no ledger.
+   *
+   * NB data only: no adapter or sync reads or writes it.
+   */
+  printRun: v.optional(v.number()),
   lastUpdated: v.number(),
 };
 
@@ -1351,6 +1367,12 @@ export const publishedChecklistStoredRowValidator = v.object({
   teams: v.array(v.string()),
   noNumber: v.optional(v.boolean()),
   noTeam: v.optional(v.boolean()),
+  /**
+   * NEO-616 — the card's print run ("/5" is 5) as the file printed it, an
+   * integer 1..MAX_BSC_PRINT_RUN; absent when the file gives none. Only the
+   * re-check sets it, and only from a valid value.
+   */
+  printRun: v.optional(v.number()),
   prospect: v.optional(v.boolean()),
   /** DEPRECATED (NEO-591): never written; see the note above. */
   prospectTeams: v.optional(v.array(v.string())),

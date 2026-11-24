@@ -23,3 +23,12 @@ check itself, driven by an `internalAction` loop that sums counts and stops
 on `isDone`, so the operator still runs one `npx convex run`. Keep ONE planner
 shared by dry run and armed run (the models' rule). Related:
 [[convex-two-transaction-limits]].
+
+**The paged, armed model that does exist** (checked NEO-616, 2026-11-19):
+`cardCounts.backfillVariantCardCounts` + `backfillVariantCardCountsPage`.
+Page mutation over `selectorOptions.by_level` for each card-bearing level,
+card-read budget per page with `resumeSkip`, `repair` flag for stored values
+that disagree, env flag + `confirm` token, dry run by default, one JSON audit
+line, `<level>:<skip>:<cursor>` resume string. Copy it for any per-variant
+derived value. `backfillCardFeatures` pages but is NOT a model for a repair:
+it has a public admin-triggered `mutation` entry and no dry run or arming.

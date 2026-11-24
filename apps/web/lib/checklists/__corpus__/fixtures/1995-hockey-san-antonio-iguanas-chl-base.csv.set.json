@@ -1,0 +1,56 @@
+{
+  "file": "1995-hockey-san-antonio-iguanas-chl-base.csv",
+  "mode": "set",
+  "options": {"setYear":"1995","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"1,Chris Albert,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Jamie Bird,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Matt Bowden,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":5,"text":"4,Trevor Buchanan,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Gord Christian,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":7,"text":"6,Liam Garvey,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":8,"text":"7,Dale Henry,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":9,"text":"8,Paul Jackson,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":10,"text":"9,Sebastien LaPlante,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":11,"text":"10,Ken Plaquin,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":12,"text":"11,Brandy Semchuk,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":13,"text":"12,Brian Shantz,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":14,"text":"13,David Shute,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":15,"text":"14,Jim Sprott,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":16,"text":"15,Mike Williams,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":17,"text":"16,Mark Yannetti,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":18,"text":"17,Dean Zayonce,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":19,"text":"18,John Torchetti,San Antonio Iguanas","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"1,Chris Albert,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Jamie Bird,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Matt Bowden,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":5,"text":"4,Trevor Buchanan,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Gord Christian,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":7,"text":"6,Liam Garvey,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":8,"text":"7,Dale Henry,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":9,"text":"8,Paul Jackson,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":10,"text":"9,Sebastien LaPlante,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":11,"text":"10,Ken Plaquin,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":12,"text":"11,Brandy Semchuk,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":13,"text":"12,Brian Shantz,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":14,"text":"13,David Shute,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":15,"text":"14,Jim Sprott,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":16,"text":"15,Mike Williams,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":17,"text":"16,Mark Yannetti,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":18,"text":"17,Dean Zayonce,San Antonio Iguanas","reason":"Not under any section heading"},
+      {"line":19,"text":"18,John Torchetti,San Antonio Iguanas","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "file": "2025-bowman-draft-insert-prospect-dual-autographs.csv",
+  "mode": "leaf",
+  "options": {"setYear":"2025","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"PDA-AD","players":["Liam Doyle","Kade Anderson"],"teams":["St. Louis Cardinals","Seattle Mariners"]},
+      {
+        "number": "PDA-BW",
+        "players": ["Travis Bazzana","Eli Willits"],
+        "teams": ["Cleveland Guardians","Washington Nationals"]
+      },
+      {"number":"PDA-CE","players":["Billy Carlson","Brady Ebel"],"teams":["Chicago White Sox","Milwaukee Brewers"]},
+      {"number":"PDA-CH","players":["Seth Hernandez","Bubba Chandler"],"teams":["Pittsburgh Pirates"]},
+      {"number":"PDA-DM","players":["Leo De Vries","Jesus Made"],"teams":["Athletics","Milwaukee Brewers"]},
+      {"number":"PDA-GHE","players":["Konnor Griffin","Seth Hernandez"],"teams":["Pittsburgh Pirates"]},
+      {
+        "number": "PDA-HC",
+        "players": ["Billy Carlson","Seth Hernandez"],
+        "teams": ["Chicago White Sox","Pittsburgh Pirates"]
+      },
+      {"number":"PDA-IB","players":["Caden Bodine","Ike Irish"],"teams":["Baltimore Orioles"]},
+      {"number":"PDA-MP","players":["Jesus Made","Luis Pena"],"teams":["Milwaukee Brewers"]},
+      {"number":"PDA-PH","players":["JoJo Parker","Steele Hall"],"teams":["Toronto Blue Jays","Cincinnati Reds"]},
+      {"number":"PDA-SS","players":["Tate Southisene","Ty Southisene"],"teams":["Atlanta Braves","Chicago Cubs"]},
+      {
+        "number": "PDA-WB",
+        "players": ["Tyler Bremner","Eli Willits"],
+        "teams": ["Los Angeles Angels","Washington Nationals"]
+      },
+      {"number":"PDA-WC","players":["Billy Carlson","Eli Willits"],"teams":["Chicago White Sox","Washington Nationals"]}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

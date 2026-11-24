@@ -288,6 +288,42 @@ export function buildDonrussCsv(spec) {
   return Buffer.from(`${lines.join("\n")}\n`, "utf8");
 }
 
+// ── Pro Set foil × colour CSV (NEO-616) ───────────────────────────────────
+
+/** Pro Set's colour columns, in its own order (the 2026 Pro Set Metal file). */
+export const PRO_SET_COLOURS = ["RWB", "Silver", "Platinum", "Purple", "Pink", "Blue", "Orange", "Green", "Black", "Red", "Gold"];
+
+/**
+ * @typedef {{ subset: string, number: string, name: string, city?: string,
+ *   foils: Array<{ foil: string, runs: Record<string, number | undefined> }> }} ProSetCard
+ * @typedef {{ set: string, cards: ProSetCard[] }} ProSetSpec
+ */
+
+/**
+ * A Pro Set "foil × colour" checklist as Pro Set ships it: the header
+ * `Set,Subset,Name,Checklist,Foil,<colours>,MEM,BASE,City Designation`, then
+ * one line per card per FOIL, each colour cell that foil-and-colour's print
+ * run (blank: no such parallel). MEM is "No" and BASE "Base" on every line,
+ * as on the file's base cards; the reader ignores both. A card's city is the
+ * same on each of its foil lines.
+ * @param {ProSetSpec} spec
+ * @returns {Buffer}
+ */
+export function buildProSetCsv(spec) {
+  const header = ["Set", "Subset", "Name", "Checklist", "Foil", ...PRO_SET_COLOURS, "MEM", "BASE", "City Designation"];
+  const lines = [header.map(csvCell).join(",")];
+  for (const card of spec.cards) {
+    for (const { foil, runs } of card.foils) {
+      const unknown = Object.keys(runs).filter((colour) => !PRO_SET_COLOURS.includes(colour));
+      if (unknown.length > 0) throw new Error(`buildProSetCsv: no colour column ${unknown.join(", ")}`);
+      const colours = PRO_SET_COLOURS.map((colour) => (runs[colour] === undefined ? "" : String(runs[colour])));
+      const cells = [spec.set, card.subset, card.name, card.number, foil, ...colours, "No", "Base", card.city ?? ""];
+      lines.push(cells.map(csvCell).join(","));
+    }
+  }
+  return Buffer.from(`${lines.join("\n")}\n`, "utf8");
+}
+
 // ── Samples ───────────────────────────────────────────────────────────────
 
 /** @type {ToppsSpec} A small 2026 Topps Chrome checklist in Topps' layout. */

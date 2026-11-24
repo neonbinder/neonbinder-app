@@ -1,0 +1,62 @@
+{
+  "file": "1995-hockey-halifax-mooseheads-qmjhl-base-five-live.csv",
+  "mode": "set",
+  "options": {"setYear":"1995","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"4,Jamie Brown,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":3,"text":"5,Elias Abrahamsson,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":4,"text":"6,Didier Tremblay,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":5,"text":"7,Chris Halverson,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":6,"text":"8,Chris Peyton,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":7,"text":"9,Frederic Belanger,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":8,"text":"10,Joel Theriault,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":9,"text":"11,Mark Lynk,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":10,"text":"12,Derrick Pyke,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":11,"text":"13,Steve Mongrain,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":12,"text":"14,David Carson,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":13,"text":"15,Jody Shelley,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":14,"text":"16,Daniel Payette,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":15,"text":"17,Brian Surette,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":16,"text":"18,Etienne Drapeau,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":17,"text":"19,Billy Manley,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":18,"text":"20,Jan Melichercik,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":19,"text":"21,Nicolas Maheux,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":20,"text":"22,Eric Houde,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":21,"text":"23,Shawn MacKenzie,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":22,"text":"NNO,Title Card,Halifax Mooseheads","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"4,Jamie Brown,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":3,"text":"5,Elias Abrahamsson,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":4,"text":"6,Didier Tremblay,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":5,"text":"7,Chris Halverson,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":6,"text":"8,Chris Peyton,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":7,"text":"9,Frederic Belanger,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":8,"text":"10,Joel Theriault,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":9,"text":"11,Mark Lynk,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":10,"text":"12,Derrick Pyke,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":11,"text":"13,Steve Mongrain,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":12,"text":"14,David Carson,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":13,"text":"15,Jody Shelley,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":14,"text":"16,Daniel Payette,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":15,"text":"17,Brian Surette,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":16,"text":"18,Etienne Drapeau,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":17,"text":"19,Billy Manley,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":18,"text":"20,Jan Melichercik,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":19,"text":"21,Nicolas Maheux,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":20,"text":"22,Eric Houde,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":21,"text":"23,Shawn MacKenzie,Halifax Mooseheads","reason":"Not under any section heading"},
+      {"line":22,"text":"NNO,Title Card,Halifax Mooseheads","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

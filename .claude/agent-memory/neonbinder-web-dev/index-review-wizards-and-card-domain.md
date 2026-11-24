@@ -50,3 +50,4 @@ Entity-review, Tidy Up and walk flows, team/player resolution, card titles and d
 - [Optional result field: omit when empty](reference_optional_result_field_omit_when_empty.md) — always-present [] reds toEqual pins in convex tests; spread only when non-empty
 - [Port a retired-UI rule: audit every server fill site](reference_porting_a_rule_from_a_retired_ui_audit_every_server_fill_site.md) — tile, commit fill, answer-time fill, Apply to all each gate rule 8 separately (NEO-645 x NEO-639)
 - [Parallel commit chunks: defer the shared flush](reference_parallel_commit_chunks_defer_the_shared_flush.md) — find the one shared write, defer it to the caller, prove disjointness with a db Proxy; ties on sortOrder stay sequential
+- [Card number prefix/remainder helper](reference_card_number_prefix_remainder_helper.md) — splitCardNumberPrefix reads "89B-1"/"T88-12"; stripLetterPrefix does not

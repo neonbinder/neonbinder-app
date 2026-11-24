@@ -45,6 +45,8 @@ export interface ColumnItem {
   id: string;
   name: string;
   description?: string;
+  /** How `description` is said aloud, when the visible text is not what a listener should hear. */
+  descriptionSpoken?: string;
   /**
    * NEO-527 — a labelled group this row is listed in, after every row that
    * has none (the loose sets under "More sets", below the brands).

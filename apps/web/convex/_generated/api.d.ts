@@ -42,6 +42,7 @@ import type * as backfillListingDescriptions from "../backfillListingDescription
 import type * as backfillListingShortNames from "../backfillListingShortNames.js";
 import type * as backfillPromotedParallelFacet from "../backfillPromotedParallelFacet.js";
 import type * as backfillVariantFacetAndBaseRole from "../backfillVariantFacetAndBaseRole.js";
+import type * as backfillVariantPrintRun from "../backfillVariantPrintRun.js";
 import type * as backfillVariantTypeRole from "../backfillVariantTypeRole.js";
 import type * as baseMatchProbe from "../baseMatchProbe.js";
 import type * as binderFits from "../binderFits.js";
@@ -181,6 +182,7 @@ import type * as lib_testSeedMarks from "../lib/testSeedMarks.js";
 import type * as lib_tidyAnswerDecisions from "../lib/tidyAnswerDecisions.js";
 import type * as lib_titleQuery from "../lib/titleQuery.js";
 import type * as lib_titleSport from "../lib/titleSport.js";
+import type * as lib_variantPrintRun from "../lib/variantPrintRun.js";
 import type * as listingDrain from "../listingDrain.js";
 import type * as listingDrainEbay from "../listingDrainEbay.js";
 import type * as listingGate from "../listingGate.js";
@@ -262,6 +264,7 @@ import type * as tidyRescope from "../tidyRescope.js";
 import type * as tidySkips from "../tidySkips.js";
 import type * as tidyTypedNames from "../tidyTypedNames.js";
 import type * as userProfile from "../userProfile.js";
+import type * as variantPrintRun from "../variantPrintRun.js";
 import type * as variantRole from "../variantRole.js";
 import type * as wikidataPool from "../wikidataPool.js";
 import type * as wipeVariantTypeSubtree from "../wipeVariantTypeSubtree.js";
@@ -307,6 +310,7 @@ declare const fullApi: ApiFromModules<{
   backfillListingShortNames: typeof backfillListingShortNames;
   backfillPromotedParallelFacet: typeof backfillPromotedParallelFacet;
   backfillVariantFacetAndBaseRole: typeof backfillVariantFacetAndBaseRole;
+  backfillVariantPrintRun: typeof backfillVariantPrintRun;
   backfillVariantTypeRole: typeof backfillVariantTypeRole;
   baseMatchProbe: typeof baseMatchProbe;
   binderFits: typeof binderFits;
@@ -446,6 +450,7 @@ declare const fullApi: ApiFromModules<{
   "lib/tidyAnswerDecisions": typeof lib_tidyAnswerDecisions;
   "lib/titleQuery": typeof lib_titleQuery;
   "lib/titleSport": typeof lib_titleSport;
+  "lib/variantPrintRun": typeof lib_variantPrintRun;
   listingDrain: typeof listingDrain;
   listingDrainEbay: typeof listingDrainEbay;
   listingGate: typeof listingGate;
@@ -527,6 +532,7 @@ declare const fullApi: ApiFromModules<{
   tidySkips: typeof tidySkips;
   tidyTypedNames: typeof tidyTypedNames;
   userProfile: typeof userProfile;
+  variantPrintRun: typeof variantPrintRun;
   variantRole: typeof variantRole;
   wikidataPool: typeof wikidataPool;
   wipeVariantTypeSubtree: typeof wipeVariantTypeSubtree;

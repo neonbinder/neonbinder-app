@@ -1,0 +1,31 @@
+{
+  "file": "1995-hockey-fort-worth-fire-chl-base.csv",
+  "mode": "leaf",
+  "options": {"setYear":"1995","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"1","players":["Scott Allen"],"teams":["Fort Worth Fire"]},
+      {"number":"2","players":["Trevor Burgess"],"teams":["Fort Worth Fire"]},
+      {"number":"3","players":["Brian Caruso"],"teams":["Fort Worth Fire"]},
+      {"number":"4","players":["Trevor Converse"],"teams":["Fort Worth Fire"]},
+      {"number":"5","players":["Steve Dykstra"],"teams":["Fort Worth Fire"]},
+      {"number":"6","players":["Troy Frederick"],"teams":["Fort Worth Fire"]},
+      {"number":"7","players":["Phil Groeneveld"],"teams":["Fort Worth Fire"]},
+      {"number":"8","players":["Mark Hilton"],"teams":["Fort Worth Fire"]},
+      {"number":"9","players":["Jeff Massey"],"teams":["Fort Worth Fire"]},
+      {"number":"10","players":["Dennis Miller"],"teams":["Fort Worth Fire"]},
+      {"number":"11","players":["Dwight Mullins"],"teams":["Fort Worth Fire"]},
+      {"number":"12","players":["Steve Plouffe"],"teams":["Fort Worth Fire"]},
+      {"number":"13","players":["Vern Ray"],"teams":["Fort Worth Fire"]},
+      {"number":"14","players":["Kyle Reeves"],"teams":["Fort Worth Fire"]},
+      {"number":"15","players":["Troy Stephens"],"teams":["Fort Worth Fire"]},
+      {"number":"16","players":["Sean Whyte"],"teams":["Fort Worth Fire"]},
+      {"number":"17","players":["Scorch"],"teams":["Fort Worth Fire"]},
+      {"number":"18","players":["Bill McDonald"],"teams":["Fort Worth Fire"]}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

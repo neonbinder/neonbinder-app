@@ -1,0 +1,38 @@
+{
+  "file": "2024-topps-stars-of-mlb-network-base-shehadi-live.csv",
+  "mode": "set",
+  "options": {"setYear":"2024","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"2,Robert Flores,No Team","reason":"Not under any section heading"},
+      {"line":3,"text":"3,Mark DeRosa,No Team","reason":"Not under any section heading"},
+      {"line":4,"text":"4,Brian Kenny,No Team","reason":"Not under any section heading"},
+      {"line":5,"text":"5,Harold Reynolds,No Team","reason":"Not under any section heading"},
+      {"line":6,"text":"6,Greg Amsinger,No Team","reason":"Not under any section heading"},
+      {"line":7,"text":"7,Chris Young,No Team","reason":"Not under any section heading"},
+      {"line":8,"text":"8,Yonder Alonso,No Team","reason":"Not under any section heading"},
+      {"line":9,"text":"9,Lauren Gardner,No Team","reason":"Not under any section heading"},
+      {"line":10,"text":"10,Intentional Talk,No Team","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"2,Robert Flores,No Team","reason":"Not under any section heading"},
+      {"line":3,"text":"3,Mark DeRosa,No Team","reason":"Not under any section heading"},
+      {"line":4,"text":"4,Brian Kenny,No Team","reason":"Not under any section heading"},
+      {"line":5,"text":"5,Harold Reynolds,No Team","reason":"Not under any section heading"},
+      {"line":6,"text":"6,Greg Amsinger,No Team","reason":"Not under any section heading"},
+      {"line":7,"text":"7,Chris Young,No Team","reason":"Not under any section heading"},
+      {"line":8,"text":"8,Yonder Alonso,No Team","reason":"Not under any section heading"},
+      {"line":9,"text":"9,Lauren Gardner,No Team","reason":"Not under any section heading"},
+      {"line":10,"text":"10,Intentional Talk,No Team","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

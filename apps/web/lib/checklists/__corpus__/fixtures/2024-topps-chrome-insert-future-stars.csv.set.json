@@ -1,0 +1,60 @@
+{
+  "file": "2024-topps-chrome-insert-future-stars.csv",
+  "mode": "set",
+  "options": {"setYear":"2024","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"FS-1,Adley Rutschman,Baltimore Orioles","reason":"Not under any section heading"},
+      {"line":3,"text":"FS-2,Gunnar Henderson,Baltimore Orioles","reason":"Not under any section heading"},
+      {"line":4,"text":"FS-3,Corbin Carroll,Arizona Diamondbacks","reason":"Not under any section heading"},
+      {"line":5,"text":"FS-4,Gabriel Moreno,Arizona Diamondbacks","reason":"Not under any section heading"},
+      {"line":6,"text":"FS-5,Anthony Volpe,New York Yankees","reason":"Not under any section heading"},
+      {"line":7,"text":"FS-6,Jordan Walker,St. Louis Cardinals","reason":"Not under any section heading"},
+      {"line":8,"text":"FS-7,Francisco Alvarez,New York Mets","reason":"Not under any section heading"},
+      {"line":9,"text":"FS-8,Justin Steele,Chicago Cubs","reason":"Not under any section heading"},
+      {"line":10,"text":"FS-9,Kodai Senga,New York Mets","reason":"Not under any section heading"},
+      {"line":11,"text":"FS-10,Michael Harris II,Atlanta Braves","reason":"Not under any section heading"},
+      {"line":12,"text":"FS-11,Eury Perez,Miami Marlins","reason":"Not under any section heading"},
+      {"line":13,"text":"FS-12,Christopher Morel,Chicago Cubs","reason":"Not under any section heading"},
+      {"line":14,"text":"FS-13,Josh Jung,Texas Rangers","reason":"Not under any section heading"},
+      {"line":15,"text":"FS-14,Matt McLain,Cincinnati Reds","reason":"Not under any section heading"},
+      {"line":16,"text":"FS-15,Masataka Yoshida,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":17,"text":"FS-16,Riley Greene,Detroit Tigers","reason":"Not under any section heading"},
+      {"line":18,"text":"FS-17,Triston Casas,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":19,"text":"FS-18,Yainer Diaz,Houston Astros","reason":"Not under any section heading"},
+      {"line":20,"text":"FS-19,Ezequiel Tovar,Colorado Rockies","reason":"Not under any section heading"},
+      {"line":21,"text":"FS-20,Brayan Rocchio,Cleveland Guardians","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"FS-1,Adley Rutschman,Baltimore Orioles","reason":"Not under any section heading"},
+      {"line":3,"text":"FS-2,Gunnar Henderson,Baltimore Orioles","reason":"Not under any section heading"},
+      {"line":4,"text":"FS-3,Corbin Carroll,Arizona Diamondbacks","reason":"Not under any section heading"},
+      {"line":5,"text":"FS-4,Gabriel Moreno,Arizona Diamondbacks","reason":"Not under any section heading"},
+      {"line":6,"text":"FS-5,Anthony Volpe,New York Yankees","reason":"Not under any section heading"},
+      {"line":7,"text":"FS-6,Jordan Walker,St. Louis Cardinals","reason":"Not under any section heading"},
+      {"line":8,"text":"FS-7,Francisco Alvarez,New York Mets","reason":"Not under any section heading"},
+      {"line":9,"text":"FS-8,Justin Steele,Chicago Cubs","reason":"Not under any section heading"},
+      {"line":10,"text":"FS-9,Kodai Senga,New York Mets","reason":"Not under any section heading"},
+      {"line":11,"text":"FS-10,Michael Harris II,Atlanta Braves","reason":"Not under any section heading"},
+      {"line":12,"text":"FS-11,Eury Perez,Miami Marlins","reason":"Not under any section heading"},
+      {"line":13,"text":"FS-12,Christopher Morel,Chicago Cubs","reason":"Not under any section heading"},
+      {"line":14,"text":"FS-13,Josh Jung,Texas Rangers","reason":"Not under any section heading"},
+      {"line":15,"text":"FS-14,Matt McLain,Cincinnati Reds","reason":"Not under any section heading"},
+      {"line":16,"text":"FS-15,Masataka Yoshida,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":17,"text":"FS-16,Riley Greene,Detroit Tigers","reason":"Not under any section heading"},
+      {"line":18,"text":"FS-17,Triston Casas,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":19,"text":"FS-18,Yainer Diaz,Houston Astros","reason":"Not under any section heading"},
+      {"line":20,"text":"FS-19,Ezequiel Tovar,Colorado Rockies","reason":"Not under any section heading"},
+      {"line":21,"text":"FS-20,Brayan Rocchio,Cleveland Guardians","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

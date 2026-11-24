@@ -1,0 +1,96 @@
+{
+  "file": "2026-donruss-sample.xlsx",
+  "mode": "leaf",
+  "options": {"setYear":"2026","mode":"leaf"},
+  "read": {
+    "kind": "cells",
+    "cells": {
+      "format": "xlsx",
+      "records": [
+        {"line":1,"cells":["Spreadsheet made available by Checklist Insider."]},
+        {"line":2,"cells":["CARD SET","CARD #","ATHLETE","TEAM","SEQ"]},
+        {"line":3,"cells":["Base","1","Ken Griffey Jr.","Seattle Mariners"]},
+        {"line":4,"cells":["Base","2","Johnny Bench","Cincinnati Reds"]},
+        {"line":5,"cells":["Base","3","Chase DeLauter","Cleveland Guardians"]},
+        {"line":6,"cells":["Base","4","Byung-Hyun Kim","Arizona Diamondbacks"]},
+        {"line":7,"cells":["Base","5","Bubba Chandler","Pittsburgh Pirates"]},
+        {"line":8,"cells":["Base Rated Prospects","101","Konnor Griffin","Pittsburgh Pirates"]},
+        {"line":9,"cells":["Base Rated Prospects","102","Andrew Fischer","Milwaukee Brewers"]},
+        {"line":10,"cells":["Base Rated Prospects","103","Mike Sirota","Los Angeles Dodgers"]},
+        {"line":11,"cells":["Bomb Squad","1","Bryce Eldridge","San Francisco Giants"]},
+        {"line":12,"cells":["Bomb Squad","2","Ken Griffey Jr.","Seattle Mariners"]},
+        {"line":13,"cells":["Bomb Squad","3","Roman Anthony","Boston Red Sox"]},
+        {"line":14,"cells":["Bomb Squad Red Ice","1","Bryce Eldridge","San Francisco Giants","149"]},
+        {"line":15,"cells":["Bomb Squad Red Ice","2","Ken Griffey Jr.","Seattle Mariners","149"]},
+        {"line":16,"cells":["Bomb Squad Red Ice","3","Roman Anthony","Boston Red Sox","149"]}
+      ]
+    }
+  },
+  "parse": {
+    "rows": [
+      {"number":"1","players":["Ken Griffey Jr."],"teams":["Seattle Mariners"],"subset":"Base"},
+      {"number":"2","players":["Johnny Bench"],"teams":["Cincinnati Reds"],"subset":"Base"},
+      {"number":"3","players":["Chase DeLauter"],"teams":["Cleveland Guardians"],"subset":"Base"},
+      {"number":"4","players":["Byung-Hyun Kim"],"teams":["Arizona Diamondbacks"],"subset":"Base"},
+      {"number":"5","players":["Bubba Chandler"],"teams":["Pittsburgh Pirates"],"subset":"Base"},
+      {"number":"101","players":["Konnor Griffin"],"teams":["Pittsburgh Pirates"],"subset":"Base Rated Prospects"},
+      {"number":"102","players":["Andrew Fischer"],"teams":["Milwaukee Brewers"],"subset":"Base Rated Prospects"},
+      {"number":"103","players":["Mike Sirota"],"teams":["Los Angeles Dodgers"],"subset":"Base Rated Prospects"},
+      {"number":"1","players":["Bryce Eldridge"],"teams":["San Francisco Giants"],"subset":"Bomb Squad"},
+      {"number":"2","players":["Ken Griffey Jr."],"teams":["Seattle Mariners"],"subset":"Bomb Squad"},
+      {"number":"3","players":["Roman Anthony"],"teams":["Boston Red Sox"],"subset":"Bomb Squad"},
+      {"number":"1","players":["Bryce Eldridge"],"teams":["San Francisco Giants"],"subset":"Bomb Squad Red Ice"},
+      {"number":"2","players":["Ken Griffey Jr."],"teams":["Seattle Mariners"],"subset":"Bomb Squad Red Ice"},
+      {"number":"3","players":["Roman Anthony"],"teams":["Boston Red Sox"],"subset":"Bomb Squad Red Ice"}
+    ],
+    "skipped": [{"line":1,"text":"Spreadsheet made available by Checklist Insider.","reason":"Above the column headings"}],
+    "format": "xlsx",
+    "subsets": ["Base","Base Rated Prospects","Bomb Squad","Bomb Squad Red Ice"]
+  },
+  "sections": {
+    "format": "xlsx",
+    "sections": [
+      {
+        "name": "Base",
+        "key": "base",
+        "rows": [
+          {"number":"1","players":["Ken Griffey Jr."],"teams":["Seattle Mariners"]},
+          {"number":"2","players":["Johnny Bench"],"teams":["Cincinnati Reds"]},
+          {"number":"3","players":["Chase DeLauter"],"teams":["Cleveland Guardians"]},
+          {"number":"4","players":["Byung-Hyun Kim"],"teams":["Arizona Diamondbacks"]},
+          {"number":"5","players":["Bubba Chandler"],"teams":["Pittsburgh Pirates"]}
+        ]
+      },
+      {
+        "name": "Base Rated Prospects",
+        "key": "base rated prospects",
+        "rows": [
+          {"number":"101","players":["Konnor Griffin"],"teams":["Pittsburgh Pirates"]},
+          {"number":"102","players":["Andrew Fischer"],"teams":["Milwaukee Brewers"]},
+          {"number":"103","players":["Mike Sirota"],"teams":["Los Angeles Dodgers"]}
+        ]
+      },
+      {
+        "name": "Bomb Squad",
+        "key": "bomb squad",
+        "rows": [
+          {"number":"1","players":["Bryce Eldridge"],"teams":["San Francisco Giants"]},
+          {"number":"2","players":["Ken Griffey Jr."],"teams":["Seattle Mariners"]},
+          {"number":"3","players":["Roman Anthony"],"teams":["Boston Red Sox"]}
+        ]
+      },
+      {
+        "name": "Bomb Squad Red Ice",
+        "key": "bomb squad red ice",
+        "rows": [
+          {"number":"1","players":["Bryce Eldridge"],"teams":["San Francisco Giants"]},
+          {"number":"2","players":["Ken Griffey Jr."],"teams":["Seattle Mariners"]},
+          {"number":"3","players":["Roman Anthony"],"teams":["Boston Red Sox"]}
+        ]
+      }
+    ],
+    "skipped": [{"line":1,"text":"Spreadsheet made available by Checklist Insider.","reason":"Above the column headings"}],
+    "skippedSections": [],
+    "rowCount": 14
+  }
+}

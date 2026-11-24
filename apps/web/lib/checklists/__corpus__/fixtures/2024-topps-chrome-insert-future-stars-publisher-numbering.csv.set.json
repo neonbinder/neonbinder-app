@@ -1,0 +1,58 @@
+{
+  "file": "2024-topps-chrome-insert-future-stars-publisher-numbering.csv",
+  "mode": "set",
+  "options": {"setYear":"2024","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"101,Adley Rutschman,Baltimore Orioles","reason":"Not under any section heading"},
+      {"line":3,"text":"102,Gunnar Henderson,Baltimore Orioles","reason":"Not under any section heading"},
+      {"line":4,"text":"103,Corbin Carroll,Arizona Diamondbacks","reason":"Not under any section heading"},
+      {"line":5,"text":"104,Gabriel Moreno,Arizona Diamondbacks","reason":"Not under any section heading"},
+      {"line":6,"text":"105,Anthony Volpe,New York Yankees","reason":"Not under any section heading"},
+      {"line":7,"text":"106,Jordan Walker,St. Louis Cardinals","reason":"Not under any section heading"},
+      {"line":8,"text":"107,Francisco Alvarez,New York Mets","reason":"Not under any section heading"},
+      {"line":9,"text":"108,Justin Steele,Chicago Cubs","reason":"Not under any section heading"},
+      {"line":10,"text":"109,Kodai Senga,New York Mets","reason":"Not under any section heading"},
+      {"line":11,"text":"110,Michael Harris II,Atlanta Braves","reason":"Not under any section heading"},
+      {"line":12,"text":"111,Eury Perez,Miami Marlins","reason":"Not under any section heading"},
+      {"line":13,"text":"112,Christopher Morel,Chicago Cubs","reason":"Not under any section heading"},
+      {"line":14,"text":"113,Josh Jung,Texas Rangers","reason":"Not under any section heading"},
+      {"line":15,"text":"114,Matt McLain,Cincinnati Reds","reason":"Not under any section heading"},
+      {"line":16,"text":"115,Masataka Yoshida,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":17,"text":"116,Riley Greene,Detroit Tigers","reason":"Not under any section heading"},
+      {"line":18,"text":"117,Triston Casas,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":19,"text":"118,Yainer Diaz,Houston Astros","reason":"Not under any section heading"},
+      {"line":20,"text":"119,Ezequiel Tovar,Colorado Rockies","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"101,Adley Rutschman,Baltimore Orioles","reason":"Not under any section heading"},
+      {"line":3,"text":"102,Gunnar Henderson,Baltimore Orioles","reason":"Not under any section heading"},
+      {"line":4,"text":"103,Corbin Carroll,Arizona Diamondbacks","reason":"Not under any section heading"},
+      {"line":5,"text":"104,Gabriel Moreno,Arizona Diamondbacks","reason":"Not under any section heading"},
+      {"line":6,"text":"105,Anthony Volpe,New York Yankees","reason":"Not under any section heading"},
+      {"line":7,"text":"106,Jordan Walker,St. Louis Cardinals","reason":"Not under any section heading"},
+      {"line":8,"text":"107,Francisco Alvarez,New York Mets","reason":"Not under any section heading"},
+      {"line":9,"text":"108,Justin Steele,Chicago Cubs","reason":"Not under any section heading"},
+      {"line":10,"text":"109,Kodai Senga,New York Mets","reason":"Not under any section heading"},
+      {"line":11,"text":"110,Michael Harris II,Atlanta Braves","reason":"Not under any section heading"},
+      {"line":12,"text":"111,Eury Perez,Miami Marlins","reason":"Not under any section heading"},
+      {"line":13,"text":"112,Christopher Morel,Chicago Cubs","reason":"Not under any section heading"},
+      {"line":14,"text":"113,Josh Jung,Texas Rangers","reason":"Not under any section heading"},
+      {"line":15,"text":"114,Matt McLain,Cincinnati Reds","reason":"Not under any section heading"},
+      {"line":16,"text":"115,Masataka Yoshida,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":17,"text":"116,Riley Greene,Detroit Tigers","reason":"Not under any section heading"},
+      {"line":18,"text":"117,Triston Casas,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":19,"text":"118,Yainer Diaz,Houston Astros","reason":"Not under any section heading"},
+      {"line":20,"text":"119,Ezequiel Tovar,Colorado Rockies","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

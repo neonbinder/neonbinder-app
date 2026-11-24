@@ -177,6 +177,11 @@ const drillItemValidator = v.object({
    * its brand step. The row itself is never listed: a collector never sees it.
    */
   brandId: v.optional(v.id("selectorOptions")),
+  /**
+   * NEO-616 — the print run at least 90% of this row's cards share (the
+   * "/5" beside a parallel's name). Absent when the row carries none.
+   */
+  printRun: v.optional(v.number()),
 });
 
 /**
@@ -345,6 +350,7 @@ export const drill = query({
         baseCardCount: totals.base,
         hasCards: rowHasCards(row),
         ...(brandId ? { brandId } : {}),
+        ...(typeof row.printRun === "number" ? { printRun: row.printRun } : {}),
       });
     }
     return { items, truncated };
@@ -384,6 +390,8 @@ const setVariantValidator = v.object({
   cardCount: v.union(v.number(), v.null()),
   /** Its regular (non-variation) cards: the default "N of M". Null as above. */
   baseCardCount: v.union(v.number(), v.null()),
+  /** NEO-616 — the run most of this row's cards share; absent when none does. */
+  printRun: v.optional(v.number()),
 });
 
 /**
@@ -457,6 +465,7 @@ export const setSummary = query({
         childCount: row.children?.length ?? 0,
         cardCount: totals.all,
         baseCardCount: totals.base,
+        ...(typeof row.printRun === "number" ? { printRun: row.printRun } : {}),
       });
       return true;
     };

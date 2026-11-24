@@ -69,6 +69,10 @@ function rowBytes(row: ChecklistSectionRow): number {
     teams: row.teams,
     noNumber: true,
     noTeam: true,
+    // NEO-616: a foil × colour parallel's card carries its print run. Spread
+    // so the stored-row type (which learns `printRun` with the server's
+    // validator) is not what decides whether the bytes are counted.
+    ...(row.printRun !== undefined ? { printRun: row.printRun } : {}),
     // NEO-591: the server stores a prospect claim beside the rest.
     ...(row.prospect ? { prospect: true as const } : {}),
     // Display-only: which teams sat inside the Prospect parens, stored too.
