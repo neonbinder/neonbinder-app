@@ -29,3 +29,4 @@ Typecheck, lint, worktree, node/shell and macOS tooling gotchas that make gates 
 - [Read-only diagnosis on a deployment](reference_read_only_diagnosis_on_a_deployment.md) — convex data caps 8192; internal fns run without identity; open-wizard cards live in checklistCandidates
 - [Typecheck gate skips components](typecheck-gate-skips-components.md) — npm run typecheck covers convex/ only; filter the root tsc to your files
 - [BSD sed has no \b](reference_bsd_sed_has_no_word_boundary.md) — macOS sed ignores \b so a bulk rename silently no-ops; python re.sub; keep a Legacy-named old body when a shared fn changes shape
+- [macOS sed -i needs an empty suffix](macos-sed-i-needs-an-empty-suffix.md) — BSD sed eats the script as a suffix; use perl or python, check git status for strays

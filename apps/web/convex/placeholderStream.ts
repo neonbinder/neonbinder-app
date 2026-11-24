@@ -113,8 +113,7 @@ async function requireCollectingStreamJob(
  * `JOB_ID_PATTERN` in services/preprocess/app/jobs/layout.py refuses anything
  * else, and that check is what keeps job ids unguessable rather than
  * enumerable — the entire ownership model rests on it. `crypto.randomUUID()` is
- * available in Convex mutations (see `startBatch` in convex/entityReviewQueue.ts,
- * which does the same thing).
+ * available in Convex mutations.
  *
  * `{started: false, reason}` rather than a throw for the active-job cap: a user
  * who already has two batches running is being told "not now", which is ordinary

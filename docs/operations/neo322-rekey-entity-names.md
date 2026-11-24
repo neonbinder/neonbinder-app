@@ -51,8 +51,6 @@ stored copy of the key:
 | `teamAliases` | `aliasNormalized` | the team's `aliases` list | write, report |
 | `leagues` | `nameNormalized` | `name` (ordered key, no token sort) | **skip**, report |
 | `franchises` | `nameNormalized` | `name` | **skip**, report |
-| `entityReviewSkips` | `nameNormalized` | `name` | write, report |
-| `entityReviewQueue` | `nameNormalized` | `name`, by kind | write, report |
 
 It only ever rewrites these derived keys. It never changes a name, an alias
 list, a marketplace field or `lastUpdated`, and it never merges or deletes a

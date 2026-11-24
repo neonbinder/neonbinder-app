@@ -1,21 +1,25 @@
 /**
- * NEO-645 test shim — seed a review decision the way the commit now reads it.
+ * NEO-656 test shim — seed a review decision the way the commit now reads it.
  *
- * The commit prelude used to read an `entityReviewQueue` row's `decision`. It
- * reads a `tidyNames` row's `answer` now (`convex/lib/tidyAnswerDecisions.ts`).
- * Tests that pin a prelude rule (an operator's link beats the single match, a
- * skip beats the narrowing, an auto-link carries its origin, `saveAsAlias`,
- * `addSetSport`) keep their seeds in the old row shape and pass them here.
+ * The commit prelude used to read an `entityReviewQueue` row's `decision`, then
+ * a `tidyNames` row's `answer`. It reads the gate's own links now: the gate
+ * returns `gateLinks` (`resolveChecklistEntities`), the client hands them back
+ * to `commitCardChecklist`, and `convex/lib/tidyAnswerDecisions.ts` adapts each
+ * one into the decision the prelude's rules were written against. Nothing is
+ * stored. Tests that pin a prelude rule (an auto-link beats the single match,
+ * an auto-link carries its origin) keep their seeds in the old row shape and
+ * pass them here for the `gateLinks` entry to send.
  *
- * What does NOT convert: a `create` decision (the player or team is created
- * when the operator presses it, `tidyNames.createPlayer` / the New Team dialog,
- * never at commit) and a staged `source` row (career teams and leagues are
- * written by their own forms). Both throw, so a test that still needs one fails
- * loudly instead of passing on nothing.
+ * What does NOT convert: an operator's link, a skip and a `create` decision.
+ * An operator answers a name on the card in the walk (`tidyNames.answerName`,
+ * `createPlayer`, the New Team dialog), never at commit, and nothing remembers a
+ * ruled-out name. A staged `source` row is retired too (career teams and
+ * leagues have their own forms). Each throws, so a test that still needs one
+ * fails loudly instead of passing on nothing.
  */
 
-import type { Doc, Id } from "../../convex/_generated/dataModel";
-import { normalizeEntityName } from "../entities/normalize-name";
+import type { Id } from "../../convex/_generated/dataModel";
+import type { GateLink } from "../../convex/lib/tidyAnswerDecisions";
 
 type Decision =
   | {
@@ -38,60 +42,43 @@ export type ReviewRowSeed = {
   decision?: Decision;
   enrichment?: unknown;
   source?: unknown;
-  // Accepted and ignored: a name row has no batch and no owner.
+  // Accepted and ignored: a gate link has no batch and no owner.
   batchId?: string;
   createdByUserId?: string;
   [key: string]: unknown;
 };
 
-type Ctx = {
-  db: { insert: (table: "tidyNames", doc: never) => Promise<Id<"tidyNames">> };
-};
-
-export function answerOfDecision(
-  kind: "player" | "team",
-  decision: Decision | undefined,
-): Doc<"tidyNames">["answer"] | undefined {
+/**
+ * The `gateLinks` entry for an old-shape review row, or `undefined` for a row
+ * with no decision (the name is pending on the card).
+ */
+export function gateLinkOfSeed(seed: ReviewRowSeed): GateLink | undefined {
+  if (seed.source) {
+    throw new Error("a staged `source` row is retired: career teams and leagues have their own forms");
+  }
+  const decision = seed.decision;
   if (!decision) return undefined;
   if (decision.action === "create") {
     throw new Error(
       "a 'create' review decision is retired: create through tidyNames.createPlayer / the New Team dialog",
     );
   }
-  if (decision.action === "skip") return { kind: "notEntity", by: "operator" };
-  const auto = decision.autoLinked
-    ? ({ by: "auto", autoReason: decision.autoLinked } as const)
-    : ({ by: "operator" } as const);
-  if (kind === "player") {
-    return {
-      kind: "linkPlayer",
-      playerId: decision.linkedPlayerId!,
-      ...auto,
-      ...(decision.addSetSport ? { addSetSport: true as const } : {}),
-    } as never;
+  if (decision.action === "skip") {
+    throw new Error(
+      "a 'skip' review decision is retired: nothing remembers a ruled-out name; drop it from the card's pending names",
+    );
+  }
+  if (!decision.autoLinked) {
+    throw new Error(
+      "an operator's link is retired at commit: the walk links the name on the card (tidyNames.answerName)",
+    );
   }
   return {
-    kind: "linkTeam",
-    teamId: decision.linkedTeamId!,
-    ...auto,
-    ...(decision.saveAsAlias ? { saveAsAlias: true as const } : {}),
-  } as never;
-}
-
-/** Insert the `tidyNames` row for an old-shape review row. */
-export async function insertAsTidyName(ctx: Ctx, seed: ReviewRowSeed): Promise<Id<"tidyNames">> {
-  if (seed.source) {
-    throw new Error("a staged `source` row is retired: career teams and leagues have their own forms");
-  }
-  const answer = answerOfDecision(seed.kind, seed.decision);
-  return ctx.db.insert("tidyNames", {
-    scopeId: seed.selectorOptionId,
     kind: seed.kind,
-    nameNormalized: normalizeEntityName(seed.name),
     name: seed.name,
-    sportId: seed.sportId,
-    status: seed.status ?? "ready",
-    ...(answer ? { answer, answerGen: 1, answeredByUserId: "user_review_001", answeredAt: Date.now() } : {}),
-    ...(seed.enrichment ? { enrichment: seed.enrichment } : {}),
-  } as never);
+    origin: decision.autoLinked,
+    ...(seed.kind === "player"
+      ? { playerId: decision.linkedPlayerId! }
+      : { teamId: decision.linkedTeamId! }),
+  };
 }

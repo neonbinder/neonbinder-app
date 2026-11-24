@@ -13,7 +13,7 @@
  * to read the same way in the other:
  *
  *  - The review wizard's same-name list is rendered from a string the SERVER
- *    built (`entityReviewQueue.enrichment.existingCandidates[].careerSummary`),
+ *    built (`existingCandidates[].careerSummary` on a lookup's enrichment),
  *    because drawing it on the client would mean joining every candidate's
  *    `teamYears` to `teams`: N round trips to answer "which Bob Allen is
  *    this?", on a panel that exists to be read in a second.
@@ -288,7 +288,7 @@ const WRITTEN_MORE = /\s*\+(\d+) more$/;
  *
  * For the one surface that never sees the structured line: the review
  * wizard's pick step, whose candidates carry `careerSummary` as the string the
- * server stored (`entityReviewQueue.enrichment.existingCandidates`). Storing
+ * server built (`existingCandidates` on a lookup's enrichment). Storing
  * the structured form instead would be a schema change for a label; reading
  * the string back is cheap because this module wrote it, and its grammar is
  * small. Also reads the pre-NEO-462 stored form (`Phillies 1890–1894`, full

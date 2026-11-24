@@ -2295,7 +2295,6 @@ PR that adds a fifth reader.
 
 | behaviour | why not here | covered by |
 |---|---|---|
-| the `Skipped names` panel + Unskip | skip records are written by `commitCardChecklist`, not `recordDecision` | `entityReviewSkips`, `SkippedNamesPanel.test.tsx` |
 | commit-time `resolveTeamIdByName` for a staged career team | same — needs a commit | entity-review unit files |
 | the link surviving commit re-resolution | same | entity-review unit files |
 
@@ -3097,8 +3096,7 @@ reachable cheaply:
   every time (see **Adding a set**).
 
 So the step is covered where it is deterministic: `NewLeagueForm.test.tsx`,
-`entityReviewQueue.leagueStaging.test.ts` and `EntityReviewWizard.test.tsx`
-pin the form, the staging order and the decision. What the three E2E flows owe
+`NewLeagueForm.test.tsx` pins the form and the decision. What the three E2E flows owe
 it is only that they ANSWER it — which is the loop above, and which is enough,
 because a league step they cannot answer stops the batch dead and fails them.
 
@@ -3272,10 +3270,7 @@ NEO-260 retired both the claim and the names. **Nothing removes them.** There is
 no delete-team (or delete-player) affordance anywhere in the product: the only
 deletes in the codebase are the armed internal reset batches
 (`selectorOptions:resetTeamsBatch` / `resetLeaguesBatch`, reachable only through
-`e2e-baseline.sh reset`) and the review queue's own sweeps
-(`entityReviewQueue:sweepStalePendingRows` / `sweepAbandonedBatches`), which by
-their own contract touch only review-queue rows and never `teams`, `players` or
-`cardChecklist`. The TeamPicker's `Remove team <name>` control **unlinks** a team
+`e2e-baseline.sh reset`). The TeamPicker's `Remove team <name>` control **unlinks** a team
 from a card; the row it points at is untouched.
 
 So every team a flow creates stands for the **whole run**, on the one Convex

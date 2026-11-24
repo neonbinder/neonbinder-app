@@ -115,24 +115,6 @@ export function aliasRow(t: T, playerId: Id<"players">, sportId: Sel, alias: str
   );
 }
 
-export function skipRow(
-  t: T,
-  selectorOptionId: Sel,
-  kind: "player" | "team",
-  name: string,
-) {
-  return t.run((ctx) =>
-    ctx.db.insert("entityReviewSkips", {
-      selectorOptionId,
-      kind,
-      nameNormalized: kind === "player" ? normalizePlayerName(name) : normalizeTeamName(name),
-      name,
-      skippedAt: NOW,
-      skippedByUserId: "fixture",
-    }),
-  );
-}
-
 /** A committed card on a set node. */
 export function committedCard(
   t: T,

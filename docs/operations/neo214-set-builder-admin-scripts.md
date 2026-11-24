@@ -28,10 +28,7 @@ now**, by hand, like any other taxonomy row.
 | `selectorOptions` | the whole sport → manufacturer → year → set → variant cascade, and every platform mapping attached to it |
 | `cardChecklist` | every card row, including hand-entered and hand-edited ones |
 | `cardCrossListings` | the junction rows linking a card to other sets it appears under (NEO-21) |
-| `entityReviewQueue` | every staged entity-review row, in every batch — an unfinished wizard's unknown player/team/league names (NEO-294) |
 | `checklistCandidates` | every staged candidate card of an unfinished checklist review (NEO-294) |
-| `cardPrintedNames` | each card's printed-name index (NEO-645), drained before the cards it names |
-| `tidyNames` | every Tidy Up name answer and lookup (NEO-645); an answer links players and teams the reset deletes, so none survives |
 | `players` | every player row, including career history and Wikidata enrichment |
 | `playerAliases` | the alias index behind those players (NEO-254) |
 | `teams` | every team row, including colours (NEO-91/NEO-147) |
@@ -41,22 +38,16 @@ now**, by hand, like any other taxonomy row.
 
 The order is load-bearing: a referencing table is drained before the table it
 points at, so a run that stops at its time budget never leaves a pointer
-dangling. The two review tables go before `players`/`teams`/`leagues` for that
-reason — a recorded decision carries `linkedPlayerId`, `linkedTeamId` or
-`linkedLeagueId`.
+dangling.
 
-> **Why the review tables are in the list at all (NEO-294).** They are
-> transient staging, and in normal operation a commit or a cancel empties
-> them. What is left is a cron's problem, and the crons differ:
-> `reap abandoned entity-review batches` waits **24 hours** of silence before
-> deleting a review batch, while stale `checklistCandidates` go after **one
-> hour**. The 24-hour threshold is correct — deleting a batch throws away an
-> operator's decisions — and it is also unreachable in CI, where six runs land
-> in fourteen hours. Before NEO-294 that residue accumulated into one preview
+> **Why `checklistCandidates` is in the list at all (NEO-294).** It is
+> transient staging, and in normal operation a commit or a cancel empties it.
+> What is left is a cron's problem: stale `checklistCandidates` go after
+> **one hour**, which is unreachable in CI, where six runs land in fourteen
+> hours. Before NEO-294 that residue accumulated into one preview
 > deployment: the reset itself went 15 s → 69 s → 246 s across successive runs
-> and a flow failed on `1485 checklist reviews are in progress here`, a count
-> taken from both tables at once. NEO-294 changed neither cron; it made the
-> reset claim the tables. The counts below are the diagnostic — a reset
+> and a flow failed on `1485 checklist reviews are in progress here`. NEO-294
+> made the reset claim the table. The count below is the diagnostic: a reset
 > reporting thousands here inherited someone else's abandoned reviews.
 
 It is not scoped to a set, a sport, or a user. There is no narrower tool: a
@@ -100,7 +91,6 @@ On success it prints the per-table counts:
 ```json
 {
   "cardChecklistDeleted": 412,
-  "cardPrintedNamesDeleted": 0,
   "cardPlayerLinksDeleted": 530,
   "cardTeamLinksDeleted": 398,
   "checklistCandidatesDeleted": 0,
@@ -109,7 +99,6 @@ On success it prints the per-table counts:
   "collectionCopiesDeleted": 27,
   "collectionWantsDeleted": 6,
   "crossListingsDeleted": 5,
-  "entityReviewQueueDeleted": 0,
   "franchisesDeleted": 12,
   "leaguesDeleted": 3,
   "playerAliasesDeleted": 41,
@@ -124,7 +113,6 @@ On success it prints the per-table counts:
   "slSetReviewsDeleted": 2,
   "teamAliasesDeleted": 9,
   "teamsDeleted": 76,
-  "tidyNamesDeleted": 0,
   "complete": true
 }
 ```

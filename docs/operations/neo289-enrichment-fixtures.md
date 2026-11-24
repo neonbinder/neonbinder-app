@@ -117,16 +117,13 @@ Only the names a run on that deployment actually looked up, not every row
 the deployment holds. Since NEO-330 every CI preview carries the reference
 catalogue, and almost none of those rows is ever looked up, so "every row"
 would bury the real gaps under catalogue names. The names come from three
-places a lookup leaves a trace (the header of
+place a lookup leaves a trace (the header of
 `apps/web/convex/enrichmentFixtures.ts` has the detail):
 
 - `players`, `teams` and `leagues` rows of the sport **created since the
-  run's boundary**: a row the review wizard creates was looked up when it
-  was staged, and a player or league created on an admin page is looked up
-  at creation;
-- `entityReviewQueue` rows still open (the commit deletes its own batch);
-- `entityReviewSkips` rows whose set is in the sport: a skipped name was
-  looked up but never becomes a row.
+  run's boundary**: a player or league created on an admin page is looked up
+  at creation. (A name the Tidy Up walk looks up on demand leaves no stored
+  trace, so it is listed only once it becomes a row.)
 
 The **boundary** is the `_creationTime` of the oldest `year` row, because a
 name reaches the wizard only through a set, and the seed's catalogue load
@@ -246,17 +243,13 @@ a catalogue-loaded preview too. Use this method when you would rather not
 arm a deployment, or when the batch's linked names matter: §4 cannot see
 those (§3).
 
-1. **Get the exact names the batch stages.** Run the spec that commits the
-   set once on the PR's preview (an ordinary E2E run), then read the set's
-   `entityReviewSkips` rows read-only (index
-   `by_selector_option_and_kind_and_name`). They hold the raw `name` of every
-   row the operator SKIPPED: the per-player strings the wizard staged, not
-   the card's name (an "A / B" card stages two names). Rows the spec LINKED
-   are not there; add those names by hand from the spec. Staged career teams
-   and leagues carry a `knownQid` (their `source.wikidataId`); keep it with
-   the name, because the lookup is keyed on the name but a hit is honoured
-   only when the recorded `wikidataId` equals it (§1), and a recorded `null`
-   is a miss for a caller with a known QID.
+1. **Get the exact names the batch looks up.** Take them from the set's
+   checklist (the printed player and team names on its cards, as the Tidy Up
+   walk shows them) and from the spec that commits it. Add the names of any
+   rows the spec LINKED by hand. A career team or league carries a `knownQid`
+   (its Wikidata id); keep it with the name, because the lookup is keyed on
+   the name but a hit is honoured only when the recorded `wikidataId` equals
+   it (§1), and a recorded `null` is a miss for a caller with a known QID.
 2. **Get the sport context**: the sport row's `sportConfig` (its `espn` and
    `wikidata` blocks), read-only.
 3. **Look every name up with the live bodies.** In an `.mts` script under
@@ -374,7 +367,7 @@ already recorded) with no miss.
 The spec `sport-no-teams-listing-team-holds-back-the-default` commits this set and
 stages 27 of its 29 checklist names as new Baseball players (`Cole Carlon` and
 `Josh Butler` resolve to catalogue players and are never looked up). The staged
-list was read off a run's `entityReviewSkips` (26 skips) plus `Austin Musso`,
+list was read off a run's skip records (26 skips, since retired) plus `Austin Musso`,
 the one name the spec adds; his first lookup is in Baseball, before he is moved
 to the worker's custom sport, which has no Wikidata mapping. All 27 were
 captured with §4b's `runCaptureLookups` (Baseball `sportConfig`, ten names a

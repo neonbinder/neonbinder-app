@@ -82,20 +82,9 @@ export class RefusedError extends Error {}
  * SELECTOR_DEPENDANT_TABLES are the ones the scripted reset
  * (`resetSetBuilderDataFromCli`, either scope) drains: any rows left in them
  * mean the reset did not run, and an import-mode load refuses.
- *
- * SELECTOR_DEPENDANT_UNDRAINED_TABLES also hold selectorOptions ids but no
- * reset drains them (per-set "not a person" skips). Their rows outlive every reset already, so they are reported, not
- * refused; refusing would fail every CI run.
  */
 export const SELECTOR_DEPENDANT_TABLES = [
   "slSetReviews",
-  // NEO-645 — a name's answer (`tidyNames`: scopeId, sportId) and each card's
-  // printed names (`cardPrintedNames`: scopeId). Drained by the reset
-  // (`resetTidyNamesBatch`, `resetCardPrintedNamesBatch`), before the selector
-  // rows: unlike `entityReviewSkips`, an answer links players and teams the
-  // reset deletes, so a surviving one would auto-apply in the next run.
-  "tidyNames",
-  "cardPrintedNames",
   // NEO-358 — transient per-column sync notices (parentId); drained by the
   // reset since a stale "could not be reached" notice outlived one on dev.
   "selectorSyncStatus",
@@ -138,7 +127,6 @@ export const SELECTOR_DEPENDANT_TABLES = [
   "cardSecondaryPlayerLinks",
   "cardChecklist",
   "cardCrossListings",
-  "entityReviewQueue",
   "checklistCandidates",
   // NEO-402 — a fetch's stored player answers (selectorOptionId, sportId).
   // Drained by the reset (`resetChecklistNameResolutionsBatch`).
@@ -150,10 +138,7 @@ export const SELECTOR_DEPENDANT_TABLES = [
   "publishedChecklists",
   "publishedChecklistLinks",
 ];
-export const SELECTOR_DEPENDANT_UNDRAINED_TABLES = [
-  "entityReviewSkips",
-];
-const COUNTED_DEPENDANT_TABLES = [...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES];
+const COUNTED_DEPENDANT_TABLES = SELECTOR_DEPENDANT_TABLES;
 
 // ── Args ────────────────────────────────────────────────────────────────────
 
@@ -444,9 +429,6 @@ async function cmdLoad({ bundle, deployment, sports, dryRun, yes }, { env, log }
       throw new RefusedError(
         `${deployment} holds rows in ${blocking.join(", ")}; --sports import replaces the whole ${SPORT_TABLE} table and would orphan them. Run the reset first (e2e-baseline.sh reset), or use --sports remap.`,
       );
-    }
-    for (const t of SELECTOR_DEPENDANT_UNDRAINED_TABLES) {
-      if (pre.nonEmpty[t]) log(`note: ${t} rows will point at replaced ${SPORT_TABLE} rows (no reset drains this table)`);
     }
   }
 

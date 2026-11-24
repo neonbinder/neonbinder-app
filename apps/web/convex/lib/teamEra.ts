@@ -8,8 +8,7 @@
  * `teamEraProblem` (`lib/teams/team-era.ts`, shared with the review wizard);
  * this only turns its answer into the `ConvexError` a client can read.
  *
- * Applied by `entityReviewQueue.recordDecision` (via `toTeamCreate`),
- * `teams.findOrCreate`, `teams.saveTeamFields` and `teams.nameHeldAsAliasBy`.
+ * Applied by `teams.findOrCreate`, `teams.saveTeamFields` and `teams.nameHeldAsAliasBy`.
  */
 import { ConvexError } from "convex/values";
 import { teamEraProblem } from "../../lib/teams/team-era";
