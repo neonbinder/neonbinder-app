@@ -1,6 +1,6 @@
 ---
 name: neo656-tidy-walk-helpers-skip-apply-end-screen
-description: NEO-656 tidy-walk.ts changes - no Keep as is (career "skip" default), applyNameToAll, end-screen verdict/tally, exact suggested-chip name
+description: NEO-656 tidy-walk.ts changes - no Keep as is (career "skip" default), applyNameToAll (button stays disabled), end-screen verdict/tally, exact chip name, walk-memory answer after Back
 metadata:
   type: project
 ---
@@ -34,3 +34,10 @@ NEO-656 removed every stored Tidy Up answer, so the walk helpers changed (2026-1
   makes the tile vanish. Grep the handler for `memory.` before blaming the spec.
 - Open risk: after a Team answer the Career gap query re-runs with no perceivable pending state, so
   a gap can appear after the helper looked. See [[patterns-walk-helper-planted-breaks]].
+- **A pressed Apply to all stays, disabled,** beside its "Cleared/Linked N more card(s)." line once
+  no other card waits: assert `toBeDisabled()`, not `toHaveCount(0)`.
+- **"Not a player" is held in walk memory only while the card is open** (`leaveCard`). After Back to
+  the card, a `toHaveCount(0)` on "<name> is not a player." passed even with leaveCard planted to keep
+  it: the Player tile draws a beat after the header. Anchor first on the Team tile's own line (e.g.
+  "No team on this card.") from the same card read, then assert the Player tile is absent. Plant
+  `leaveCard` to prove it.
