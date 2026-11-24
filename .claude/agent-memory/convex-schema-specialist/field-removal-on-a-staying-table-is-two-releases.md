@@ -34,6 +34,13 @@ treats that as a known gap.
    leftover read of the field. Test files escape typecheck, so grep them
    ([[convex-tests-have-no-static-gate]]). PR2 also deletes the clear.
 5. Other open PRs' previews that ran the old writers fail after PR2 lands. The
-   fix is a reset, then a rerun.
+   fix is a reset, then a rerun. Only a preview whose LAST E2E run used
+   writer-era code is at risk (each run's reset drains the cards). The CI
+   reset runs after the preview build's `convex deploy`, so it cannot rescue
+   it: reset with the old code before merging main, or delete the preview.
+   The reference-seed bundle carries no card rows, so fresh seeds are safe.
+6. PR2 review: a removed validator strands the sub-validators only it used
+   (and their imports). `convex/` non-test files are outside eslint and tsc has
+   no unused-locals check, so grep each sub-validator's call count.
 Merge PR2 only after the dry run reads 0 on prod. Related:
 [[tightening-a-validator-shared-with-stored-drafts]].

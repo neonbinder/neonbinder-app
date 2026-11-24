@@ -22724,7 +22724,7 @@ const commitChunkCardValidator = v.object({
       teamIds: v.array(v.id("teams")),
       // NEO-656 — the stored reason is gone; an older caller may still send
       // one, and it is ignored.
-      reason: v.optional(v.union(v.literal("otherCards"), v.literal("career"))),
+      reason: v.optional(tidyTeamFillReasonValidator),
     }),
   ),
   // NEO-645 (Q1 = A) — the stored-cards tier of the fill, read by the action
