@@ -138,7 +138,6 @@ import type * as lib_easypostWebhookSignature from "../lib/easypostWebhookSignat
 import type * as lib_ebayEnv from "../lib/ebayEnv.js";
 import type * as lib_ebayListing from "../lib/ebayListing.js";
 import type * as lib_entityNearMatch from "../lib/entityNearMatch.js";
-import type * as lib_entityReviewContext from "../lib/entityReviewContext.js";
 import type * as lib_extractRejections from "../lib/extractRejections.js";
 import type * as lib_fakeBscNamespace from "../lib/fakeBscNamespace.js";
 import type * as lib_fakeMarketplace from "../lib/fakeMarketplace.js";
@@ -397,7 +396,6 @@ declare const fullApi: ApiFromModules<{
   "lib/ebayEnv": typeof lib_ebayEnv;
   "lib/ebayListing": typeof lib_ebayListing;
   "lib/entityNearMatch": typeof lib_entityNearMatch;
-  "lib/entityReviewContext": typeof lib_entityReviewContext;
   "lib/extractRejections": typeof lib_extractRejections;
   "lib/fakeBscNamespace": typeof lib_fakeBscNamespace;
   "lib/fakeMarketplace": typeof lib_fakeMarketplace;

@@ -4,7 +4,7 @@
  * ## Why a derivation and not a review-queue row
  *
  * The first design for reconciling teamless cards added a third
- * `entityReviewQueue` kind and rode the commit wire: rows created during the
+ * review-row kind and rode the commit wire: rows created during the
  * fetch, decided in the wizard, applied by the commit. That works only for
  * cards a sync is about to touch. The cards that actually need attention are
  * the ones ALREADY COMMITTED — dev's 2026 Topps base has ten teamless League
@@ -441,8 +441,8 @@ export type TidyAttentionItem =
   // ── pink ──
   // A `sourceDisagreements` entry (an entry carrying the legacy `chosen` is settled).
   | { level: "fix"; kind: "sourcesDisagree"; field: "players" | "teams" }
-  // `pendingPlayerNames` is not empty. A same-name pair is a pending name whose
-  // `tidyNames` row has candidates, so it is covered. A multi-player card with
+  // `pendingPlayerNames` is not empty. A same-name pair is a pending name, so it is
+  // covered. A multi-player card with
   // one name linked is still pink while another is pending.
   | { level: "fix"; kind: "playerName"; names: string[] }
   // NEO-645 (Jason, 2026-11-23): no player and no name. A card always has one.

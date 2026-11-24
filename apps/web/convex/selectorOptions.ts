@@ -20643,7 +20643,7 @@ export const commitCardChecklistPrelude = internalMutation({
          *
          * Optional because the wizard's team step only asks when it has to.
          * Typed loosely rather than off the validator so this file compiles
-         * independently of the shape `entityReviewQueue` declares.
+         * independently of any one validator's shape.
          */
         yearsActive?: { from: number; to?: number };
       },
@@ -20780,7 +20780,7 @@ export const commitCardChecklistPrelude = internalMutation({
      * ── NEO-236: staged career teams are created BEFORE anything needs them ──
      *
      * These rows are not in `allTeamNames` — no card carries their name. They
-     * were staged by `entityReviewQueue.stageCareerTeamRows` off a player's own
+     * were staged off a player's own
      * career list, walked as their own New Team step, and answered with a
      * Location, a Name and a League. This pass is where those answers become
      * `teams` rows.
@@ -21868,8 +21868,7 @@ export const commitCardChecklistPrelude = internalMutation({
          * and the decision branches all return before here — so the next
          * call starts it clean.
          *
-         * LIVELOCK GUARD, the `entityReviewQueue.sweepAbandonedBatches`
-         * `rows > 0` equivalent: a page that ends having walked NOTHING would
+         * LIVELOCK GUARD: a page that ends having walked NOTHING would
          * reschedule itself forever on the same offset. Two things stop it,
          * and the first alone is sufficient — a fresh cache starts at zero
          * reads with a budget of at least one, so the first name of any page
@@ -22214,8 +22213,7 @@ type CommitPrelude = {
  *    team strings joined (an older client that sent no raw value). Never the
  *    first part alone: that names one team of a card listed as two.
  *
- * `skippedTeamKeys` holds `normalizeEntityName` keys, as `entityReviewSkips`
- * stores them.
+ * `skippedTeamKeys` holds `normalizeEntityName` keys.
  */
 export function commitTeamHint(
   rawTeamName: string | undefined,
@@ -23014,7 +23012,7 @@ export const commitCardChecklistChunk = internalMutation({
         // two sources, and it is exactly what the fold now treats as one. Keyed
         // literally, skipping "José Ramírez" in the wizard left a pending "Jose
         // Ramirez" on the custom card forever: re-offered on every later fetch,
-        // which is the loop `entityReviewSkips` exists to break, half-working.
+        // which is a loop the skip rule exists to break, half-working.
         const settledPlayerNames = new Set([
           ...(args.resolvedPlayerNames ?? []),
           ...(args.skippedPlayerNames ?? []),
@@ -23701,8 +23699,7 @@ export type FinalizePageResult = {
  *
  * So a call now does ONE page of ONE phase and returns `{ hasMore, resume }`;
  * `commitCardChecklist` loops on that, exactly as `EntityReviewWizard`
- * loops on `recordAllRemainingAs*`'s `{ hasMore, cursor }`
- * (`entityReviewQueue.decideAllRemaining` is the worked example). The three
+ * loops on a `{ hasMore, cursor }` page result. The three
  * phases run in order and are bounded separately because they cost three
  * different things:
  *
@@ -23768,7 +23765,7 @@ export type FinalizePageResult = {
  * rows behind, which is strictly less resumable-dead-batch than the whole batch
  * an all-or-nothing finalize left behind when it failed. Either way the re-run
  * converges: the names those rows carry are now real `players`/`teams` rows or
- * `entityReviewSkips` entries, so the re-fetch's gate no longer calls them
+ * ruled-out names, so the re-fetch's gate no longer calls them
  * unknown, and the prelude's own re-read of the batch hands the remaining rows
  * back here to be deleted.
  *
@@ -24136,7 +24133,7 @@ export const commitCardChecklistFinalize = internalMutation({
         // will be one, so it is not waiting for anything — it is settled, and the
         // card keeps it as the free text it always was. Left pending it would be
         // re-offered on every later fetch, which is exactly the loop
-        // `entityReviewSkips` exists to break, and the skip would only half-work:
+        // the skip rule exists to break, and the skip would only half-work:
         // suppressed for marketplace names, still nagging for custom-card ones.
         //
         // NEO-535 — and the card's `listingDescription` is deliberately NOT
@@ -25656,7 +25653,7 @@ export const auditChecklistDataForResync = internalQuery({
 /**
  * Commit a fetched checklist preview. Every player/team name that isn't
  * already in our tables was reviewed one-at-a-time in the NEO-92 review wizard
- * (batchId → entityReviewQueue), which recorded a `decision` of "create"
+ * (a per-batch review queue), which recorded a `decision` of "create"
  * (seeded from the wizard's own Wikidata preview lookup) or "link" (an
  * existing player/team the user picked instead — no new row). There is no
  * skip: every name resolves to one or the other. Card playerIds/teamOnCardIds
@@ -25749,7 +25746,7 @@ const OPERATOR_TEAM_IDS_PER_PAGE = 500;
  *    missing-team lane already handles, and one stale pick must not cost the
  *    operator a 900-card review;
  *  - a team from ANOTHER SPORT is counted as foreign, and the action REFUSES
- *    the commit — the house rule `entityReviewQueue`'s link step applies
+ *    the commit — the house rule the review wizard's link step applied
  *    ("Linked team's sport … doesn't match"). That is not a stale render but a
  *    client offering a choice it was never shown;
  *  - with no sport resolvable for the row nothing can be verified, so every id
@@ -26537,7 +26534,7 @@ export const commitCardChecklist = action({
     // Run one phase: retry an optimistic-concurrency conflict a bounded number
     // of times, then rethrow labelled with the phase that failed.
     //
-    // WHY THE RETRY (NEO-189). The prelude reads a whole `entityReviewQueue`
+    // WHY THE RETRY (NEO-189). The prelude reads a whole review
     // batch, and the Wikidata pool's lookups were still landing on those rows
     // while it read — so the commit lost the OCC race on Convex's every
     // internal retry and the seed job went red. The real fix is upstream:
@@ -26940,7 +26937,7 @@ export const commitCardChecklist = action({
     const stampedUnreviewedNames = new Set<string>();
     // NEO-330 × NEO-335 — the names this set's operator ruled "not a team",
     // this commit's skips and an earlier save's alike (`isStoredSkip`), keyed
-    // as `entityReviewSkips` keys them. A ruled-out name is never kept as the
+    // by `normalizeEntityName`. A ruled-out name is never kept as the
     // card's listing hint: see `commitTeamHint`.
     const skippedTeamKeys = new Set(
       prelude.skippedTeamNames.map((n) => normalizeEntityName(n)),
@@ -27395,8 +27392,8 @@ export const commitCardChecklist = action({
      * documents and read nothing a sibling writes:
      *
      *  - WRITES. Each chunk inserts its own cards and, for each, the card's own
-     *    index rows (`cardPlayerLinks`, `cardTeamLinks`, `cardSecondaryPlayerLinks`,
-     *    `cardPrintedNames`), patches only the cards it was handed, and nothing
+     *    index rows (`cardPlayerLinks`, `cardTeamLinks`, `cardSecondaryPlayerLinks`),
+     *    patches only the cards it was handed, and nothing
      *    else — except the card counts on the leaf row and the rows above it,
      *    which every chunk would patch. That flush is the one shared write, and
      *    `deferCardCounts` takes it out: each chunk reports how many cards it
@@ -27405,7 +27402,7 @@ export const commitCardChecklist = action({
      *    is repaired by the next commit's, even one that inserts nothing). A card's `sku` patch and a team-link league patch are on the
      *    card the chunk just inserted. Pinned by `commitCardChecklist.parallelChunks.test.ts`.
      *  - READS. A chunk reads the leaf row and the rows above it (slots, sport,
-     *    year, defaults), teams, players, leagues and the `tidyNames` index, and
+     *    year, defaults), teams, players, leagues, and
      *    nothing a chunk writes. It used to read the WHOLE checklist in one range
      *    whenever a card in it was an update; that range now reads only the ids
      *    it was handed, so a sibling's inserts cannot invalidate it.

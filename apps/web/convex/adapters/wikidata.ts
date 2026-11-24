@@ -1194,9 +1194,8 @@ export interface PlayerLookupResult {
   // best-effort: a real but thinly-documented player has none of them, which
   // is why each is optional rather than defaulted to a placeholder string.
   //
-  // These are consumed only by the review-wizard path: `runEntityReviewLookup`
-  // spreads this whole result into `entityReviewQueue.enrichment` (whose
-  // validator carries all three), so nothing extra is needed to route them.
+  // These are consumed only by the Tidy Up walk's lookup (`lookupTidyName`),
+  // which returns this whole result, so nothing extra is needed to route them.
   // `enrichPlayer` ignores them — `players` has no column for them, and adding
   // one would be storing a Wikidata blurb as if it were NeonBinder card data.
   /** Wikidata's English `schema:description` — "American football running back". */

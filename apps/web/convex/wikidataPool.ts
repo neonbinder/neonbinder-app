@@ -113,18 +113,6 @@ export const WIKIDATA_MAX_PARALLELISM = 5;
  *    action run): 83 s.
  *  - The workpool's own recovery scan only inspects runs older than 5 min;
  *    no attempt gets near that.
- *  - `ENTITY_REVIEW_STALE_MS` (entityReviewQueue.ts, 30 min, measured from the
- *    row's `_creationTime`, swept every 15 min): an item that starts promptly
- *    gives up by 18.2 min, leaving 11.8 min for queueing. A large batch
- *    draining through a sustained outage CAN queue past that, and the sweep
- *    then ages the row to "error" while a retry is still scheduled. That is
- *    deliberately left alone rather than heartbeated: the early "error" is
- *    self-correcting — a later attempt that gets an answer still writes
- *    "ready" (`applyLookupResult` guards only DECIDED rows), and a later
- *    final failure's backstop no-ops on a row that is no longer pending — and
- *    after 30 minutes of Wikidata failing, "error" is the right thing to show.
- *  - `ENTITY_REVIEW_ABANDONED_MS` (24 h) and the placeholder wedge watchdog
- *    (a different pool) are not in reach.
  *  - A retry after the row was deleted (batch committed or cancelled, player
  *    merged away) reads `null` and returns; after an operator filled the row
  *    in, the creation-only marker guard skips it. Nothing is written by an
