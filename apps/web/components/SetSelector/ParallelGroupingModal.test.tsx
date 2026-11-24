@@ -782,7 +782,7 @@ describe("ParallelGroupingModal — several rows at once", () => {
     screen.getByText(title).parentElement!.parentElement as HTMLElement;
   // NEO-660 — a ticked row's own box is hidden until this switch is on.
   const boxSwitch = () =>
-    screen.getByRole("checkbox", { name: "Show ticked rows' boxes" });
+    screen.getByRole("checkbox", { name: "Show selected rows' boxes" });
   const showTickedBoxes = () => fireEvent.click(boxSwitch());
   const hasBox = (name: string) => screen.queryByText(boxTitle(name)) !== null;
   // dnd-kit keeps a role="status" of its own; this is the footer's.
@@ -1699,7 +1699,7 @@ describe("ParallelGroupingModal — two panes, filter and jump", () => {
     expect(screen.getByRole("group", { name: boxTitle(STADIUM) })).toBeTruthy();
     expect(screen.queryByRole("group", { name: boxTitle(TRADED) })).toBeNull();
     fireEvent.click(
-      screen.getByRole("checkbox", { name: "Show ticked rows' boxes" }),
+      screen.getByRole("checkbox", { name: "Show selected rows' boxes" }),
     );
     expect(screen.getByRole("group", { name: boxTitle(BOWMAN) })).toBeTruthy();
     // The filter still governs the rest.
@@ -2148,7 +2148,7 @@ describe("ParallelGroupingModal — two panes, keyboard and screen reader", () =
     renderModal();
     fireEvent.click(screen.getByRole("checkbox", { name: `Select ${BOWMAN}` }));
     fireEvent.click(
-      screen.getByRole("checkbox", { name: "Show ticked rows' boxes" }),
+      screen.getByRole("checkbox", { name: "Show selected rows' boxes" }),
     );
     // Bowman's own box refuses its own row: not a target, not a stop.
     expect(box(BOWMAN).getAttribute("tabindex")).toBe("-1");

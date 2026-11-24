@@ -681,7 +681,12 @@ function DropZone({
             ? "border-selection bg-raised-deep/30 ring-2 ring-selection ring-offset-2 ring-offset-raised-deep shadow-[0_0_14px_3px_rgb(0_194_255/calc(0.45*var(--glow)))]"
             : outlineTarget
               ? `border-dashed border-selection hover:border-solid ${
-                  highlight ? "bg-notice-warn-bg/25" : "bg-raised-deep/30"
+                  // A suggested box keeps its yellow cue inside the blue
+                  // dashed border: an inset line of the notice rule colour,
+                  // distinct from drag-over (solid) and the jump (a ring).
+                  highlight
+                    ? "bg-notice-warn-bg/25 shadow-[inset_0_0_0_3px_var(--notice-warn-rule)]"
+                    : "bg-raised-deep/30"
                 }`
               : highlight
                 ? "border-notice-warn-rule/50 bg-notice-warn-bg/25"
@@ -896,6 +901,7 @@ export default function ParallelGroupingModal({
   // right pane. Off by default; per session, so it is not reset by a new
   // selection.
   const [showSelectedBoxes, setShowSelectedBoxes] = useState(false);
+  const showSelectedBoxesHintId = useId();
   const jumpTimerRef = useRef<number | null>(null);
   /**
    * NEO-472 (a11y) — each scroller is a Tab stop while it has something to
@@ -1077,6 +1083,11 @@ export default function ParallelGroupingModal({
   );
 
   const selectedSet = useMemo(() => new Set(state.selected), [state.selected]);
+  // The Parallels boxes on screen: the filtered ones, less a selected row's
+  // own box while the switch is off.
+  const shownParentRows = visibleParentRows.filter(
+    (parent) => showSelectedBoxes || !selectedSet.has(parent._id),
+  );
   const selectedCount = state.selected.length;
 
   /**
@@ -1788,22 +1799,24 @@ export default function ParallelGroupingModal({
                   <Switch
                     checked={showSelectedBoxes}
                     onCheckedChange={setShowSelectedBoxes}
+                    aria-describedby={showSelectedBoxesHintId}
                   />
                   <span className="text-sm font-medium text-ink">
-                    Show ticked rows' boxes
+                    Show selected rows' boxes
                   </span>
                 </label>
-                {isFiltering && visibleParentRows.length === 0 && (
+                {/* Outside the label, so it describes the switch without
+                    joining its name. */}
+                <span id={showSelectedBoxesHintId} className="sr-only">
+                  Hides the drop boxes of selected rows.
+                </span>
+                {shownParentRows.length === 0 && (isFiltering || selectedCount > 0) && (
                   <p className="text-xs text-ink-3 italic py-1 break-words">
-                    No parallels to show for "{deferredFilter.trim()}"
+                    No parallels to show
+                    {isFiltering ? ` for "${deferredFilter.trim()}"` : ""}
                   </p>
                 )}
-                {visibleParentRows
-                  .filter(
-                    (parent) =>
-                      showSelectedBoxes || !selectedSet.has(parent._id),
-                  )
-                  .map((parent) => {
+                {shownParentRows.map((parent) => {
                   const children = childrenByParent.get(parent._id) ?? [];
                   const hasYellow = children.some((c) =>
                     state.suggested.has(c._id),

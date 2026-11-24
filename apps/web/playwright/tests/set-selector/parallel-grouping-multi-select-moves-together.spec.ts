@@ -18,7 +18,7 @@
 //
 // NEO-660: a ticked row's own "Parallels of …" box leaves the right pane, so
 // only boxes that can take the selection are left, each in a dashed blue
-// outline; the "Show ticked rows' boxes" switch (off on every open, never
+// outline; the "Show selected rows' boxes" switch (off on every open, never
 // moved by a tick) brings the own boxes back with their "This row is
 // selected" hint. The switch is on through the filter steps, so it is the
 // filter, not the tick, that hides those boxes there.
@@ -65,10 +65,10 @@ test(
     const boxOf = (name: string) => boxes.getByRole("group", { name: `Parallels of "${name}"`, exact: true });
     // NEO-660: the switch heads the right pane, off on open. Nothing is
     // ticked yet, so every row has its box.
-    const showTicked = boxes.getByRole("checkbox", { name: "Show ticked rows' boxes", exact: true });
+    const showTicked = boxes.getByRole("checkbox", { name: "Show selected rows' boxes", exact: true });
     // The input is visually hidden under its painted track, so a click lands
     // where a user's does: on the label's visible words.
-    const flipShowTicked = () => boxes.getByText("Show ticked rows' boxes", { exact: true }).click();
+    const flipShowTicked = () => boxes.getByText("Show selected rows' boxes", { exact: true }).click();
     await expect(showTicked).not.toBeChecked();
     await expect(boxOf(bolt)).toBeVisible();
     await expect(boxOf(comet)).toBeVisible();
