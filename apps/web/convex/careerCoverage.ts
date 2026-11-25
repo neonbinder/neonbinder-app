@@ -22,6 +22,7 @@ import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import {
   computeCoverage,
   cardTeamKeysFor,
+  newCoverageMemo,
   stintsWithKeys,
   type TeamFactsMemo,
 } from "./lib/careerCoverageFacts";
@@ -174,6 +175,100 @@ export const coverageForPairs = internalQuery({
       setYear: args.setYear,
       pairs: args.pairs,
     });
+  },
+});
+
+/**
+ * NEO-656 (J5/J6) — the most pairs one `careerGaps` call answers. One subscribed
+ * query serves a leaf's cards (the client de-duplicates the pairs), so this
+ * bounds the read, not the leaf: each distinct player and team is one document,
+ * and nothing here ever reads a card.
+ */
+export const CAREER_GAPS_MAX_PAIRS = 1024;
+
+/**
+ * NEO-656 (security audit, S7) — the most distinct leaves (`selectorOptionId`s)
+ * one `careerGaps` call answers. Each leaf is about ten ancestry reads, so the
+ * pair cap alone would let 1024 pairs on 1024 leaves read ten thousand
+ * documents. A walk's pairs sit in one leaf (and the checklist's in a few).
+ */
+export const CAREER_GAPS_MAX_LEAVES = 64;
+
+/**
+ * NEO-656 (Jason: "it should read real data and display pink/blue as
+ * appropriate depending on the current state of the data") — the career gaps
+ * among a set of cards' (player, team) pairs, read LIVE from the players' own
+ * stints, so a card is blue exactly while its gap exists and the gap leaves the
+ * moment a stint, a link or a team covers it, wherever that happens.
+ *
+ * The rule is the commit's own (`careerGapChecks`, `careerCoversCardTeam`
+ * through `computeCoverage`): a pair is a gap when the player's career does not
+ * cover the team as of the YEAR OF THE SET THE CARD IS IN. No year means no
+ * gap. Each pair carries its card's own `selectorOptionId`, so a guest row is
+ * judged by its home set's year. The caller builds the pairs from single-player
+ * cards only (`deriveCardAttention`'s rule); this answers the pairs it is given.
+ *
+ * Subscribed by the walk and the checklist (`useLeafCareerGaps`). It reads
+ * players, teams and about 10 ancestry documents per distinct leaf, never a
+ * card, so a card write does not re-run it. More than `CAREER_GAPS_MAX_PAIRS`
+ * is refused, not truncated, so a short answer can never read as "covered".
+ *
+ * Returns the pairs that are NOT covered.
+ */
+export const careerGaps = query({
+  args: {
+    pairs: v.array(
+      v.object({
+        selectorOptionId: v.id("selectorOptions"),
+        playerId: v.id("players"),
+        teamId: v.id("teams"),
+      }),
+    ),
+  },
+  returns: v.array(
+    v.object({
+      selectorOptionId: v.id("selectorOptions"),
+      playerId: v.id("players"),
+      teamId: v.id("teams"),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    if (args.pairs.length > CAREER_GAPS_MAX_PAIRS) {
+      throw new Error(
+        `careerGaps: ${args.pairs.length} pairs exceeds the ${CAREER_GAPS_MAX_PAIRS}-pair limit`,
+      );
+    }
+    const byLeaf = new Map<string, typeof args.pairs>();
+    for (const pair of args.pairs) {
+      const held = byLeaf.get(pair.selectorOptionId);
+      if (held) held.push(pair);
+      else byLeaf.set(pair.selectorOptionId, [pair]);
+    }
+    if (byLeaf.size > CAREER_GAPS_MAX_LEAVES) {
+      throw new Error(
+        `careerGaps: ${byLeaf.size} distinct sets exceeds the ${CAREER_GAPS_MAX_LEAVES}-set limit`,
+      );
+    }
+    // Players and teams are read once across every leaf.
+    const memo = newCoverageMemo();
+    const gaps: typeof args.pairs = [];
+    for (const [leafId, pairs] of byLeaf) {
+      const selectorOptionId = leafId as Id<"selectorOptions">;
+      const setYear = await findSetYearForSelectorOption(ctx, selectorOptionId);
+      const sportId = await findSportForSelectorOption(ctx, selectorOptionId);
+      if (setYear === undefined || !sportId) continue;
+      const answered = await computeCoverage(ctx, {
+        sportId,
+        setYear,
+        pairs: pairs.map(({ playerId, teamId }) => ({ playerId, teamId })),
+        memo,
+      });
+      answered.forEach((a, i) => {
+        if (!a.covered) gaps.push(pairs[i]);
+      });
+    }
+    return gaps;
   },
 });
 

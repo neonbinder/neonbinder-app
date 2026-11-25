@@ -19,10 +19,16 @@
 // (1901–1954) as an ALIAS; both rows are candidates for the printed name, and the operator picks
 // the alias holder, so the drawer proves the pick, not a name match.
 //
-// Card #2 is the "by itself" half. Its player has no career on file, so the commit also leaves a
-// blue career check on it (NEO-645: a pre-made player whose career does not cover the card's
-// team); that is what puts the card in the walk, where its Team tile shows the link with nothing
-// to ask.
+// Card #2 is the "by itself" half. Its player has no career on file, so the card is blue (NEO-656
+// J5: "it should read real data and display pink/blue as appropriate depending on the current
+// state of the data"; the team on the card is not in the player's career); that is what puts the
+// card in the walk, where its Team tile shows the linked team with nothing to ask. A linked team
+// has no per-name row and wears no "Linked for you" note (NEO-656 J1, B11): the tile shows the
+// card's team with Edit. Card #1, once its era is picked, turns blue the same way, live.
+//
+// The spec writes no career: every card is left with "Skip: not ready to list", never Save &
+// next, which would add the default stint for the gap on screen (NEO-656 D14). So the end screen
+// counts both cards "still to check" by their live level (B20).
 //
 // FIXTURE (SET-REGISTRY.md "Custom sets", the `pes`/`per` prefixes; R7a): its OWN per-attempt
 // sport `pes<token>` › 2025 › Topps › `per<token>` › Insert › Base, all hand-made with no
@@ -34,19 +40,21 @@
 // opens, and a hand-made sport re-runs on one seed). Not fresh-only. Nothing is deleted.
 //
 // Back (house rule): set builder → Players is a navigation, and the walk's cards are history
-// entries: Back from card #2 returns to card #1 with the operator's answer kept.
+// entries: Back from card #2 returns to card #1 with the operator's pick still on the card.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton, escapeRe } from "../../support/cards";
 import { usePastedChecklist } from "../../support/published-checklist";
 import { addPlayerByHand, createTeamInCareerEditor, expectPlayersLoaded, teamChip } from "../../support/players";
 import { drillToCustom, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
+  EDIT,
   expectCardSettled,
   expectCardsLeft,
+  expectTidyEndScreen,
   finishTidyWalk,
   pinkTile,
-  saveAndNext,
   settleWalkAfterCommit,
+  skipCard,
   tidyCardHeader,
   tidyTile,
   tidyUpName,
@@ -61,9 +69,9 @@ function eraLink(scope: Locator, full: string, era: string): Locator {
   return scope.getByRole("button", { name: new RegExp(`^[^\\p{L}]*Link to ${escapeRe(`${full} · ${era}`)}$`, "u") });
 }
 
-/** The answered row's "Edit <linked team>" (NEO-645 C1); cameo rows' "Edit cameo …" are not it. */
+/** A linked team's "Edit <team>" at the end of its line on the Team tile (cameo rows' "Edit cameo …" are not it). */
 function changeTeam(scope: Locator): Locator {
-  return scope.getByRole("button", { name: /^Edit (?!cameo )/, disabled: false });
+  return scope.getByRole("button", { name: EDIT, disabled: false });
 }
 
 test(
@@ -125,7 +133,10 @@ test(
     const team = tidyTile(page, "Team");
     const header1 = tidyCardHeader(page, `#1 · ${PLAYER}`);
     const header2 = tidyCardHeader(page, `#2 · ${PLAYER}`);
+    // The printed name's row while it is asked; once linked, the card's team line is named by the
+    // TEAM ("Team <team>"), and the printed name keeps no row of its own (NEO-656 B11).
     const askedRow = team.getByRole("group", { name: `Team ${PRINTED}`, exact: true });
+    const pickedLine = team.getByRole("group", { name: `Team ${LATER}`, exact: true });
     const onceRow = team.getByRole("group", { name: `Team ${ONCE}`, exact: true });
 
     /** Card #2: the club held once is linked by itself, nothing asked; only the career is blue. */
@@ -135,11 +146,13 @@ test(
       // Positive: the team is on the card, with Edit offered.
       await expect(onceRow.getByText(ONCE, { exact: true })).toBeVisible();
       await expect(changeTeam(onceRow)).toBeVisible();
-      // Negative: the tile asks nothing (not pink, no era choice, no "Not a team").
+      // Negative: the tile asks nothing (not pink, no era choice, no "Not a team") and says
+      // nothing about who linked it (J1: no "Linked for you").
       await expect(team).not.toHaveAccessibleDescription(/To fix/);
-      await expect(onceRow.getByText(/^Which team: /)).toHaveCount(0);
-      await expect(onceRow.getByRole("button", { name: /^Not a team/ })).toHaveCount(0);
-      // The card is here for its blue career check, not for its team.
+      await expect(team.getByText(/^Which team: /)).toHaveCount(0);
+      await expect(team.getByRole("button", { name: /^Not a team/ })).toHaveCount(0);
+      await expect(team.getByRole("note")).toHaveCount(0);
+      // The card is here for its live blue career check, not for its team.
       await expect(tidyTile(p, "Career")).toHaveAccessibleDescription(/To check/);
       await expect(pinkTile(p, "Team")).toHaveCount(0);
     };
@@ -150,7 +163,7 @@ test(
     if (card2First) {
       await expectCard2LinkedByItself(page);
       await expectAccessible(page, { within: walk, label: "Tidy Up walk, a past-era club linked by itself" });
-      await saveAndNext(page);
+      await skipCard(page);
     }
 
     // ── STEP 1: card #1 asks which era, offering both by their labels ──
@@ -162,9 +175,9 @@ test(
     const earlier = eraLink(eras, PRINTED, "1901–1954");
     await expect(later).toBeVisible();
     await expect(earlier).toBeVisible();
-    // Negative: nothing linked it (no "Linked for you", no Edit yet).
-    await expect(team.getByRole("note")).toHaveCount(0);
-    await expect(changeTeam(askedRow)).toHaveCount(0);
+    // Negative: nothing linked it (no team line, no Edit yet).
+    await expect(pickedLine).toHaveCount(0);
+    await expect(changeTeam(team)).toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, which past era is this club" });
 
     // Untick "Remember … as a name" once it has settled (held while the place check runs, then
@@ -176,31 +189,38 @@ test(
     await expect(remember).not.toBeChecked();
 
     // The operator picks the LATER era, the one that only wears the printed name as an alias.
+    // The card's team line now names it, with Edit; the printed name's row is gone (B11).
     await later.click();
-    await expect(askedRow.getByText(LATER, { exact: true })).toBeVisible();
-    await expect(changeTeam(askedRow)).toBeVisible();
-    await expect(askedRow.getByText(/^Which team: /)).toHaveCount(0);
+    await expect(pickedLine.getByText(LATER, { exact: true })).toBeVisible();
+    await expect(changeTeam(pickedLine)).toBeVisible();
+    await expect(askedRow).toHaveCount(0);
+    await expect(team.getByText(/^Which team: /)).toHaveCount(0);
     await expect(pinkTile(page, "Team")).toHaveCount(0);
-    // The operator's own answer is not "linked for you".
-    await expect(askedRow.getByRole("note")).toHaveCount(0);
+    // No "Linked for you" (J1), on the operator's answer or anywhere on the tile.
+    await expect(team.getByRole("note")).toHaveCount(0);
+    // Live (J5): the team now on the card is not in the player's career, so the card turns blue.
+    await expect(tidyTile(page, "Career")).toHaveAccessibleDescription(/To check/);
+    await expectCardsLeft(page, 2);
 
     if (!card2First) {
-      // Card #1 opened the walk: Save & next reaches card #2, and Back returns to #1 with the
-      // answer kept (a tile saves as it is answered).
-      await saveAndNext(page);
+      // Card #1 opened the walk: Skip reaches card #2, and Back returns to #1 with the pick still
+      // on the card (the tile saved it as it was answered).
+      await skipCard(page);
       await expectCard2LinkedByItself(page);
       await expectAccessible(page, { within: walk, label: "Tidy Up walk, a past-era club linked by itself" });
       await page.goBack();
       await expect(header1).toBeVisible();
       await expect(header2).toHaveCount(0);
-      await expect(askedRow.getByText(LATER, { exact: true })).toBeVisible();
+      await expect(pickedLine.getByText(LATER, { exact: true })).toBeVisible();
+      await expect(askedRow).toHaveCount(0);
       await expect(pinkTile(page, "Team")).toHaveCount(0);
-      await saveAndNext(page);
+      await skipCard(page);
       await expect(header2).toBeVisible();
     }
-    // The last card (#2's blue check seen, or #1 answered) and the walk runs out.
-    await saveAndNext(page);
-    await expect(walk.getByText("All tidy. Nothing on this checklist needs you.")).toBeVisible();
+    // The last card, and the walk runs out: both cards are blue by their live level (no career
+    // was written), nothing is pink.
+    await skipCard(page);
+    await expectTidyEndScreen(page, { fixed: 0, stillToCheck: 2 });
     await finishTidyWalk(page);
 
     // ── STEP 2: each card carries its club; #1 the era picked, never the printed name's own row ──

@@ -763,8 +763,6 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetCardPlayerLinksBatch",
     "resetCardChecklistBatch",
     "resetCardCrossListingsBatch",
-    // NEO-294 — the entity-review staging tables, added to the reset loop.
-    "resetEntityReviewQueueBatch",
     "resetChecklistCandidatesBatch",
     // NEO-313 — a player's additional sports, drained before the players.
     "resetPlayerSportsBatch",
@@ -1461,32 +1459,23 @@ describe("NEO-305: the set ⇄ parallel doors are admin-gated", () => {
   });
 });
 
-describe("NEO-645: the old review wizard has no public surface", () => {
+describe("NEO-645 / NEO-656: the old review wizard has no surface at all", () => {
   /**
-   * One-card Tidy Up replaced the wizard, and every public function of
-   * `entityReviewQueue.ts` and `entityReviewSkips.ts` went with it (getBatch,
-   * recordDecision, the step contexts, the bulk actions, clearSkip, ...). What
-   * remains of the queue module is internal, for the deploy window. Pinned by
-   * reading the source, the way the NEO-154 blocks are (convex-test does not
-   * enforce the public/internal boundary): a public function added back here
-   * would be an ungated door onto a table nothing reads any more.
+   * One-card Tidy Up replaced the wizard, and NEO-656 removed what was left of
+   * it: the review queue, the skips, the name rows and the printed rows are
+   * gone with their modules. Pinned the way the NEO-154 blocks are (convex-test
+   * does not enforce the public/internal boundary): a module added back under
+   * one of these names would be a door onto a table nothing reads any more.
    */
-  test("entityReviewQueue.ts declares no public query, mutation or action", () => {
-    const src = readFileSync(join(__dirname, "entityReviewQueue.ts"), "utf8");
-    expect(src).not.toMatch(/=\s*(query|mutation|action)\(/);
-    expect(src).not.toMatch(/import\s*\{[^}]*\b(query|mutation|action)\b[^}]*\}\s*from "\.\/_generated\/server"/);
-  });
-
-  test("entityReviewSkips.ts is gone", () => {
-    expect(existsSync(join(__dirname, "entityReviewSkips.ts"))).toBe(false);
-  });
-
   test.each([
-    ["getInternal", "internalQuery"],
-    ["applyLookupResult", "internalMutation"],
-  ])("entityReviewQueue.%s (the in-flight lookup's door) is %s", (fn, keyword) => {
-    const src = readFileSync(join(__dirname, "entityReviewQueue.ts"), "utf8");
-    expect(src).toContain(`export const ${fn} = ${keyword}({`);
+    "entityReviewQueue.ts",
+    "entityReviewSkips.ts",
+    "tidySkips.ts",
+    "tidyMigrations.ts",
+    "tidyTypedNames.ts",
+    "cardPrintedNames.ts",
+  ])("%s is gone", (file) => {
+    expect(existsSync(join(__dirname, file))).toBe(false);
   });
 });
 
@@ -4007,6 +3996,8 @@ describe("NEO-552: the fake BSC test controls are locked like the other testing 
     ],
     ["testing.clearMyBscFaults", (t) => t.action(api.testing.clearMyBscFaults, {})],
     ["testing.clearBscCallGate", (t) => t.action(api.testing.clearBscCallGate, {})],
+    // NEO-644 — the lane teardown: cancels the caller's own queued BSC team lookups.
+    ["testing.cancelMyBscTeamChecks", (t) => t.mutation(api.testing.cancelMyBscTeamChecks, {})],
     ["testing.resetMyTestState", (t) => t.action(api.testing.resetMyTestState, {})],
   ];
 
@@ -4024,7 +4015,7 @@ describe("NEO-552: the fake BSC test controls are locked like the other testing 
     await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/not enabled/);
   });
 
-  test.each(cases.slice(0, 5))("%s refuses a deployment on the real BuySportsCards", async (_name, call) => {
+  test.each(cases.slice(0, 6))("%s refuses a deployment on the real BuySportsCards", async (_name, call) => {
     vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
     vi.stubEnv("NEONBINDER_BSC_API_BASE", "");
     await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/real BuySportsCards/);
@@ -4043,8 +4034,9 @@ describe("NEO-574: the career check reads are admin-gated; the writer is interna
     const src = readFileSync(join(__dirname, "careerCoverage.ts"), "utf8");
     expect(src).toContain("export const coverageForPreview = query({");
     expect(src).toContain("export const relinkCandidates = query({");
+    expect(src).toContain("export const careerGaps = query({");
     expect(src).toContain("export const coverageForPairs = internalQuery({");
-    for (const name of ["coverageForPreview", "relinkCandidates"]) {
+    for (const name of ["coverageForPreview", "relinkCandidates", "careerGaps"]) {
       const body = src.slice(src.indexOf(`export const ${name} =`));
       const guard = body.indexOf("await requireAdmin(ctx)");
       expect(guard).toBeGreaterThan(-1);
@@ -4063,6 +4055,9 @@ describe("NEO-574: the career check reads are admin-gated; the writer is interna
     await expect(
       t.query(api.careerCoverage.relinkCandidates, { selectorOptionId: id, printedName: "Bob Allen" }),
     ).rejects.toThrow(/not authenticated/i);
+    await expect(t.query(api.careerCoverage.careerGaps, { pairs: [] })).rejects.toThrow(
+      /not authenticated/i,
+    );
   });
 
   test("a signed-in non-admin is refused", async () => {
@@ -4075,6 +4070,9 @@ describe("NEO-574: the career check reads are admin-gated; the writer is interna
       t
         .withIdentity(SIGNED_IN)
         .query(api.careerCoverage.relinkCandidates, { selectorOptionId: id, printedName: "Bob Allen" }),
+    ).rejects.toThrow(/admin access required/i);
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.careerCoverage.careerGaps, { pairs: [] }),
     ).rejects.toThrow(/admin access required/i);
   });
 });
@@ -4183,17 +4181,45 @@ describe("NEO-645: the Tidy Up surface is admin-gated", () => {
           cardId: s.cardId,
           kind: "player",
           name: "Doc Gooden",
+          sportId: s.sportId,
           answer: { kind: "linkPlayer", playerId: s.playerId },
         }),
     ],
     [
       "tidyNames.createPlayer",
-      (t, s) => t.mutation(api.tidyNames.createPlayer, { cardId: s.cardId, name: "Doc Gooden" }),
+      (t, s) =>
+        t.mutation(api.tidyNames.createPlayer, {
+          cardId: s.cardId,
+          name: "Doc Gooden",
+          sportId: s.sportId,
+        }),
     ],
     [
-      "tidyNames.setNameSport",
+      "tidyNames.answerOfferedName",
       (t, s) =>
-        t.mutation(api.tidyNames.setNameSport, {
+        t.action(api.tidyNames.answerOfferedName, {
+          cardId: s.cardId,
+          kind: "player",
+          name: "Doc Gooden",
+          sportId: s.sportId,
+          answer: { kind: "linkPlayer", playerId: s.playerId },
+          offered: true,
+        }),
+    ],
+    [
+      "tidyNames.applyNameToAll",
+      (t, s) =>
+        t.action(api.tidyNames.applyNameToAll, {
+          cardId: s.cardId,
+          kind: "player",
+          name: "Doc Gooden",
+          answer: { kind: "notEntity" },
+        }),
+    ],
+    [
+      "adapters/wikidata.lookupTidyName",
+      (t, s) =>
+        t.action(api.adapters.wikidata.lookupTidyName, {
           cardId: s.cardId,
           kind: "player",
           name: "Doc Gooden",
@@ -4201,32 +4227,20 @@ describe("NEO-645: the Tidy Up surface is admin-gated", () => {
         }),
     ],
     [
-      "tidyNames.requestLookup",
+      "careerCoverage.careerGaps",
       (t, s) =>
-        t.mutation(api.tidyNames.requestLookup, {
-          cardId: s.cardId,
-          kind: "player",
-          name: "Doc Gooden",
+        t.query(api.careerCoverage.careerGaps, {
+          pairs: [{ selectorOptionId: s.leafId, playerId: s.playerId, teamId: s.teamId }],
         }),
     ],
     [
-      "tidyNames.requestTeamLookup",
-      (t, s) =>
-        t.mutation(api.tidyNames.requestTeamLookup, {
-          cardId: s.cardId,
-          name: "Binghamton Mets",
-          sportId: s.sportId,
-        }),
+      "selectorOptions.tidyLeafFacts",
+      (t, s) => t.action(api.selectorOptions.tidyLeafFacts, { selectorOptionId: s.leafId }),
     ],
-    [
-      "tidyNames.teamLookup",
-      (t, s) => t.query(api.tidyNames.teamLookup, { cardId: s.cardId, name: "Binghamton Mets" }),
-    ],
-    ["tidyNames.lookupsPending", (t, s) => t.query(api.tidyNames.lookupsPending, { scopeId: s.leafId })],
     ["tidyCards.cardContext", (t, s) => t.query(api.tidyCards.cardContext, { cardId: s.cardId })],
     [
-      "tidyCards.markReviewed",
-      (t, s) => t.mutation(api.tidyCards.markReviewed, { cardId: s.cardId, keys: [] }),
+      "tidyCards.saveCard",
+      (t, s) => t.mutation(api.tidyCards.saveCard, { cardId: s.cardId, gaps: [] }),
     ],
     [
       "tidyCards.pickSourceValue",
@@ -4248,15 +4262,6 @@ describe("NEO-645: the Tidy Up surface is admin-gated", () => {
           sourceCardId: s.cardId,
           teamIds: [s.teamId],
           cardIds: [s.cardId],
-        }),
-    ],
-    [
-      "tidyCards.keepCareerGap",
-      (t, s) =>
-        t.mutation(api.tidyCards.keepCareerGap, {
-          cardId: s.cardId,
-          playerId: s.playerId,
-          teamId: s.teamId,
         }),
     ],
     [

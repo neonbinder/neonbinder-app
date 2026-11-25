@@ -2,19 +2,21 @@ import { useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
-import { MAX_CARD_TEAMS, teamFillOf } from "../../../../convex/features/cardAttention";
+import { MAX_CARD_TEAMS } from "../../../../convex/features/cardAttention";
+import { normalizeEntityName } from "@/lib/entities/normalize-name";
 import { hasTeamLine, isTeamlessOnLine, teamLineKey } from "../../../../convex/lib/teamLine";
 import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import EditLine from "../parts/EditLine";
-import { noteworthyReason, teamFillText, teamLinkedForText } from "../parts/copy";
+import NameApplyToAll from "../parts/NameApplyToAll";
 import TeamFillChips from "../parts/TeamFillChips";
-import TeamNameRow from "../parts/TeamNameRow";
+import TeamNameRow, { RuledOutTeamRow } from "../parts/TeamNameRow";
 import { useTidyWrite } from "../parts/tidy-write";
-import TidyTile, { ApplyToAllButton, TidyNote } from "../TidyTile";
+import TidyTile, { ApplyToAllButton } from "../TidyTile";
 import type { TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
+import { useWalkMemory } from "../walk-memory";
 
 /**
  * Cards "Apply to all" proposes in one call. Keep in step with
@@ -29,7 +31,6 @@ const NO_CONTEXT_YET = {
   names: [],
   players: [],
   teams: [],
-  linkedFor: [],
 } as unknown as NonNullable<TidyCardContext>;
 
 /**
@@ -37,12 +38,14 @@ const NO_CONTEXT_YET = {
  *
  * Three questions can live here, each a stop of its own:
  *
- *  - a printed team name that is not linked to a team yet (pink): its rows,
- *    a search with "Remember … as a name", New team, "Not a team";
+ *  - a printed team name that is not linked to a team yet (pink; it is in the
+ *    card's `pendingTeamNames`): its rows, a search with "Remember … as a name",
+ *    New team, "Not a team";
  *  - a card with no team and no "No team on this card" answer (pink): career
  *    and listing chips, Other team…, New team, "No team on this card";
- *  - nothing to ask: the card's team with Edit at the end of its line, a purple
- *    note when the commit filled it in or NB made a judgement, and "+ Another team".
+ *  - nothing to ask: the card's team with Edit at the end of its line, and
+ *    "+ Another team". A team on a card is the card's team, whoever wrote it
+ *    (NEO-656): a linked team has no name of its own, so Change is the Edit here.
  *
  * Waits (`level="waiting"`) while a TEAMS disagreement is unsettled: the
  * spelling decides which name this tile asks about.
@@ -69,6 +72,7 @@ export default function TeamTile({
 }: TidyTileProps) {
   const write = useTidyWrite();
   const answered = useAnswered();
+  const memory = useWalkMemory();
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const applyTeamToPlayerCards = useMutation(api.tidyCards.applyTeamToPlayerCards);
   const [searchFor, setSearchFor] = useState<
@@ -117,18 +121,31 @@ export default function TeamTile({
   if (context === undefined && !noTeam) return null;
   const ctx = context ?? NO_CONTEXT_YET;
 
+  // The names still waiting. A linked team keeps no printed name on the card.
   const teamNames = ctx.names.filter((n) => n.kind === "team");
-  if (teamNames.length === 0 && teamsOnCard.length === 0 && !noTeam && !confirmedNone) return null;
-
-  const answeredTeamIds = new Set<string>(
-    teamNames.flatMap((n) => (n.row?.answer?.kind === "linkTeam" ? [n.row.answer.teamId as string] : [])),
+  // Answers given while this card is open, which the card no longer shows: a
+  // name ruled out (Edit takes it back) and a team linked (Apply to all copies
+  // it). One that is waiting again, or whose team has left the card, is not shown.
+  const waitingKeys = new Set(teamNames.map((n) => n.nameNormalized));
+  const answersHere = memory
+    .answersOn(row._id, "team")
+    .filter((a) => !waitingKeys.has(normalizeEntityName(a.printed.trim())));
+  const ruledOut = answersHere.flatMap((a) => (a.kind === "notEntity" ? [a] : []));
+  const linkedHere = answersHere.flatMap((a) =>
+    a.kind === "linkTeam" && teamsOnCard.includes(a.teamId) ? [a] : [],
   );
-  // Teams the card carries that no name row stands behind: the exact single
-  // match (D6: no row) and teams picked by hand.
-  const unrowed = ctx.teams.filter((t) => t.onCard && !answeredTeamIds.has(t.teamId));
-  const reasonOf = (teamId: string) =>
-    ctx.linkedFor.find((l) => l.kind === "team" && l.teamId === teamId)?.reason;
-  const fill = teamFillOf(row);
+  if (
+    teamNames.length === 0 &&
+    ruledOut.length === 0 &&
+    teamsOnCard.length === 0 &&
+    !noTeam &&
+    !confirmedNone
+  ) {
+    return null;
+  }
+
+  // The teams the card carries.
+  const unrowed = ctx.teams.filter((t) => t.onCard);
   const multi = teamNames.length > 1;
   const open = nameOpen || noTeam;
   const atCap = teamsOnCard.length >= MAX_CARD_TEAMS;
@@ -173,44 +190,53 @@ export default function TeamTile({
           key={`${name.kind}|${name.nameNormalized}`}
           row={row}
           name={name}
-          context={ctx}
           setSportId={sportId}
           leafId={leafId}
           multi={multi}
           write={write}
+          leafCards={leafCards}
         />
       ))}
 
-      {unrowed.map((team) => {
-        const note = noteworthyReason(reasonOf(team.teamId));
-        return (
-          <div
-            key={team.teamId}
-            role="group"
-            aria-label={`Team ${team.name}`}
-            className="grid gap-1.5"
-          >
-            <EditLine
-              editLabel={`Edit ${team.name}`}
-              busy={write.busy}
-              onEdit={(opener) => openSearch({ kind: "change", teamId: team.teamId }, opener)}
-              textClass="text-sm font-medium text-ink"
-            >
-              {team.name}
-            </EditLine>
-            {note && (
-              <TidyNote>
-                {teamLinkedForText(
-                  note,
-                  ctx.players.find((p) => p.stints.some((s) => s.teamId === team.teamId))?.name,
-                )}
-              </TidyNote>
-            )}
-          </div>
-        );
-      })}
+      {ruledOut.map((a) => (
+        <RuledOutTeamRow
+          key={`ruled:${a.printed}`}
+          row={row}
+          printed={a.printed}
+          setSportId={sportId}
+          write={write}
+          leafCards={leafCards}
+        />
+      ))}
 
-      {fill && <TidyNote>{teamFillText(fill.reason)}</TidyNote>}
+      {unrowed.map((team) => (
+        <div
+          key={team.teamId}
+          role="group"
+          aria-label={`Team ${team.name}`}
+          className="grid gap-1.5"
+        >
+          <EditLine
+            editLabel={`Edit ${team.name}`}
+            busy={write.busy}
+            onEdit={(opener) => openSearch({ kind: "change", teamId: team.teamId }, opener)}
+            textClass="text-sm font-medium text-ink"
+          >
+            {team.name}
+          </EditLine>
+        </div>
+      ))}
+
+      {linkedHere.map((a) => (
+        <NameApplyToAll
+          key={`apply:${a.printed}`}
+          cardId={row._id}
+          kind="team"
+          printed={a.printed}
+          answer={{ kind: "linkTeam", teamId: a.teamId }}
+          leafCards={leafCards}
+        />
+      ))}
 
       {confirmedNone && !noTeam && <p className="text-sm text-ink-2">No team on this card.</p>}
 

@@ -23,7 +23,6 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { teamRowFields } from "./lib/teamRow";
-import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
@@ -121,63 +120,6 @@ describe("applyBscTeamResolution for a teamless sport (NEO-426)", () => {
     expect(card.teamCheckDoneAt).toBe(card.teamNoneConfirmedAt);
     expect(card.teamCheckOutcome).toBe("answered");
     expect(card.teamOnCardIds ?? []).toEqual([]);
-  });
-
-  test("BSC's whole claim ruled not a team for the set: stamped the same", async () => {
-    const { t, fx } = await seed();
-    const id = await seedCard(t, fx, { playerIds: [fx.tiger] });
-    await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewSkips", {
-        selectorOptionId: fx.leaf,
-        kind: "team",
-        nameNormalized: normalizeEntityName("League Leaders"),
-        name: "League Leaders",
-        skippedAt: 1,
-        skippedByUserId: "user-skipper",
-      }),
-    );
-    await apply(t, id, "League Leaders", ["League Leaders"]);
-    const card = (await getCard(t, id))!;
-    expect(card.bscTeamName).toBeUndefined();
-    expect(card.teamNoneConfirmedByUserId).toBe(SPORT_SETTER);
-  });
-
-  test("every part of a split claim ruled not a team: stamped", async () => {
-    const { t, fx } = await seed();
-    const id = await seedCard(t, fx, { playerIds: [fx.tiger, fx.rory] });
-    await t.run(async (ctx) => {
-      for (const name of ["Alpha", "Beta"]) {
-        await ctx.db.insert("entityReviewSkips", {
-          selectorOptionId: fx.leaf,
-          kind: "team",
-          nameNormalized: normalizeEntityName(name),
-          name,
-          skippedAt: 1,
-          skippedByUserId: "user-skipper",
-        });
-      }
-    });
-    await apply(t, id, "Alpha, Beta", ["Alpha", "Beta"]);
-    expect((await getCard(t, id))!.teamNoneConfirmedByUserId).toBe(SPORT_SETTER);
-  });
-
-  test("only SOME parts ruled out: the live part is a team claim, so nothing is stamped (rule 8)", async () => {
-    const { t, fx } = await seed();
-    const id = await seedCard(t, fx, { playerIds: [fx.tiger] });
-    await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewSkips", {
-        selectorOptionId: fx.leaf,
-        kind: "team",
-        nameNormalized: normalizeEntityName("Alpha"),
-        name: "Alpha",
-        skippedAt: 1,
-        skippedByUserId: "user-skipper",
-      }),
-    );
-    await apply(t, id, "Alpha, Gotham Knights", ["Alpha", "Gotham Knights"]);
-    const card = (await getCard(t, id))!;
-    expect(card.teamNoneConfirmedAt).toBeUndefined();
-    expect(card.bscTeamName).toBe("Gotham Knights");
   });
 
   test("BSC names a team NB holds: linked, never replaced by No team", async () => {

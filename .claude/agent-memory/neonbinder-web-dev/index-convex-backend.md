@@ -50,3 +50,4 @@ Convex functions, op budgets, pagination, search indexes, validators, OCC, bulk 
 - [Bound R2 calls yourself](reference_bound_r2_calls_yourself_aws4fetch_retries_ten_times.md) — aws4fetch retries 5xx x10 past any signal; sign + fetch with an AbortController timer
 - [Apply result outlives its offer](reference_apply_result_must_outlive_the_offer_it_empties.md) — key the outcome on count at press time; also purple-text dark contrast fix
 - [Userprofile fields go top level](reference_userprofile_fields_go_top_level.md) — A new per-user field on userProfiles goes at the top level, not under `preferences`; getUserProfile returns preferences through a fixed validator and updateUserProfile replaces the object whole
+- [Client label proof lives in the action](reference_client_label_proof_scan_lives_in_the_action.md) — query ctx has no runQuery; action runs scanSetHistory and passes the proven subset to the checker; seed history on a sibling leaf

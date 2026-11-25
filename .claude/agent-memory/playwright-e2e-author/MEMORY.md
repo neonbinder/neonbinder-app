@@ -127,7 +127,7 @@
 - [Spent fresh-only run](patterns_probe_the_rest_of_a_spent_fresh_only_run.md) — throwaway probe reopens by pill
 - [Career tile fixtures](patterns_career_tile_fixtures.md) — NEO-645 gap at commit; old Career check carry-over
 - [Career-team link](patterns_career_team_link_fixture_and_counter_fixture_proof.md) — rule 6b; counter-fixture proof
-- [Set-history link](patterns_set_history_link_with_no_walk_stop.md) — notes only in walk tiles
+- [Set-history link](patterns_set_history_link_with_no_walk_stop.md) — two-card no-stop proof; notes gone (J1)
 - [Match Cards after commit-first](patterns_match_cards_specs_after_commit_first.md) — Cancel is the pre-save exit
 - [Team fill tier](patterns_team_fill_career_tier_fixture.md) — 70-char team; negative stints
 - [Team-era on the walk](patterns_team_era_specs_on_the_walk.md) — NEO-602 auto link vs keep
@@ -167,6 +167,17 @@
 - [Title plant, adopting spec](patterns_title_plant_on_an_adopting_sole_writer_spec.md) — drawer read-path plant; generator plant misses or poisons the seed
 - [Removed button, described field](patterns_removed_button_absence_and_described_field.md) — plant every client gate; describedby/focus asserts
 - [BSC team lane shared across shards](patterns_bsc_team_lane_is_shared_across_shards.md) — 1 slot, 1.7 s/card, FIFO deployment-wide; assert answered OR held back
+- [NEO-656 walk helpers](patterns_neo656_tidy_walk_helpers_skip_apply_end_screen.md) — no Keep as is (career skip), applyNameToAll, end screen, exact chip
+- [NEO-656 live counts](patterns_neo656_live_career_mark_and_apply_counts.md) — answer drops open card only; live career gap on hand-added cards; badge reasons "; "; title cut survives Save & next
+- [NEO-656 linked rows, Edit sport](patterns_neo656_linked_name_rows_and_edit_reask_sport.md) — card team line, bare "Not a team", Edit re-asks in own sport (reopenName)
+- [NEO-656 re-fetch, catalogue skip](patterns_neo656_refetch_asks_again_and_catalogue_career_skip.md) — ruled-out name pink again; Skip Career tiles on catalogue players
+- [NEO-656 Career tile after J6](patterns_neo656_career_tile_specs_after_j6.md) — Team Change closes gap, sibling cleared by Save & next, untick own team; plants
+- [NEO-656 mixed end screen, team link](patterns_neo656_end_screen_mixed_and_team_link_apply.md) — pink+blue end screen reopens both; link #12, #13 pink, Apply 6
+- [NEO-656 minted team cut](patterns_neo656_minted_team_cut_from_title_turns_card_blue.md) — minted card name + team cut the title: live blue; drop cardName; preselect plants
+- [NEO-656 career in a 2nd tab](patterns_neo656_stage_a_walk_players_career_in_a_second_tab.md) — no Career tile for a new player; Players admin tab, chips update live
+- [Stored-tier fill](patterns_team_fill_stored_tier_career_tie_fixture.md) — career ties isolate Base-card fill; other insert not evidence; plants
 - [Foil × colour checklist spec shape](patterns_foil_colour_checklist_spec_shape.md) — NEO-616: City Designation walk tiles, answer-vs-save race, prefix-only pairing, titles dialog
 - [Show ticked boxes switch](patterns_group_parallels_show_ticked_boxes_switch.md) — NEO-660: ticked row's own box hidden; switch on before filter asserts
 - [Fresh-only on a no-reset deployment](patterns_iterate_fresh_only_on_a_no_reset_deployment.md) — e2e-run setup resets user 0; swap names to iterate; partial team name for the list
+- [NEO-657 two-player prefill](patterns_neo657_two_player_prefill_and_blue_city_walk.md) — "/" cells, CO names, plant; Pro Set walk all blue
+- [Teardown count assert](patterns_teardown_count_assert_and_lane_clear.md) — NEO-644: hop returns N, assert only if passed, annotate; plant

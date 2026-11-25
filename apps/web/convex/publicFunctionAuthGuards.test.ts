@@ -58,7 +58,7 @@ import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { Id } from "./_generated/dataModel";
 import { insertTestCard } from "../lib/testing/card-row";
-import { addPlayer, nameRow, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
+import { addPlayer, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
 
 // NEO-315: the placeholder download mints sign with a storage client. A fake one
 // records every probe and signature so "refused" can be asserted as "touched
@@ -1210,7 +1210,7 @@ describe("NEO-536 — the admin's sync report review never ships closedBy", () =
  * One-card Tidy Up added public writes to SHARED reference data (players,
  * teams, name answers) and to a set's own metadata. Pinned here the way the
  * NEO-212 block pins the wizard's: a refused caller (signed out, or signed in
- * without the admin role) leaves `players`, `teams`, `tidyNames`, the cards and
+ * without the admin role) leaves `players`, `teams`, the cards and
  * the leaf's metadata exactly as they were. `publicFunctionAuth.test.ts` pins
  * which gate each one carries; this pins what the refusal did NOT do.
  */
@@ -1219,16 +1219,6 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
     const t = convexTest(schema, modules);
     const seeded = await t.run(async (ctx) => {
       const w = await seedTidyWorld(ctx);
-      // Looked up and found nothing: a new rookie, so a refused call has a
-      // real player to have created.
-      await nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "player",
-        name: "Rookie Newguy",
-        over: { lookupGen: 1, lookupRequestedAt: 1 },
-      });
-      await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "team", name: "Pads" });
       const cardId = await printCard(ctx, w, {
         number: "1",
         printed: [
@@ -1247,7 +1237,6 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
     t.run(async (ctx) => ({
       players: await ctx.db.query("players").collect(),
       teams: await ctx.db.query("teams").collect(),
-      tidyNames: await ctx.db.query("tidyNames").collect(),
       cards: await ctx.db.query("cardChecklist").collect(),
       leafMetadata: (await ctx.db.get(leafId))?.metadata,
     }));
@@ -1261,7 +1250,11 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
     [
       "tidyNames.createPlayer",
       (c, as) =>
-        as().mutation(api.tidyNames.createPlayer, { cardId: c.cardId, name: "Rookie Newguy" }),
+        as().mutation(api.tidyNames.createPlayer, {
+          cardId: c.cardId,
+          name: "Rookie Newguy",
+          sportId: c.w.sport,
+        }),
     ],
     [
       "players.addStint",
@@ -1281,6 +1274,7 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
           cardId: c.cardId,
           kind: "team",
           name: "Pads",
+          sportId: c.w.sport,
           answer: { kind: "linkTeam", teamId: c.w.padres, saveAsAlias: true },
         }),
     ],
@@ -1294,30 +1288,34 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
         }),
     ],
     [
-      "tidyNames.requestTeamLookup",
-      (c, as) =>
-        as().mutation(api.tidyNames.requestTeamLookup, {
-          cardId: c.cardId,
-          name: "Brand New Club",
-          sportId: c.w.sport,
-        }),
-    ],
-    [
       "tidyCameo.pickSourceAsCameo",
       (c, as) => as().mutation(api.tidyCameo.pickSourceAsCameo, { cardId: c.cardId }),
     ],
     [
-      "tidyCards.keepCareerGap",
+      "tidyCards.saveCard",
+      (c, as) => as().mutation(api.tidyCards.saveCard, { cardId: c.cardId, gaps: [] }),
+    ],
+    [
+      "tidyNames.answerOfferedName",
       (c, as) =>
-        as().mutation(api.tidyCards.keepCareerGap, {
+        as().action(api.tidyNames.answerOfferedName, {
           cardId: c.cardId,
-          playerId: c.playerId,
-          teamId: c.w.padres,
+          kind: "player",
+          name: "Rookie Newguy",
+          sportId: c.w.sport,
+          answer: { kind: "linkPlayer", playerId: c.playerId },
+          offered: true,
         }),
     ],
     [
-      "tidyCards.markReviewed",
-      (c, as) => as().mutation(api.tidyCards.markReviewed, { cardId: c.cardId, keys: [] }),
+      "tidyNames.applyNameToAll",
+      (c, as) =>
+        as().action(api.tidyNames.applyNameToAll, {
+          cardId: c.cardId,
+          kind: "player",
+          name: "Rookie Newguy",
+          answer: { kind: "notEntity" },
+        }),
     ],
   ];
 
@@ -1327,7 +1325,7 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
     // Not vacuous: the fixture holds rows for the call to have changed.
     expect(before.players.length).toBeGreaterThan(0);
     expect(before.teams.length).toBeGreaterThan(0);
-    expect(before.tidyNames.length).toBeGreaterThan(0);
+    expect(before.cards.some((c) => (c.pendingPlayerNames ?? []).length > 0)).toBe(true);
 
     await expect(call(c, () => c.t)).rejects.toThrow(/not authenticated/i);
 
@@ -1351,70 +1349,3 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
 async function scheduledCount(t: ReturnType<typeof convexTest>): Promise<number> {
   return (await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).length;
 }
-
-describe("NEO-645 — the admin's Tidy Up reads never ship answeredByUserId", () => {
-  const OPERATOR = "clerk_operator_HIDDEN";
-
-  test("tidyCards.cardContext answers an admin for an answered name without answeredByUserId", async () => {
-    const t = convexTest(schema, modules);
-    const { cardId, padres } = await t.run(async (ctx) => {
-      const w = await seedTidyWorld(ctx);
-      await nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "team",
-        name: "Pads",
-        over: {
-          answer: { kind: "linkTeam", teamId: w.padres, by: "operator" },
-          answerGen: 1,
-          answeredByUserId: OPERATOR,
-          answeredAt: 5,
-        },
-      });
-      const cardId = await printCard(ctx, w, {
-        number: "1",
-        printed: [{ kind: "team", name: "Pads" }],
-      });
-      return { cardId, padres: w.padres };
-    });
-
-    const context = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId });
-    // Not vacuous: the read really carried the answered row.
-    expect(context?.names[0].row?.answer).toEqual({
-      kind: "linkTeam",
-      teamId: padres,
-      by: "operator",
-    });
-    expect(JSON.stringify(context)).not.toContain("answeredByUserId");
-    expect(JSON.stringify(context)).not.toContain("HIDDEN");
-  });
-
-  test("tidyNames.teamLookup answers an admin for an answered team row without answeredByUserId", async () => {
-    const t = convexTest(schema, modules);
-    const cardId = await t.run(async (ctx) => {
-      const w = await seedTidyWorld(ctx);
-      await nameRow(ctx, {
-        scopeId: w.base,
-        sportId: w.sport,
-        kind: "team",
-        name: "Pads",
-        over: {
-          answer: { kind: "linkTeam", teamId: w.padres, by: "operator" },
-          answerGen: 1,
-          answeredByUserId: OPERATOR,
-          answeredAt: 5,
-          enrichment: { wikidataId: "Q1" },
-        },
-      });
-      return printCard(ctx, w, { number: "1", printed: [{ kind: "team", name: "Pads" }] });
-    });
-
-    const lookup = await t
-      .withIdentity(ADMIN)
-      .query(api.tidyNames.teamLookup, { cardId, name: "Pads" });
-    // Not vacuous: it found the row and answered with its enrichment.
-    expect(lookup).toMatchObject({ status: "ready", enrichment: { wikidataId: "Q1" } });
-    expect(JSON.stringify(lookup)).not.toContain("answeredByUserId");
-    expect(JSON.stringify(lookup)).not.toContain("HIDDEN");
-  });
-});

@@ -4,7 +4,7 @@
  * ## Why a derivation and not a review-queue row
  *
  * The first design for reconciling teamless cards added a third
- * `entityReviewQueue` kind and rode the commit wire: rows created during the
+ * review-row kind and rode the commit wire: rows created during the
  * fetch, decided in the wizard, applied by the commit. That works only for
  * cards a sync is about to touch. The cards that actually need attention are
  * the ones ALREADY COMMITTED — dev's 2026 Topps base has ten teamless League
@@ -187,13 +187,16 @@ export type AttentionCardRow = {
   cardName?: string;
   /** NEO-645 — fields on which the sources still disagree. See the schema. */
   sourceDisagreements?: readonly TidyDisagreement[];
-  /** NEO-645 — facts stored where they change. See the schema. */
-  tidyChecks?: readonly TidyCheck[];
-  /** NEO-645 — fingerprint keys of the blue items already seen. */
-  tidyReviewed?: { readonly keys: readonly string[] };
 };
 
-/** Structural twin of `sourceDisagreementValidator` (schema.ts). */
+/**
+ * Structural twin of `sourceDisagreementValidator` (schema.ts).
+ *
+ * `chosen` is LEGACY and read-only (NEO-656): a pick now removes the entry from
+ * the card, so nothing writes `chosen` any more. A card that still holds one
+ * (stored before the release, until the armed clear has run) is read as if the
+ * entry were absent (`isOpenDisagreement`).
+ */
 export type TidyDisagreement = {
   field: "players" | "teams";
   values: ReadonlyArray<{ value: readonly string[]; sources: readonly string[] }>;
@@ -201,13 +204,24 @@ export type TidyDisagreement = {
 };
 
 /**
- * Structural twin of `tidyCheckValidator` (schema.ts); ids are plain strings so
- * this module stays free of generated code (a Convex `Id` is a branded string).
+ * NEO-656 — is this entry a disagreement still waiting on the operator? One
+ * env-free predicate for every reader (`allTidyItems`, `entryFor`, the tile):
+ * an entry that carries the legacy `chosen` is settled, so it raises nothing and
+ * offers nothing, exactly as a card picked after the release.
  */
-export type TidyCheck =
-  | { kind: "careerGap"; playerId: string; teamId: string }
-  | { kind: "newPlayerCareer"; playerId: string }
-  | { kind: "teamFill"; teamIds: readonly string[]; reason: "otherCards" | "career" };
+export function isOpenDisagreement(d: Pick<TidyDisagreement, "chosen">): boolean {
+  return !d.chosen;
+}
+
+/**
+ * NEO-656 (J5/J6, Jason: "it should read real data and display pink/blue as
+ * appropriate depending on the current state of the data") — the career gaps the
+ * caller has read LIVE: `careerCoverage.careerGaps` answers them for the cards
+ * on screen. Ids are plain strings so this module stays free of generated code.
+ * Without it `deriveCardAttention` raises no careerGap (it stays pure).
+ */
+export type LiveCareerGap = { playerId: string; teamId: string };
+export type LiveAttention = { careerGaps?: ReadonlyArray<LiveCareerGap> };
 
 /**
  * NEO-102 — what this card still needs from a human.
@@ -380,13 +394,6 @@ export function isAwaitingTeamLookup(row: AttentionCardRow): boolean {
 export const MAX_CARD_TEAMS = 8;
 
 /**
- * NEO-645 — the most `tidyChecks` kept on one card (the newest win). One
- * constant for every writer (`tidyNames`, `tidyCardWrites`), kept here beside
- * the other card caps because this module imports nothing of theirs.
- */
-export const TIDY_CHECKS_MAX = 32;
-
-/**
  * NEO-220 — the hard cap on how many players one card can be LINKED to.
  *
  * Deliberately much wider than `MAX_CARD_TEAMS`: a card is never printed for
@@ -421,24 +428,21 @@ export type AttentionLevel = "fix" | "check" | "none";
 /**
  * One thing the Tidy Up walk asks of a card, from the row alone (D3).
  *
- * Blue items carry a `key`: the fingerprint `tidyReviewed.keys` holds once the
- * operator has seen the item. The key hashes the VALUE the item is about, so
- * changing the value re-raises the item.
+ * Blue items carry no key (NEO-656): nothing is stored about having seen one.
  *
  * Nothing here carries a message string (see `AttentionItem`): the wording
  * lives with the tiles. The numeric and name payloads exist so a tile can
  * state the measurement without re-measuring the row.
  *
- * Notes (the auto-answer reason, "Left out to fit", "Numbers didn't match",
- * the team-fill reason) are deliberately NOT items: they only ever show on a
+ * Notes ("Left out to fit", "Numbers didn't match") are deliberately NOT items: they only ever show on a
  * card that is already a stop, and are worked out for the open card only.
  */
 export type TidyAttentionItem =
   // ── pink ──
-  // A `sourceDisagreements` entry with no `chosen`.
+  // A `sourceDisagreements` entry (an entry carrying the legacy `chosen` is settled).
   | { level: "fix"; kind: "sourcesDisagree"; field: "players" | "teams" }
-  // `pendingPlayerNames` is not empty. A same-name pair is a pending name whose
-  // `tidyNames` row has candidates, so it is covered. A multi-player card with
+  // `pendingPlayerNames` is not empty. A same-name pair is a pending name, so it is
+  // covered. A multi-player card with
   // one name linked is still pink while another is pending.
   | { level: "fix"; kind: "playerName"; names: string[] }
   // NEO-645 (Jason, 2026-11-23): no player and no name. A card always has one.
@@ -452,70 +456,28 @@ export type TidyAttentionItem =
   | { level: "fix"; kind: "autograph" }
   // The stored title is over eBay's cap (`titleAttentionItems`).
   | { level: "fix"; kind: "titleOverLimit"; length: number }
-  // ── blue ──
-  // The player was created on this card; check the career Wikidata proposed.
-  | { level: "check"; kind: "newPlayerCareer"; playerId: string; key: string }
-  // J2: no stint covers the card's team by the card's year (stored at write time).
-  | { level: "check"; kind: "careerGap"; playerId: string; teamId: string; key: string }
+  // ── blue ── (NEO-656: nothing is remembered as "seen"; a blue item shows
+  // for as long as the data holds it)
+  // J2: no stint covers the card's team by the card's year (read live, `LiveAttention`).
+  | { level: "check"; kind: "careerGap"; playerId: string; teamId: string }
   // The generated title's core was cut to fit ("Left out where today's wizard asks").
-  | { level: "check"; kind: "titleCut"; key: string }
+  | { level: "check"; kind: "titleCut" }
   // The variation is over the item-specific value cap.
-  | { level: "check"; kind: "variationOverLimit"; length: number; key: string };
+  | { level: "check"; kind: "variationOverLimit"; length: number };
 
 export type TidyAttentionKind = TidyAttentionItem["kind"];
 
 /** What `deriveCardAttention` answers. `level` is "none" exactly when `items` is empty. */
 export type CardAttention = { level: AttentionLevel; items: TidyAttentionItem[] };
 
-/** At most this many keys are stored in `tidyReviewed.keys`. */
-export const TIDY_REVIEWED_MAX_KEYS = 16;
-/** Each stored key is at most this many characters. */
-export const TIDY_REVIEWED_KEY_MAX_LENGTH = 64;
-
 /**
- * A short stable hash (cyrb53, base 36, at most 11 characters). Not a security
- * boundary: it fingerprints a value so a `tidyReviewed` key stays short however
- * long the value is (four 120-character names would not fit a key) while a
- * change to the value changes the key. Pure, so the client and the server
- * produce identical keys.
+ * NEO-645 — everything this card has to say. Order is the tiles' order:
+ * sources (2), players (3), name (3b), career (4), team (5), autograph (6),
+ * title (7).
+ *
+ * NEO-656 — the career gap is read LIVE (`live.careerGaps`), never from the row.
  */
-export function tidyHash(text: string): string {
-  let h1 = 0xdeadbeef;
-  let h2 = 0x41c6ce57;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
-  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
-  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
-}
-
-/** `career:<playerId>` — the new player's career. */
-export function tidyReviewedKeyCareer(playerId: string): string {
-  return `career:${playerId}`;
-}
-/** `careerGap:<hash(player|team)>` — hashed because two ids alone exceed the key cap. */
-export function tidyReviewedKeyCareerGap(playerId: string, teamId: string): string {
-  return `careerGap:${tidyHash(`${playerId}|${teamId}`)}`;
-}
-/** `cut:<hash(title)>` — the title that was cut; a new title re-raises it. */
-export function tidyReviewedKeyCut(listingTitle: string): string {
-  return `cut:${tidyHash(listingTitle)}`;
-}
-/** `variation:<hash(variation)>` — measured trimmed, as the aspect rule is. */
-export function tidyReviewedKeyVariation(cardVariation: string): string {
-  return `variation:${tidyHash(cardVariation.trim())}`;
-}
-/**
- * NEO-645 — everything this card has to say, before `tidyReviewed` is applied.
- * Order is the tiles' order: sources (2), players (3), name (3b), career (4), team (5),
- * autograph (6), title (7).
- */
-function allTidyItems(row: AttentionCardRow): TidyAttentionItem[] {
+function allTidyItems(row: AttentionCardRow, live?: LiveAttention): TidyAttentionItem[] {
   const items: TidyAttentionItem[] = [];
   const disagreements = row.sourceDisagreements ?? [];
   const playerIds = row.playerIds ?? [];
@@ -523,7 +485,7 @@ function allTidyItems(row: AttentionCardRow): TidyAttentionItem[] {
 
   // 2 — Sources disagree.
   for (const d of disagreements) {
-    if (!d.chosen) {
+    if (isOpenDisagreement(d)) {
       items.push({ level: "fix", kind: "sourcesDisagree", field: d.field });
     }
   }
@@ -548,34 +510,17 @@ function allTidyItems(row: AttentionCardRow): TidyAttentionItem[] {
     items.push({ level: "fix", kind: "needsName" });
   }
 
-  // 4 — Career. Both read STORED facts; the entity must still be on the card
-  // (a stale check, after a hand edit elsewhere, says nothing).
-  const checks = row.tidyChecks ?? [];
-  for (const c of checks) {
-    if (c.kind === "newPlayerCareer" && playerIds.includes(c.playerId)) {
-      items.push({
-        level: "check",
-        kind: "newPlayerCareer",
-        playerId: c.playerId,
-        key: tidyReviewedKeyCareer(c.playerId),
-      });
-    }
-  }
-  // Single-player cards only, the same as `deriveCareerPairs`: nobody can say
-  // which of several players a team belongs to.
+  // 4 — Career (NEO-656: read live). Single-player cards only, the same as
+  // `deriveCareerPairs`: nobody can say which of several players a team
+  // belongs to. The entity must still be on the card.
   if (playerIds.length === 1) {
-    for (const c of checks) {
-      if (
-        c.kind === "careerGap" &&
-        c.playerId === playerIds[0] &&
-        teamIds.includes(c.teamId)
-      ) {
+    for (const c of live?.careerGaps ?? []) {
+      if (c.playerId === playerIds[0] && teamIds.includes(c.teamId)) {
         items.push({
           level: "check",
           kind: "careerGap",
           playerId: c.playerId,
           teamId: c.teamId,
-          key: tidyReviewedKeyCareerGap(c.playerId, c.teamId),
         });
       }
     }
@@ -586,7 +531,9 @@ function allTidyItems(row: AttentionCardRow): TidyAttentionItem[] {
   if (pendingTeams.length > 0) {
     items.push({ level: "fix", kind: "teamName", names: [...pendingTeams] });
   }
-  const unsettledTeams = disagreements.some((d) => d.field === "teams" && !d.chosen);
+  const unsettledTeams = disagreements.some(
+    (d) => d.field === "teams" && isOpenDisagreement(d),
+  );
   if (
     teamIds.length === 0 &&
     pendingTeams.length === 0 &&
@@ -612,18 +559,9 @@ function allTidyItems(row: AttentionCardRow): TidyAttentionItem[] {
     if (t.kind === "titleOverLimit") {
       items.push({ level: "fix", kind: "titleOverLimit", length: t.length });
     } else if (t.kind === "titleTruncated") {
-      items.push({
-        level: "check",
-        kind: "titleCut",
-        key: tidyReviewedKeyCut(row.listingTitle ?? ""),
-      });
+      items.push({ level: "check", kind: "titleCut" });
     } else {
-      items.push({
-        level: "check",
-        kind: "variationOverLimit",
-        length: t.length,
-        key: tidyReviewedKeyVariation(row.cardVariation ?? ""),
-      });
+      items.push({ level: "check", kind: "variationOverLimit", length: t.length });
     }
   }
   return items;
@@ -650,55 +588,26 @@ export function blocksParallelBuild(row: AttentionCardRow): boolean {
 }
 
 /**
- * NEO-645 — what this card still needs from a human, from the row alone. The
- * badge, the pill count and the walk membership all call this, so they cannot
- * disagree (count = walk = pill).
+ * NEO-645 — what this card still needs from a human. The badge, the pill count
+ * and the walk membership all call this, so they cannot disagree (count = walk
+ * = pill).
  *
- * Every blue item is suppressed while its key is in `tidyReviewed.keys`. Pink
- * is never suppressed. `level` is "fix" when any pink item is left, else
- * "check" when any blue one is, else "none".
+ * NEO-656 (Jason: "it should read real data and display pink/blue as
+ * appropriate depending on the current state of the data"): nothing is
+ * remembered. A blue item shows for as long as the data holds it, and is never
+ * suppressed. `level` is "fix" when any pink item is left, else "check" when
+ * any blue one is, else "none".
  *
- * Facts that need other tables are stored on the card where they change
- * (`tidyChecks`: the career gap is decided at write time with
- * `careerCoversCardTeam`, J2) so this stays a pure function of the row.
+ * The one blue fact that needs other tables, the career gap, comes in as
+ * `live.careerGaps` (`careerCoverage.careerGaps`); with no `live` the card
+ * raises none, so this stays a pure function of the row.
  */
-export function deriveCardAttention(row: AttentionCardRow): CardAttention {
-  const reviewed = new Set(row.tidyReviewed?.keys ?? []);
-  const items = allTidyItems(row).filter(
-    (item) => item.level === "fix" || !reviewed.has(item.key),
-  );
+export function deriveCardAttention(row: AttentionCardRow, live?: LiveAttention): CardAttention {
+  const items = allTidyItems(row, live);
   const level: AttentionLevel = items.some((i) => i.level === "fix")
     ? "fix"
     : items.length > 0
       ? "check"
       : "none";
   return { level, items };
-}
-
-/**
- * The keys of every blue item the card has now, whether or not it was already
- * reviewed. This is exactly what `tidyCards.markReviewed` stores (replacing the
- * old list, so a key whose value changed drops out and the item re-raises),
- * capped at `TIDY_REVIEWED_MAX_KEYS`.
- */
-export function currentReviewKeys(row: AttentionCardRow): string[] {
-  const keys: string[] = [];
-  for (const item of allTidyItems(row)) {
-    if (item.level === "check" && !keys.includes(item.key)) keys.push(item.key);
-  }
-  return keys.slice(0, TIDY_REVIEWED_MAX_KEYS);
-}
-
-/** The commit's team-fill note on a card, when its teams are still the ones it wrote. */
-export function teamFillOf(
-  row: Pick<AttentionCardRow, "tidyChecks" | "teamOnCardIds">,
-): { teamIds: readonly string[]; reason: "otherCards" | "career" } | undefined {
-  const fill = (row.tidyChecks ?? []).find((c) => c.kind === "teamFill");
-  if (!fill || fill.kind !== "teamFill") return undefined;
-  const onCard = new Set(row.teamOnCardIds ?? []);
-  // Cleared by hand: the teams are no longer what the commit wrote.
-  if (fill.teamIds.length === 0 || !fill.teamIds.every((id) => onCard.has(id))) {
-    return undefined;
-  }
-  return { teamIds: fill.teamIds, reason: fill.reason };
 }

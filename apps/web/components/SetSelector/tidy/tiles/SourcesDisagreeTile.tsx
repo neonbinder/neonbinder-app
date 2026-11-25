@@ -9,7 +9,11 @@ import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import TidyTile, { ApplyToAllButton, WRAP_LABEL_CLASS, type TidyTileLevel } from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
-import type { TidyDisagreement as RowDisagreement } from "../../../../convex/features/cardAttention";
+import {
+  isOpenDisagreement,
+  type TidyDisagreement as RowDisagreement,
+} from "../../../../convex/features/cardAttention";
+import { useWalkMemory, type KeptPick } from "../walk-memory";
 
 /**
  * NEO-645 callout 2 — "Sources disagree".
@@ -20,11 +24,19 @@ import type { TidyDisagreement as RowDisagreement } from "../../../../convex/fea
  * server: "Judge / Soto" against "Judge | Soto" never reaches this tile, so
  * every differing column is a real difference.
  *
- * Two states, one per entry on the card. NeonBinder never picks between the
- * sources for you, so every disagreement starts unsettled:
+ * Two states, one per entry. NeonBinder never picks between the sources for
+ * you, so every disagreement starts unsettled:
  *
- *   - unchosen          pink. A button per distinct value, and a typed one.
- *   - chosen by you     plain. "Using “X”", Change, and Apply-to-the-same.
+ *   - on the card       pink. A button per distinct value, and a typed one.
+ *   - picked just now   plain. "Using “X”", Change, and Apply-to-the-same.
+ *
+ * NEO-656: a pick removes the disagreement from the card, so the card keeps
+ * only the result. The walk holds the entry and the pick in memory while the
+ * card is open (`WalkMemory.keepPick`), and the tile renders "Using" from that;
+ * Change and Apply-to-the-same send the values the sources gave (`offered`),
+ * because the card no longer carries them. Once the walk leaves the card the
+ * result is changed on the Player or Team tile. An entry still carrying the
+ * legacy `chosen` is settled and offers nothing (`isOpenDisagreement`).
  *
  * There is no "Not sure yet": a card cannot be listed without the answer.
  * Picks save as they are made (J1); the tile never navigates.
@@ -114,19 +126,32 @@ function diffParts(text: string, other: string): { head: string; mid: string; ta
 }
 
 export default function SourcesDisagreeTile({ row, leafCards, context }: TidyTileProps) {
-  const entries = row.sourceDisagreements ?? [];
+  const memory = useWalkMemory();
+  const open = (row.sourceDisagreements ?? []).filter(isOpenDisagreement);
+  // The picks made on this card that it no longer carries.
+  const kept = (["players", "teams"] as const).flatMap((field) => {
+    const pick = memory.pickFor(row._id, field);
+    return pick && !open.some((d) => d.field === field) ? [pick] : [];
+  });
+  const entries = [
+    ...open.map((entry) => ({ entry, kept: undefined as KeptPick | undefined })),
+    ...kept.map((pick) => ({
+      entry: { field: pick.field, values: pick.values } as RowDisagreement,
+      kept: pick as KeptPick | undefined,
+    })),
+  ].sort((a, b) => (a.entry.field === b.entry.field ? 0 : a.entry.field === "players" ? -1 : 1));
   if (entries.length === 0) return null;
 
-  const unsettled = entries.some((d) => !d.chosen);
-  const level: TidyTileLevel = unsettled ? "fix" : "plain";
+  const level: TidyTileLevel = open.length > 0 ? "fix" : "plain";
 
   return (
     <TidyTile heading="Sources disagree" level={level}>
       <div className="grid gap-4">
-        {entries.map((entry) => (
+        {entries.map(({ entry, kept: pick }) => (
           <DisagreementEntry
             key={entry.field}
             entry={entry}
+            kept={pick}
             row={row}
             leafCards={leafCards}
             cameoOffer={entry.field === "players" ? context?.cameoOffer : undefined}
@@ -140,12 +165,15 @@ export default function SourcesDisagreeTile({ row, leafCards, context }: TidyTil
 
 function DisagreementEntry({
   entry,
+  kept,
   row,
   leafCards,
   cameoOffer,
   heading,
 }: {
   entry: RowDisagreement;
+  /** The pick made on this card, when the card no longer carries the entry. */
+  kept: KeptPick | undefined;
   row: TidyTileProps["row"];
   leafCards: TidyTileProps["leafCards"];
   /** The server's offer to name the card for the non-player side and add the player as a cameo. */
@@ -153,6 +181,7 @@ function DisagreementEntry({
   /** Name the field above its columns (a card can disagree on two). */
   heading: boolean;
 }) {
+  const memory = useWalkMemory();
   const pickSourceValue = useMutation(api.tidyCards.pickSourceValue);
   const pickSourceAsCameo = useMutation(api.tidyCameo.pickSourceAsCameo);
   const uid = useId();
@@ -182,7 +211,12 @@ function DisagreementEntry({
   };
   useInlinePart(typing, closeTyping, entryRef);
 
-  const chosen = entry.chosen;
+  const chosen = useMemo(
+    () => (kept ? { value: kept.picked, typed: kept.typed } : undefined),
+    [kept],
+  );
+  // The card no longer carries the entry once it is picked: the values go with the call.
+  const offered = kept ? entry.values.map((v) => [...v.value]) : undefined;
   const fieldLabel = FIELD_LABEL[entry.field];
   const sources = SOURCE_KEYS.filter((k) => entry.values.some((v) => (v.sources as readonly string[]).includes(k)));
   const single = entry.values.length === 2 && entry.values.every((v) => v.value.length === 1);
@@ -194,7 +228,7 @@ function DisagreementEntry({
       .filter((c) => c._id !== row._id)
       .filter((c) =>
         (c.sourceDisagreements ?? []).some(
-          (d) => d.field === entry.field && !d.chosen && disagreementKey(d) === key,
+          (d) => d.field === entry.field && isOpenDisagreement(d) && disagreementKey(d) === key,
         ),
       )
       .slice(0, MAX_APPLY_CARDS);
@@ -204,18 +238,30 @@ function DisagreementEntry({
     if (busy) return;
     setBusy(true);
     setError(null);
+    // Held before the write lands, so the tile never blinks out between the
+    // card losing the entry and this call resolving.
+    const before = kept;
+    memory.keepPick(row._id, {
+      field: entry.field,
+      values: entry.values,
+      picked: [...value],
+      typed: isTyped,
+    });
     try {
       await pickSourceValue({
         cardId: row._id,
         field: entry.field,
         value: [...value],
         ...(isTyped ? { typed: true as const } : {}),
+        ...(offered ? { offered } : {}),
       });
       setChanging(false);
       setTyping(false);
       setTyped("");
       answered();
     } catch (e) {
+      if (before) memory.keepPick(row._id, before);
+      else memory.dropPick(row._id, entry.field);
       setError(userFacingMessage(e, "Didn't save, try again."));
     } finally {
       setBusy(false);
@@ -226,6 +272,21 @@ function DisagreementEntry({
     if (busy) return;
     setBusy(true);
     setError(null);
+    if (!cameoOffer) {
+      setBusy(false);
+      return;
+    }
+    // The same memory as a plain pick, held before the write lands: the card
+    // loses the entry, so "Using" and Change stay up while it is open, and the
+    // Player tile says the name is not a player (the shortcut rules it out).
+    const before = kept;
+    memory.keepPick(row._id, {
+      field: entry.field,
+      values: entry.values,
+      picked: [cameoOffer.name],
+      typed: false,
+    });
+    memory.rememberAnswer(row._id, "player", cameoOffer.name, { kind: "notEntity", printed: cameoOffer.name });
     try {
       await pickSourceAsCameo({ cardId: row._id });
       setChanging(false);
@@ -233,6 +294,9 @@ function DisagreementEntry({
       setTyped("");
       answered();
     } catch (e) {
+      if (before) memory.keepPick(row._id, before);
+      else memory.dropPick(row._id, entry.field);
+      memory.forgetAnswer(row._id, "player", cameoOffer.name);
       setError(userFacingMessage(e, "Didn't save, try again."));
     } finally {
       setBusy(false);
@@ -247,6 +311,7 @@ function DisagreementEntry({
       value: [...chosen.value],
       ...(chosen.typed ? { typed: true as const } : {}),
       cardIds: candidates.map((c) => c._id),
+      ...(offered ? { offered } : {}),
     });
     // The open card was written by the pick itself; the others are the cards
     // the server accepted (written by scheduled pages) and the ones it refused.

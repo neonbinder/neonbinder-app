@@ -5,6 +5,11 @@ metadata:
   type: feedback
 ---
 
+**NEO-656 (2026-11-24): the purple notes are GONE (J1).** A linked team is now the card's own line
+(`group "Team <full name>"` + `Edit <full name>`, one `Team ` group, no `Team <printed>` row) and
+`getByRole("note")` is 0. The two-card shape below still proves "no stop"; the blue card is now
+Skipped, never Save & next (that writes a stint). Notes about the note are historical.
+
 The purple notes ("Linked for you: …" from `linkedForText`, "Team filled from the player's …" from
 `teamFillText`) are rendered ONLY inside the walk's tiles. There is no drawer copy. So a card with
 nothing pink or blue is never shown, and its note is never visible. To prove both the "no stop" and

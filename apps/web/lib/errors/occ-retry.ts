@@ -13,10 +13,9 @@
  *   "<module>.js:<fn>" changed the document with ID "<id>"
  *
  * That is what killed the seed job's `commitCardChecklist`: the commit's
- * prelude reads a whole `entityReviewQueue` batch while the Wikidata pool's
- * lookups are still landing on those same rows (CI had an ESPN 403 retry storm,
- * so hundreds of them were in flight). The real fix is to stop the contending
- * writer — `applyLookupResult` now no-ops on a decided row. This helper is the
+ * prelude read a whole review batch while the Wikidata pool's
+ * lookups were still landing on those same rows (CI had an ESPN 403 retry storm,
+ * so hundreds of them were in flight). That table is gone; this helper is the
  * belt-and-braces behind it, for the straggler that slips in during the window
  * before its own guard can see the decision.
  *

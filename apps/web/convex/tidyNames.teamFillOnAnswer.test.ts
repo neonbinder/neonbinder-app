@@ -1,9 +1,10 @@
 /**
- * NEO-645 (Q1 = A, S4) — a card whose player name was still pending at the
- * commit gets the commit's team fill when the name is ANSWERED, with the same
- * verdict (`careerTeamVerdict`, every player answering) and the same rule 8.
- * The open card is filled in the answer's own transaction; the cards the
- * fan-out reaches are filled the same way.
+ * NEO-645 (Q1 = A, S4) / NEO-656 — a card whose player name was still pending at
+ * the commit gets the commit's team fill when the name is ANSWERED, with the
+ * same verdict (`careerTeamVerdict`, every player answering) and the same rule
+ * 8. The open card is filled in the answer's own transaction; the other cards
+ * are filled only when the operator presses Apply to all
+ * (`tidyNames.applyNameToAll`). No fill note is stored.
  */
 
 import { convexTest } from "convex-test";
@@ -12,11 +13,10 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { syncCardPlayerLinks } from "./cardPlayerLinks";
-import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+import { cancelScheduled } from "../lib/testing/drain-scheduled";
 import {
   addPlayer,
   addTeam,
-  nameRow,
   printCard,
   seedTidyWorld,
   type TidyWorld,
@@ -49,12 +49,19 @@ async function world(
     const dodgers = await addTeam(ctx, w, "Los Angeles", "Dodgers");
     const angels = await addTeam(ctx, w, "Los Angeles", "Angels");
     const player = await addPlayer(ctx, w, NAME, stints(w, dodgers, angels));
-    await nameRow(ctx, { scopeId: w.base, sportId: w.sport, kind: "player", name: NAME });
     return { w, dodgers, angels, player };
   });
 }
-const answer = (t: T, cardId: Id<"cardChecklist">, playerId: Id<"players">) =>
+const answer = async (t: T, cardId: Id<"cardChecklist">, playerId: Id<"players">) =>
   t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+    cardId,
+    kind: "player",
+    name: NAME,
+    sportId: (await t.run((ctx) => ctx.db.get(cardId)))!.sportId!,
+    answer: { kind: "linkPlayer", playerId },
+  });
+const applyAll = (t: T, cardId: Id<"cardChecklist">, playerId: Id<"players">) =>
+  t.withIdentity(ADMIN).action(api.tidyNames.applyNameToAll, {
     cardId,
     kind: "player",
     name: NAME,
@@ -63,7 +70,7 @@ const answer = (t: T, cardId: Id<"cardChecklist">, playerId: Id<"players">) =>
 const get = (t: T, id: Id<"cardChecklist">) => t.run((ctx) => ctx.db.get(id));
 
 describe("linking a pending player name fills the team the career gives", () => {
-  test("one team in the window: the open card gets it with the career note, and the fan-out's cards too", async () => {
+  test("one team in the window: the open card gets it; the other card only after Apply to all", async () => {
     const t = newT();
     const { w, dodgers, player } = await world(t, (_w, d) => [{ teamId: d, fromYear: 2024 }]);
     const [open, other] = await t.run(async (ctx) => [
@@ -75,12 +82,13 @@ describe("linking a pending player name fills the team the career gives", () => 
     const first = await get(t, open);
     expect(first?.playerIds).toEqual([player]);
     expect(first?.teamOnCardIds).toEqual([dodgers]);
-    expect(first?.tidyChecks).toContainEqual({ kind: "teamFill", teamIds: [dodgers], reason: "career" });
+    expect(first?.tidyChecks).toBeUndefined();
+    expect((await get(t, other))?.teamOnCardIds).toBeUndefined();
 
-    await drainScheduled(t);
+    await applyAll(t, open, player);
     const second = await get(t, other);
+    expect(second?.playerIds).toEqual([player]);
     expect(second?.teamOnCardIds).toEqual([dodgers]);
-    expect(second?.tidyChecks).toContainEqual({ kind: "teamFill", teamIds: [dodgers], reason: "career" });
   });
 
   test("a tie in the window (Angels through 2023, Dodgers from 2024) fills nothing", async () => {
@@ -121,7 +129,6 @@ describe("linking a pending player name fills the team the career gives", () => 
       const card = await get(t, id);
       expect(card?.playerIds).toEqual([player]);
       expect(card?.teamOnCardIds).toBeUndefined();
-      expect(card?.tidyChecks?.some((c) => c.kind === "teamFill") ?? false).toBe(false);
     }
   });
 
@@ -138,7 +145,6 @@ describe("linking a pending player name fills the team the career gives", () => 
     await answer(t, id, player);
     const card = await get(t, id);
     expect(card?.teamOnCardIds).toEqual([dodgers]);
-    expect(card?.tidyChecks).toContainEqual({ kind: "teamFill", teamIds: [dodgers], reason: "career" });
   });
 
   test("rule 8: a card the publisher checklist answered (teamCheckOutcome checklist) is held back", async () => {
@@ -155,10 +161,9 @@ describe("linking a pending player name fills the team the career gives", () => 
     const card = await get(t, id);
     expect(card?.playerIds).toEqual([player]);
     expect(card?.teamOnCardIds).toBeUndefined();
-    expect(card?.tidyChecks?.some((c) => c.kind === "teamFill") ?? false).toBe(false);
   });
 
-  test("NEO-639 (decision A): under the set's own No Team the career fills nothing, on the open card or the fan-out's", async () => {
+  test("NEO-639 (decision A): under the set's own No Team the career fills nothing, on the open card or the one Apply to all reaches", async () => {
     const t = newT();
     const { w, dodgers, player } = await world(t, (_w, d) => [{ teamId: d, fromYear: 2024 }]);
     await t.run((ctx) => ctx.db.patch(w.base, { noTeamDefault: { setAt: 1, setByUserId: "op" } }));
@@ -167,12 +172,11 @@ describe("linking a pending player name fills the team the career gives", () => 
       await printCard(ctx, w, { number: "2", printed: [{ kind: "player", name: NAME }] }),
     ]);
     await answer(t, open, player);
-    await drainScheduled(t);
+    await applyAll(t, open, player);
     for (const id of [open, other]) {
       const card = await get(t, id);
       expect(card?.playerIds).toEqual([player]);
       expect(card?.teamOnCardIds).toBeUndefined();
-      expect(card?.tidyChecks?.some((c) => c.kind === "teamFill") ?? false).toBe(false);
     }
     // Control: the same answer under a set with no team default fills.
     await t.run((ctx) => ctx.db.patch(w.base, { noTeamDefault: undefined }));
@@ -195,7 +199,6 @@ describe("linking a pending player name fills the team the career gives", () => 
     );
     await answer(t, id, player);
     expect((await get(t, id))?.teamOnCardIds).toEqual([angels]);
-    expect((await get(t, id))?.tidyChecks).toBeUndefined();
   });
 });
 
@@ -231,13 +234,7 @@ describe("the tiers, first answer wins (batch, stored, career)", () => {
     });
   }
   const pending = (t: T, w: TidyWorld, number: string, leaf?: Id<"selectorOptions">) =>
-    t.run(async (ctx) => {
-      // The name is answered in the card's own leaf, so that leaf needs its row.
-      if (leaf && leaf !== w.base) {
-        await nameRow(ctx, { scopeId: leaf, sportId: w.sport, kind: "player", name: NAME });
-      }
-      return printCard(ctx, w, { leaf, number, printed: [{ kind: "player", name: NAME }] });
-    });
+    t.run((ctx) => printCard(ctx, w, { leaf, number, printed: [{ kind: "player", name: NAME }] }));
 
   test("batch: another card of the same player in this checklist wins over the career", async () => {
     const t = newT();
@@ -247,7 +244,6 @@ describe("the tiers, first answer wins (batch, stored, career)", () => {
     await answer(t, open, player);
     const card = await get(t, open);
     expect(card?.teamOnCardIds).toEqual([angels]);
-    expect(card?.tidyChecks).toContainEqual({ kind: "teamFill", teamIds: [angels], reason: "otherCards" });
   });
 
   test("batch: the checklist disagreeing with itself STOPS the search, the career does not speak", async () => {
@@ -269,7 +265,6 @@ describe("the tiers, first answer wins (batch, stored, career)", () => {
     const open = await pending(t, w, "1");
     await answer(t, open, player);
     expect((await get(t, open))?.teamOnCardIds).toEqual([dodgers]);
-    expect((await get(t, open))?.tidyChecks).toContainEqual({ kind: "teamFill", teamIds: [dodgers], reason: "career" });
   });
 
   test("stored: his card under the set's base checklist answers for a card in an insert", async () => {
@@ -280,11 +275,6 @@ describe("the tiers, first answer wins (batch, stored, career)", () => {
     const open = await pending(t, w, "1", w.insert);
     await answer(t, open, player);
     expect((await get(t, open))?.teamOnCardIds).toEqual([angels]);
-    expect((await get(t, open))?.tidyChecks).toContainEqual({
-      kind: "teamFill",
-      teamIds: [angels],
-      reason: "otherCards",
-    });
   });
 
   test("stored: two disagreeing base cards STOP the search for the player; his career does not outvote them", async () => {
@@ -302,10 +292,7 @@ describe("the tiers, first answer wins (batch, stored, career)", () => {
     const t = newT();
     const { w, dodgers, angels, player } = await world(t, (_w, d) => [{ teamId: d, fromYear: 2024 }]);
     const trout = await t.run((ctx) => addPlayer(ctx, w, OTHER, [{ teamId: angels, fromYear: 2024 }]));
-    await t.run(async (ctx) => {
-      await ctx.db.patch(w.set, { children: [w.base, w.insert, w.parallel] });
-      await nameRow(ctx, { scopeId: w.insert, sportId: w.sport, kind: "player", name: NAME });
-    });
+    await t.run((ctx) => ctx.db.patch(w.set, { children: [w.base, w.insert, w.parallel] }));
     const open = await t.run((ctx) =>
       printCard(ctx, w, {
         leaf: w.insert,
@@ -318,10 +305,6 @@ describe("the tiers, first answer wins (batch, stored, career)", () => {
     await answer(t, open, player);
     const card = await get(t, open);
     expect(new Set(card?.teamOnCardIds)).toEqual(new Set([dodgers, angels]));
-    expect(card?.tidyChecks).toContainEqual({
-      kind: "teamFill",
-      teamIds: card?.teamOnCardIds,
-      reason: "career",
-    });
+
   });
 });

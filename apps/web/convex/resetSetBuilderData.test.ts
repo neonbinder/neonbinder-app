@@ -30,7 +30,7 @@
  * leaves rows behind that the next run reuses ids for. Each table is seeded
  * with a distinguishable number of rows so a mixed-up count is visible.
  *
- * NEO-294 added `entityReviewQueue` and `checklistCandidates` to the loop.
+ * NEO-294 added `checklistCandidates` (and the since-removed review queue) to the loop.
  * The reset never claimed either; only a cron did, and the queue's waits 24
  * hours, so six CI runs in fourteen hours stacked every abandoned review into
  * one preview (reset 15 s → 69 s → 246 s, PR #273). The page boundary
@@ -173,22 +173,8 @@ async function seedEveryDrainedTable(
       lastUpdated: NOW,
     });
 
-    // entityReviewQueue: 7 (NEO-294) — one abandoned review's worth of
-    // unknown names, in the three kinds the wizard walks.
-    for (let i = 1; i <= 7; i += 1) {
-      await ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: variantId,
-        batchId: "batch-abandoned",
-        createdByUserId: "admin_who_closed_the_tab",
-        kind: i <= 4 ? "player" : i <= 6 ? "team" : "league",
-        name: `Unknown ${i}`,
-        sportId,
-        status: "ready",
-      });
-    }
-
     // checklistCandidates: 8 (NEO-294) — the staged cards of the same
-    // abandoned review. More than the queue rows, as on a real set.
+    // abandoned review.
     for (let i = 1; i <= 8; i += 1) {
       await ctx.db.insert("checklistCandidates", {
         selectorOptionId: variantId,
@@ -220,33 +206,6 @@ async function seedEveryDrainedTable(
       await ctx.db.insert("cardTeamLinks", {
         cardChecklistId: cardIds[i % cardIds.length],
         teamId,
-      });
-    }
-
-    // tidyNames: 2 and cardPrintedNames: 3 (NEO-645) — a name's answer, which
-    // links a player the reset deletes, and the cards that printed names.
-    // Hand inserted: the reset drains the tables, it does not care how rows
-    // got there.
-    for (let i = 0; i < 2; i += 1) {
-      await ctx.db.insert("tidyNames", {
-        scopeId: variantId,
-        kind: "player",
-        nameNormalized: `answered ${i}`,
-        name: `Answered ${i}`,
-        sportId,
-        status: "ready",
-        answer: { kind: "linkPlayer", playerId: playerIds[0], by: "operator" },
-        answerGen: 1,
-      });
-    }
-    for (let i = 0; i < 3; i += 1) {
-      await ctx.db.insert("cardPrintedNames", {
-        cardChecklistId: cardIds[i],
-        scopeId: variantId,
-        kind: "player",
-        nameNormalized: `answered ${i % 2}`,
-        printed: `Answered ${i % 2}`,
-        order: 0,
       });
     }
 
@@ -416,13 +375,9 @@ async function tableCounts(t: ReturnType<typeof convexTest>) {
     variantCommonPrices: (await ctx.db.query("variantCommonPrices").collect())
       .length,
     cardTeamLinks: (await ctx.db.query("cardTeamLinks").collect()).length,
-    cardPrintedNames: (await ctx.db.query("cardPrintedNames").collect()).length,
-    tidyNames: (await ctx.db.query("tidyNames").collect()).length,
     selectorOptions: (await ctx.db.query("selectorOptions").collect()).length,
     cardChecklist: (await ctx.db.query("cardChecklist").collect()).length,
     cardCrossListings: (await ctx.db.query("cardCrossListings").collect())
-      .length,
-    entityReviewQueue: (await ctx.db.query("entityReviewQueue").collect())
       .length,
     checklistCandidates: (await ctx.db.query("checklistCandidates").collect())
       .length,
@@ -473,12 +428,9 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionBuildingSets: 11,
       variantCommonPrices: 2,
       cardTeamLinks: 9,
-      cardPrintedNames: 3,
-      tidyNames: 2,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
-      entityReviewQueue: 7,
       checklistCandidates: 8,
       checklistNameResolutions: 1,
       players: 4,
@@ -506,12 +458,9 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionBuildingSets: 11,
       variantCommonPrices: 2,
       cardTeamLinks: 9,
-      cardPrintedNames: 3,
-      tidyNames: 2,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
-      entityReviewQueue: 7,
       checklistCandidates: 8,
       checklistNameResolutions: 1,
       players: 4,
@@ -550,12 +499,9 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
-      cardPrintedNamesDeleted: 3,
-      tidyNamesDeleted: 2,
       cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
-      entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
       checklistNameResolutionsDeleted: 1,
       playerSportsDeleted: 0,
@@ -576,12 +522,9 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       collectionBuildingSets: 0,
       variantCommonPrices: 0,
       cardTeamLinks: 0,
-      cardPrintedNames: 0,
-      tidyNames: 0,
       selectorOptions: 0,
       cardChecklist: 0,
       cardCrossListings: 0,
-      entityReviewQueue: 0,
       checklistCandidates: 0,
       checklistNameResolutions: 0,
       players: 0,
@@ -617,12 +560,8 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     ["resetSelectorOptionsBatch", "selectorOptions"],
     ["resetCardChecklistBatch", "cardChecklist"],
     ["resetCardCrossListingsBatch", "cardCrossListings"],
-    ["resetEntityReviewQueueBatch", "entityReviewQueue"],
     ["resetChecklistCandidatesBatch", "checklistCandidates"],
     ["resetChecklistNameResolutionsBatch", "checklistNameResolutions"],
-    // NEO-645 — the Tidy Up name answers and the printed-name index.
-    ["resetTidyNamesBatch", "tidyNames"],
-    ["resetCardPrintedNamesBatch", "cardPrintedNames"],
     ["resetPlayersBatch", "players"],
     ["resetTeamsBatch", "teams"],
     ["resetFranchisesBatch", "franchises"],
@@ -650,12 +589,9 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
         collectionBuildingSets: 11,
         variantCommonPrices: 2,
         cardTeamLinks: 9,
-        cardPrintedNames: 3,
-        tidyNames: 2,
         selectorOptions: 3,
         cardChecklist: 5,
         cardCrossListings: 6,
-        entityReviewQueue: 7,
         checklistCandidates: 8,
         checklistNameResolutions: 1,
         players: 4,
@@ -693,12 +629,9 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
-      cardPrintedNamesDeleted: 0,
-      tidyNamesDeleted: 0,
       cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
-      entityReviewQueueDeleted: 0,
       checklistCandidatesDeleted: 0,
       checklistNameResolutionsDeleted: 0,
       playerSportsDeleted: 0,
@@ -780,12 +713,9 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
-      cardPrintedNamesDeleted: 0,
-      tidyNamesDeleted: 0,
       cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
-      entityReviewQueueDeleted: 0,
       checklistCandidatesDeleted: 0,
       checklistNameResolutionsDeleted: 0,
       playerSportsDeleted: 0,
@@ -832,12 +762,9 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
-      cardPrintedNamesDeleted: 3,
-      tidyNamesDeleted: 2,
       cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
-      entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
       checklistNameResolutionsDeleted: 1,
       playerSportsDeleted: 0,
@@ -856,12 +783,9 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionBuildingSets: 0,
       variantCommonPrices: 0,
       cardTeamLinks: 0,
-      cardPrintedNames: 0,
-      tidyNames: 0,
       selectorOptions: 0,
       cardChecklist: 0,
       cardCrossListings: 0,
-      entityReviewQueue: 0,
       checklistCandidates: 0,
       checklistNameResolutions: 0,
       players: 0,
@@ -889,12 +813,9 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       collectionBuildingSets: 11,
       variantCommonPrices: 2,
       cardTeamLinks: 9,
-      cardPrintedNames: 3,
-      tidyNames: 2,
       selectorOptions: 3,
       cardChecklist: 5,
       cardCrossListings: 6,
-      entityReviewQueue: 7,
       checklistCandidates: 8,
       checklistNameResolutions: 1,
       players: 4,
@@ -1003,11 +924,12 @@ describe("NEO-254: the alias index is drained with the players it describes", ()
 });
 
 /**
- * NEO-294 — the entity-review tables, and the page boundary that matters.
+ * NEO-294 — the staged-candidate table, and the page boundary that matters.
  *
  * `runSetBuilderReset` drained `selectorOptions`, `cardChecklist`,
  * `cardCrossListings`, the players/teams/leagues triple and their alias
- * indexes — but never `entityReviewQueue` or `checklistCandidates`. The only
+ * indexes — but never `checklistCandidates` (or the review queue NEO-656
+ * removed). The only
  * thing that removed those was a cron, and for the queue that cron waits 24
  * hours: right for a real operator's session, unreachable in CI, where six
  * runs in fourteen hours all land inside the window and every run inherited
@@ -1021,7 +943,7 @@ describe("NEO-254: the alias index is drained with the players it describes", ()
  * RESET_BATCH_SIZE (500) rows, so the real shape is a drain the first page
  * cannot finish — which is exactly the case a small fixture would miss.
  */
-describe("NEO-294: the entity-review tables are drained, across pages", () => {
+describe("NEO-294: the staged candidates are drained, across pages", () => {
   /** One row past RESET_BATCH_SIZE: the smallest fixture that needs a 2nd page. */
   const OVER_ONE_PAGE = 501;
 
@@ -1043,18 +965,6 @@ describe("NEO-294: the entity-review tables are drained, across pages", () => {
         lastUpdated: NOW,
       });
       for (let i = 0; i < OVER_ONE_PAGE; i += 1) {
-        await ctx.db.insert("entityReviewQueue", {
-          selectorOptionId: setId,
-          // Two batches, so the drain is proved to be table-wide rather than
-          // per-batch: there is no `batches` table, a "batch" is only this
-          // grouping, and a reset that cleared one batch would leave the other.
-          batchId: i % 2 === 0 ? "batch-a" : "batch-b",
-          createdByUserId: "admin_who_closed_the_tab",
-          kind: "player",
-          name: `Unknown ${i}`,
-          sportId,
-          status: "ready",
-        });
         await ctx.db.insert("checklistCandidates", {
           selectorOptionId: setId,
           batchId: i % 2 === 0 ? "batch-a" : "batch-b",
@@ -1073,8 +983,6 @@ describe("NEO-294: the entity-review tables are drained, across pages", () => {
 
   const reviewCounts = (t: ReturnType<typeof convexTest>) =>
     t.run(async (ctx) => ({
-      entityReviewQueue: (await ctx.db.query("entityReviewQueue").collect())
-        .length,
       checklistCandidates: (
         await ctx.db.query("checklistCandidates").collect()
       ).length,
@@ -1089,70 +997,57 @@ describe("NEO-294: the entity-review tables are drained, across pages", () => {
     // RESET_BATCH_SIZE rows, and it has to report that more remain — that
     // `hasMore` is what `runSetBuilderReset`'s while-loop runs on.
     expect(
-      await t.mutation(internal.selectorOptions.resetEntityReviewQueueBatch, {}),
+      await t.mutation(internal.selectorOptions.resetChecklistCandidatesBatch, {}),
     ).toEqual({ deleted: 500, hasMore: true });
-    expect(
-      await t.mutation(internal.selectorOptions.resetEntityReviewQueueBatch, {}),
-    ).toEqual({ deleted: 1, hasMore: false });
 
-    // `checklistCandidates` is untouched so far, so the full reset below has
-    // to page it by itself: a count of 501 from one run is only reachable
-    // through more than one batch.
+    // The full reset below finishes what the first page left.
     const result = await runReset(t);
 
-    expect(result.entityReviewQueueDeleted).toBe(0);
-    expect(result.checklistCandidatesDeleted).toBe(OVER_ONE_PAGE);
+    expect(result.checklistCandidatesDeleted).toBe(OVER_ONE_PAGE - 500);
     expect(result.complete).toBe(true);
     expect(await reviewCounts(t)).toEqual({
-      entityReviewQueue: 0,
       checklistCandidates: 0,
     });
   });
 
-  test("a single armed run empties both tables however many pages it takes", async () => {
+  test("a single armed run empties the table however many pages it takes", async () => {
     vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
     const t = convexTest(schema, modules);
     await seedAbandonedReview(t);
 
     const result = await runReset(t);
 
-    expect(result.entityReviewQueueDeleted).toBe(OVER_ONE_PAGE);
     expect(result.checklistCandidatesDeleted).toBe(OVER_ONE_PAGE);
     expect(result.complete).toBe(true);
     // The thing the CI log needed and did not have: residue is now a number an
     // operator can read, not a 246-second reset nobody could explain.
     expect(await reviewCounts(t)).toEqual({
-      entityReviewQueue: 0,
       checklistCandidates: 0,
     });
   });
 
-  test("the review rows go before the players, teams and leagues they point at", async () => {
-    // A decision carries `linkedPlayerId` / `linkedTeamId` / `linkedLeagueId`,
-    // so a reset interrupted at its budget must never have drained those
-    // tables while review rows still name them. A zero budget yields after
-    // each table that did work, which makes the order observable: by the pass
-    // that first deletes a player, the queue is already empty.
+  test("the staged candidates go before the players, teams and leagues", async () => {
+    // A reset interrupted at its budget must never have drained those tables
+    // while a staged review still stands. A zero budget yields after each
+    // table that did work, which makes the order observable: by the pass that
+    // first deletes a player, the candidates are already empty.
     vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
     vi.stubEnv("RESET_TIME_BUDGET_MS", "0");
     const t = convexTest(schema, modules);
     await seedEveryDrainedTable(t);
 
     let sawPlayersDeleted = false;
-    let queueWhenPlayersWent = -1;
     let candidatesWhenPlayersWent = -1;
     for (let pass = 0; pass < 30 && !sawPlayersDeleted; pass += 1) {
       const result = await runReset(t);
       if (result.playersDeleted > 0) {
         sawPlayersDeleted = true;
         const counts = await reviewCounts(t);
-        queueWhenPlayersWent = counts.entityReviewQueue;
         candidatesWhenPlayersWent = counts.checklistCandidates;
       }
     }
 
     expect(sawPlayersDeleted).toBe(true);
-    expect(queueWhenPlayersWent).toBe(0);
     expect(candidatesWhenPlayersWent).toBe(0);
   });
 });
@@ -1289,12 +1184,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     "cardSecondaryPlayerLinks",
     "cardChecklist",
     "cardCrossListings",
-    "entityReviewQueue",
     "checklistCandidates",
     "checklistNameResolutions",
-    // NEO-645 — a name's answer (scopeId, sportId) and each card's printed names.
-    "tidyNames",
-    "cardPrintedNames",
     // NEO-496 — a set's publisher checklist (setId) and the rows' section links.
     "publishedChecklists",
     "publishedChecklistLinks",
@@ -1597,12 +1488,9 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 1,
       cardTeamLinksDeleted: 9,
-      cardPrintedNamesDeleted: 3,
-      tidyNamesDeleted: 2,
       cardSecondaryPlayerLinksDeleted: 1,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
-      entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
       checklistNameResolutionsDeleted: 1,
       playerSportsDeleted: 0,

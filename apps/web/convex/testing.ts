@@ -70,6 +70,7 @@ import { BSC_LISTED_BOUNDS, BSC_ORDER_BOUNDS, bscListedText } from "./lib/bscOrd
 import { CatalogReader } from "./lib/catalogView";
 import { slotIds } from "./platformSlots";
 import { resolveBscTarget } from "./lib/bscHttp";
+import { cancelQueuedBscTeamChecksFor } from "./bscTeamPool";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -894,6 +895,35 @@ export const clearBscCallGate = action({
     if (key === BSC_GATE_DEPLOYMENT_KEY) return { deleted: 0 };
     const cleared: { deleted: number } = await ctx.runMutation(internal.bscCallGate.clearForTesting, { key });
     return cleared;
+  },
+});
+
+/**
+ * NEO-644 — cancel the background team lookups the CALLER queued on the
+ * `bscTeamPool` lane, and nobody else's. The lane is one slot per deployment,
+ * so a fault spec's cards (the 429 and stall specs queue up to ~30) would hold
+ * it after the spec ends, in front of every other shard's per-card lookups.
+ * The spec's own teardown calls this through the `/testing/bsc-fake?clear=lane`
+ * hop. Items are matched on `queuedBy`, the verified Clerk subject (no argument
+ * exists to name another user). An item already running finishes (see
+ * `bscTeamPool.cancelQueuedBscTeamChecksFor`). Same locks as the other fake
+ * BSC controls: a testing deployment, a signed-in caller, the fake.
+ */
+export const cancelMyBscTeamChecks = mutation({
+  args: {},
+  returns: v.object({ cancelled: v.number() }),
+  handler: async (ctx): Promise<{ cancelled: number }> => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Fake BuySportsCards controls are not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    if (!fakeBscNamespaceOf(userId)) {
+      throw new Error("This deployment talks to the real BuySportsCards, so it takes no fake faults or orders");
+    }
+    return { cancelled: await cancelQueuedBscTeamChecksFor(ctx, userId) };
   },
 });
 

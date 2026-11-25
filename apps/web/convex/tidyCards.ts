@@ -1,17 +1,22 @@
 /**
- * NEO-645 — the card-level writes and the one subscribed read of One-card Tidy
- * Up. The name answers live in `tidyNames.ts`; the career write is
+ * NEO-645 / NEO-656 — the card-level writes and the one subscribed read of
+ * One-card Tidy Up. The name answers live in `tidyNames.ts`; the career write is
  * `players.addStint`.
  *
  *   - `cardContext`            REAL. One card's names, players, teams: the walk's
  *                              only per-card subscription besides `getCardChecklist`.
- *   - `markReviewed`           REAL. "Seen" for blue; refuses while pink remains.
+ *   - `saveCard`               REAL. Save & next: refuses while pink remains, and
+ *                              adds the default stint for the career gaps shown.
  *   - `pickSourceValue`        Sources disagree: use one value (this card, or the
  *                              cards with the same disagreement).
- *   - `keepCareerGap`          "Keep as is" on a career gap (the default is Add to career).
  *   - `applyTeamToPlayerCards` "Apply to all" on the Team tile: the answer goes to its line.
  *   - `applyVariation`         Apply a corrected variation to the cards that share it.
  *   - `applySetNameToTitles`   "Shorten the set name for every card".
+ *
+ * NEO-656 (Jason: "it should read real data and display pink/blue as
+ * appropriate depending on the current state of the data"): nothing is stored
+ * about what the operator has seen or checked. Blue is read live from the data
+ * (`careerCoverage.careerGaps`), and a card keeps only its result.
  *
  * ## Conventions every mutation here follows
  *
@@ -26,8 +31,7 @@
  *    about 1,500 operations).
  *  - Writes that change `playerIds`, `teamOnCardIds`, a title or a variation
  *    bump `lastUpdated` (the NEO-203 baseVersion): content really changed under
- *    an open review. `tidyReviewed`, `tidyChecks`, `sourceNumbers` and
- *    `cardPrintedNames` writes never do.
+ *    an open review. A pick that only removes its disagreement never does.
  */
 
 import { ConvexError, v, type Infer } from "convex/values";
@@ -35,25 +39,10 @@ import { internalMutation, mutation, query, type MutationCtx } from "./_generate
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
-import { neverLooked } from "./tidyNames";
-import {
-  tidyNameAnswerValidator,
-  tidyNameEnrichmentValidator,
-  tidyNameKindValidator,
-  tidyLookupStatusValidator,
-} from "./schema";
-import {
-  listCardPrintedNames,
-  listPrintersOfName,
-  resolveScopeLeaf,
-} from "./cardPrintedNames";
+import { tidyNameKindValidator } from "./tidyNames";
 import {
   MAX_CARD_PLAYERS,
   MAX_CARD_TEAMS,
-  TIDY_REVIEWED_KEY_MAX_LENGTH,
-  TIDY_REVIEWED_MAX_KEYS,
-  currentReviewKeys,
-  tidyReviewedKeyCareerGap,
   deriveCardAttention,
 } from "./features/cardAttention";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
@@ -62,6 +51,7 @@ import {
   applyPickToCard,
   cleanPickNames,
   entryFor,
+  entryFromOffered,
   sameDisagreement,
   sameValue,
   sameValueSets,
@@ -76,10 +66,10 @@ import {
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { hasTeamLine, isTeamlessOnLine, teamLineKey } from "./lib/teamLine";
 import { defaultGapStint } from "./lib/careerGapStint";
+import { computeCoverage } from "./lib/careerCoverageFacts";
 import { appendCareerStintsImpl } from "./players";
 import { assertCareerStintYears, maxCareerYear } from "../lib/players/career-years";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
-import { recheckCareerGaps } from "./tidyCareerGap";
 import { cameoOfferFor, cameoOfferValidator } from "./tidyCameo";
 import { listingInputsForStoredCard } from "./storedCardTitle";
 import { retitleForSetName } from "./features/setNameInTitles";
@@ -96,54 +86,29 @@ export const MAX_PICK_NAMES = 20;
 export const CONTEXT_MAX_PLAYERS = 4;
 export const CONTEXT_MAX_STINTS_PER_PLAYER = 32;
 export const CONTEXT_MAX_TEAMS = 16;
-/** "Printed on #1, #17": how many card numbers are shown, and how many are counted. */
-export const CONTEXT_PRINTED_ON_SHOWN = 8;
-export const CONTEXT_PRINTED_ON_COUNTED = 50;
 
 // ─── cardContext ────────────────────────────────────────────────────────────
 
-const printedOnValidator = v.object({
-  /** The first few card numbers that printed the name, for "Printed on #1, #17". */
-  cardNumbers: v.array(v.string()),
-  /** How many cards printed it, counted up to `CONTEXT_PRINTED_ON_COUNTED`. */
-  count: v.number(),
-  /** More than `count` (render "50+"). */
-  more: v.boolean(),
-});
-
-/** One name the open card printed that has a name row. */
+/**
+ * One name the open card prints, read from the card itself (NEO-656): a player
+ * already linked (`playerLinks.nameOnCard`), a player name still waiting
+ * (`pendingPlayerNames`) or a team name still waiting (`pendingTeamNames`). A
+ * linked team has no name here: a team link keeps no printed spelling.
+ */
 export const contextNameValidator = v.object({
   kind: tidyNameKindValidator,
   nameNormalized: v.string(),
   /** This card's own spelling. */
   printed: v.string(),
+  /**
+   * Position among the card's printed names of this kind: linked players first
+   * in link order, then waiting ones after them.
+   */
   order: v.number(),
-  /** The operator changed THIS card on its own; an answer elsewhere never overwrites it. */
-  cardOverride: v.boolean(),
-  /** The scope the name is answered in (the card's own leaf when its scope leaf is gone). */
-  scopeId: v.id("selectorOptions"),
-  /** The name row; null when none exists (nothing to answer). */
-  row: v.union(
-    v.null(),
-    v.object({
-      name: v.string(),
-      sportId: v.id("selectorOptions"),
-      status: tidyLookupStatusValidator,
-      /**
-       * Nobody has asked Wikidata about this name (`tidyNames.neverLooked`).
-       * The walk asks for these and only these: a lookup that finished and
-       * found nothing is also `ready` with no enrichment, but it is not new.
-       */
-      neverLooked: v.boolean(),
-      enrichment: v.optional(tidyNameEnrichmentValidator),
-      candidateTeamIds: v.optional(v.array(v.id("teams"))),
-      candidatePlace: v.optional(v.literal(true)),
-      answer: v.optional(tidyNameAnswerValidator),
-      answerGen: v.optional(v.number()),
-    }),
-  ),
-  /** Which cards print the same name; null once the name is answered. */
-  printedOn: v.union(v.null(), printedOnValidator),
+  /** Still waiting for an answer; false once linked. */
+  pending: v.boolean(),
+  /** The linked player, when `pending` is false. */
+  playerId: v.optional(v.id("players")),
 });
 
 export const contextPlayerValidator = v.object({
@@ -172,20 +137,9 @@ export const contextTeamValidator = v.object({
   name: v.string(),
   /** The card carries this team. */
   onCard: v.boolean(),
-  /** A name row offered this team as a candidate (NEO-602). */
+  /** The walk named this team as a candidate (`candidateTeamIds`, NEO-602). */
   candidate: v.boolean(),
 });
-
-/**
- * Why a name was linked without the operator ("Linked for you"). Only links NB
- * made a judgement on are reported: an exact single match is the base case and
- * carries no note (Jason, 2026-11-22).
- */
-export const linkedForReasonValidator = v.union(
-  v.literal("setHistory"),
-  v.literal("hallOfFame"),
-  v.literal("careerTeam"),
-);
 
 export const cardContextValidator = v.object({
   cardId: v.id("cardChecklist"),
@@ -205,20 +159,6 @@ export const cardContextValidator = v.object({
    * offer (`tidyCameo.cameoOfferFor`); absent when it is not on offer.
    */
   cameoOffer: v.optional(cameoOfferValidator),
-  linkedFor: v.array(
-    v.union(
-      v.object({
-        kind: v.literal("player"),
-        playerId: v.id("players"),
-        reason: linkedForReasonValidator,
-      }),
-      v.object({
-        kind: v.literal("team"),
-        teamId: v.id("teams"),
-        reason: linkedForReasonValidator,
-      }),
-    ),
-  ),
 });
 
 /**
@@ -227,32 +167,24 @@ export const cardContextValidator = v.object({
  * Subscribed only while the walk is open (NEO-392). The reads are bounded and
  * the result is small by construction:
  *
- *  - the card, its `cardPrintedNames` rows (at most 28), a point read of the
- *    `tidyNames` row for each (at most 28);
- *  - "Printed on" only for names still UNANSWERED: a `by_scope_kind_name` take
- *    of `CONTEXT_PRINTED_ON_COUNTED + 1`, with the first
- *    `CONTEXT_PRINTED_ON_SHOWN` cards read for their numbers;
+ *  - the card, and its names (read off the card: no other document);
  *  - at most `CONTEXT_MAX_PLAYERS` linked players and, for each, at most
  *    `CONTEXT_MAX_STINTS_PER_PLAYER` stints (team names cached per call);
- *  - the card's teams plus any `candidateTeamIds`, at most `CONTEXT_MAX_TEAMS`.
+ *  - the card's teams plus the walk's `candidateTeamIds`, at most
+ *    `CONTEXT_MAX_TEAMS`.
  *
- * Target: under 150 documents. It re-runs on the open card's own writes and on
- * a lookup landing for one of its names, both of which are wanted.
+ * Target: under 150 documents. It re-runs on the open card's own writes.
  *
- * When a printed row's scope leaf is gone (a wipe took a parallel copy's source
- * leaf), the name is read in the card's own leaf (decision Q3); `scopeId` says
- * which scope was used.
- *
- * `linkedFor`: the "Linked for you" note. A player whose name row carries an
- * `auto` answer reports its `autoReason`; a linked player with NO name row
- * whose normalised name equals what the card printed is an exact single match
- * (D6: it gets no row) and reports nothing: the base case is not a note. An
- * operator's own answer is not "for you" and reports nothing either.
+ * `candidateTeamIds` are the rows a team name reached (the walk holds them from
+ * `tidyLeafFacts`); they are only named here, so the tile can show them.
  *
  * Returns null when the card is gone.
  */
 export const cardContext = query({
-  args: { cardId: v.id("cardChecklist") },
+  args: {
+    cardId: v.id("cardChecklist"),
+    candidateTeamIds: v.optional(v.array(v.id("teams"))),
+  },
   returns: v.union(v.null(), cardContextValidator),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -271,74 +203,36 @@ export const cardContext = query({
       return name;
     };
 
-    // ── names ──
-    const printed = await listCardPrintedNames(ctx, card._id);
-    const scopeCache = new Map<string, Id<"selectorOptions">>();
-    const names: Array<Infer<typeof contextNameValidator>> = [];
-    const rowOf = new Map<string, Doc<"tidyNames">>();
-    for (const p of printed) {
-      let scopeId = scopeCache.get(p.scopeId);
-      if (!scopeId) {
-        scopeId = await resolveScopeLeaf(ctx, p, card.selectorOptionId);
-        scopeCache.set(p.scopeId, scopeId);
-      }
-      const row = await ctx.db
-        .query("tidyNames")
-        .withIndex("by_scope_kind_name", (q) =>
-          q
-            .eq("scopeId", scopeId!)
-            .eq("kind", p.kind)
-            .eq("nameNormalized", p.nameNormalized),
-        )
-        .first();
-      if (row) rowOf.set(`${p.kind}|${p.nameNormalized}`, row);
-
-      let printedOn: Infer<typeof printedOnValidator> | null = null;
-      if (row && !row.answer) {
-        const printers = await listPrintersOfName(
-          ctx,
-          { scopeId, kind: p.kind, nameNormalized: p.nameNormalized },
-          CONTEXT_PRINTED_ON_COUNTED + 1,
-        );
-        const cardNumbers: string[] = [];
-        for (const printer of printers.slice(0, CONTEXT_PRINTED_ON_SHOWN)) {
-          const printerCard = await ctx.db.get(printer.cardChecklistId);
-          if (printerCard) cardNumbers.push(printerCard.cardNumber);
-        }
-        printedOn = {
-          cardNumbers,
-          count: Math.min(printers.length, CONTEXT_PRINTED_ON_COUNTED),
-          more: printers.length > CONTEXT_PRINTED_ON_COUNTED,
-        };
-      }
-      names.push({
-        kind: p.kind,
-        nameNormalized: p.nameNormalized,
-        printed: p.printed,
-        order: p.order,
-        cardOverride: p.cardOverride === true,
-        scopeId,
-        row: row
-          ? {
-              name: row.name,
-              sportId: row.sportId,
-              status: row.status,
-              neverLooked: neverLooked(row),
-              ...(row.enrichment ? { enrichment: row.enrichment } : {}),
-              ...(row.candidateTeamIds ? { candidateTeamIds: row.candidateTeamIds } : {}),
-              ...(row.candidatePlace ? { candidatePlace: row.candidatePlace } : {}),
-              ...(row.answer ? { answer: row.answer } : {}),
-              ...(row.answerGen !== undefined ? { answerGen: row.answerGen } : {}),
-            }
-          : null,
-        printedOn,
-      });
-    }
+    // ── names: from the card itself ──
+    const links = card.playerLinks ?? [];
+    const names: Array<Infer<typeof contextNameValidator>> = [
+      ...links.map((l, order) => ({
+        kind: "player" as const,
+        nameNormalized: normalizeEntityName(l.nameOnCard),
+        printed: l.nameOnCard,
+        order,
+        pending: false,
+        playerId: l.playerId,
+      })),
+      ...(card.pendingPlayerNames ?? []).map((printed, i) => ({
+        kind: "player" as const,
+        nameNormalized: normalizeEntityName(printed),
+        printed,
+        order: links.length + i,
+        pending: true,
+      })),
+      ...(card.pendingTeamNames ?? []).map((printed, order) => ({
+        kind: "team" as const,
+        nameNormalized: normalizeEntityName(printed),
+        printed,
+        order,
+        pending: true,
+      })),
+    ];
 
     // ── players ──
     const playerIds = card.playerIds ?? [];
     const players: Array<Infer<typeof contextPlayerValidator>> = [];
-    const linkedFor: Array<Infer<typeof cardContextValidator>["linkedFor"][number]> = [];
     for (const playerId of playerIds.slice(0, CONTEXT_MAX_PLAYERS)) {
       const player = await ctx.db.get(playerId);
       if (!player) continue;
@@ -364,18 +258,6 @@ export const cardContext = query({
         stints,
         stintsMore: (player.teamYears?.length ?? 0) > CONTEXT_MAX_STINTS_PER_PLAYER,
       });
-
-      // "Linked for you".
-      const printedKey = normalizeEntityName(nameOnCard ?? player.name);
-      const answer = rowOf.get(`player|${printedKey}`)?.answer;
-      if (
-        answer?.kind === "linkPlayer" &&
-        answer.playerId === playerId &&
-        answer.by === "auto" &&
-        answer.autoReason
-      ) {
-        linkedFor.push({ kind: "player", playerId, reason: answer.autoReason });
-      }
     }
 
     // ── cameos (NEO-528 "Also on this card") ──
@@ -390,18 +272,7 @@ export const cardContext = query({
 
     // ── teams ──
     const onCard = new Set<string>(card.teamOnCardIds ?? []);
-    const candidates = new Set<string>();
-    for (const row of rowOf.values()) {
-      if (row.kind !== "team") continue;
-      for (const id of row.candidateTeamIds ?? []) candidates.add(id);
-      if (row.answer?.kind === "linkTeam" && row.answer.by === "auto" && row.answer.autoReason) {
-        linkedFor.push({
-          kind: "team",
-          teamId: row.answer.teamId,
-          reason: row.answer.autoReason,
-        });
-      }
-    }
+    const candidates = new Set<string>(args.candidateTeamIds ?? []);
     const teams: Array<Infer<typeof contextTeamValidator>> = [];
     for (const id of [...new Set([...onCard, ...candidates])].slice(0, CONTEXT_MAX_TEAMS)) {
       const name = await teamName(id as Id<"teams">);
@@ -421,137 +292,74 @@ export const cardContext = query({
       playersMore: playerIds.length > CONTEXT_MAX_PLAYERS,
       cameos,
       teams,
-      linkedFor,
       ...(cameoOffer ? { cameoOffer } : {}),
     };
   },
 });
 
-// ─── markReviewed ───────────────────────────────────────────────────────────
+// ─── saveCard ───────────────────────────────────────────────────────────────
+
+/** The most career gaps one Save & next names (a card carries at most `MAX_CARD_TEAMS` teams). */
+export const SAVE_CARD_MAX_GAPS = MAX_CARD_TEAMS;
 
 /**
- * Save & next on a card that has blue items: mark the ones the operator saw as
- * seen. REAL.
+ * Save & next on a card: refuses while a pink item remains, then answers each
+ * career gap the operator was shown with main's default, "Add to career".
+ * REAL.
  *
  * ## Contract
  *
  * - Refused (`ConvexError`, "Fix the pink items first.") while the card still
  *   has any pink item: Save & next is only ever enabled with none left, so this
  *   is the server's guard against a stale client.
- * - The server RECOMPUTES the blue keys from the stored row
- *   (`currentReviewKeys`) and stores exactly those of `keys` that are still
- *   current, so a key the client never saw (an item that appeared between the
- *   render and the click) is NOT marked seen, and a key for a value that has
- *   since changed is dropped.
- * - `keys` is at most `TIDY_REVIEWED_MAX_KEYS` entries of at most
- *   `TIDY_REVIEWED_KEY_MAX_LENGTH` characters; over either is a `ConvexError`.
- * - Writes `tidyReviewed: { at, keys }` and NOTHING else: no `lastUpdated`, no
- *   title, no link rows (the NEO-203 baseVersion must not move for a review).
- * - Idempotent; replaces the previous list (a key whose value changed drops out
- *   and its item re-raises).
- * - A career gap among the keys that `keepCareerGap` has not kept is ANSWERED
- *   here with main's default, "Add to career": `players.addStint`'s writer adds
- *   the stint from the set's year (`defaultGapStint`), the card's gap is
- *   re-checked, and the key is stored as seen. A year the career will not hold
- *   leaves the gap in place and seen.
- *
- * Returns the keys that were stored.
+ * - Nothing is stored about the card having been seen (NEO-656): a blue item
+ *   shows for as long as the data holds it.
+ * - `gaps` is what the client showed. The server RECOMPUTES the card's gaps
+ *   from the data (a single-player card, each of its teams, `computeCoverage`
+ *   as of the set's year: the commit's own rule) and acts only on the ones the
+ *   client named that are still open, so a gap the client never saw, or one
+ *   that has since been covered, is not written. `gaps` is at most
+ *   `SAVE_CARD_MAX_GAPS` entries.
+ * - Each such gap takes the default stint (`defaultGapStint`, from the set's
+ *   year) through the one writer of a career (`appendCareerStintsImpl`). A year
+ *   the career will not hold leaves the gap in place, and so blue. Tested
+ *   BEFORE the write, so only that case is skipped: any other failure
+ *   propagates, because Convex keeps the writes made before a caught throw.
+ * - Writes no field of the card: no `lastUpdated`, no title.
  */
-export const markReviewed = mutation({
+export const saveCard = mutation({
   args: {
     cardId: v.id("cardChecklist"),
-    keys: v.array(v.string()),
-  },
-  returns: v.object({ keys: v.array(v.string()) }),
-  handler: async (ctx, args) => {
-    await requireAdmin(ctx);
-    if (args.keys.length > TIDY_REVIEWED_MAX_KEYS) {
-      throw new ConvexError(
-        `At most ${TIDY_REVIEWED_MAX_KEYS} items can be marked seen at once.`,
-      );
-    }
-    if (args.keys.some((k) => k.length > TIDY_REVIEWED_KEY_MAX_LENGTH)) {
-      throw new ConvexError(
-        `A seen-key is at most ${TIDY_REVIEWED_KEY_MAX_LENGTH} characters.`,
-      );
-    }
-    let card = await ctx.db.get(args.cardId);
-    if (!card) throw new Error("Card not found");
-    const attention = deriveCardAttention(card);
-    if (attention.level === "fix") {
-      throw new ConvexError("Fix the pink items first.");
-    }
-    // A career gap the operator did not keep (`keepCareerGap` stores that key
-    // as seen at once) takes main's default answer, "Add to career": the stint
-    // from the set's year goes to the player, as the wizard's one Next did.
-    const offered = new Set(args.keys);
-    const gaps = attention.items.flatMap((i) =>
-      i.kind === "careerGap" && offered.has(i.key) ? [i] : [],
-    );
-    if (gaps.length > 0) {
-      const setYear = await findSetYearForSelectorOption(ctx, card.selectorOptionId);
-      if (setYear !== undefined) {
-        // A year the career will not hold (the set's year is outside the career
-        // bounds) leaves the gap in place, and seen. Tested BEFORE the write,
-        // so only that case is skipped: any other failure propagates, because
-        // Convex keeps the writes made before a caught throw.
-        const stint = defaultGapStint(setYear);
-        if (careerStintYearsHoldable(stint.fromYear, stint.toYear)) {
-          for (const gap of gaps) {
-            const result = await appendCareerStintsImpl(ctx, [
-              {
-                playerId: gap.playerId as Id<"players">,
-                teamId: gap.teamId as Id<"teams">,
-                ...stint,
-              },
-            ]);
-            if (result.added + result.existing > 0) {
-              const fresh = await ctx.db.get(card._id);
-              if (fresh) await recheckCareerGaps(ctx, fresh, gap.playerId as Id<"players">);
-              await ctx.scheduler.runAfter(0, internal.tidyCards.recheckCareerGapPage, {
-                leafId: card.selectorOptionId,
-                playerId: gap.playerId as Id<"players">,
-                cursor: null,
-              });
-            }
-          }
-        }
-        card = (await ctx.db.get(card._id)) ?? card;
-      }
-    }
-    const current = new Set(currentReviewKeys(card));
-    const keys = [...new Set(args.keys)].filter((k) => current.has(k));
-    await ctx.db.patch(card._id, { tidyReviewed: { at: Date.now(), keys } });
-    return { keys };
-  },
-});
-
-/**
- * "Keep as is" on a career gap: the operator's explicit way out of the default
- * "Add to career" (`markReviewed`). Stores the gap's key as seen, and nothing
- * else: no stint, no `lastUpdated`. A gap the card does not carry is refused.
- */
-export const keepCareerGap = mutation({
-  args: {
-    cardId: v.id("cardChecklist"),
-    playerId: v.id("players"),
-    teamId: v.id("teams"),
+    gaps: v.array(v.object({ playerId: v.id("players"), teamId: v.id("teams") })),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    if (args.gaps.length > SAVE_CARD_MAX_GAPS) {
+      throw new ConvexError(`At most ${SAVE_CARD_MAX_GAPS} career gaps can be saved at once.`);
+    }
     const card = await ctx.db.get(args.cardId);
-    if (!card) throw new ConvexError("That card is gone. Refresh and try again.");
-    const key = tidyReviewedKeyCareerGap(args.playerId, args.teamId);
-    const open = deriveCardAttention(card).items.some(
-      (i) => i.kind === "careerGap" && i.key === key,
-    );
-    if (!open) return null;
-    const kept = card.tidyReviewed?.keys ?? [];
-    if (kept.includes(key)) return null;
-    await ctx.db.patch(card._id, {
-      tidyReviewed: { at: Date.now(), keys: [...kept, key].slice(-TIDY_REVIEWED_MAX_KEYS) },
-    });
+    if (!card) throw new Error("Card not found");
+    if (deriveCardAttention(card).level === "fix") {
+      throw new ConvexError("Fix the pink items first.");
+    }
+    const playerIds = card.playerIds ?? [];
+    if (args.gaps.length === 0 || playerIds.length !== 1) return null;
+    const setYear = await findSetYearForSelectorOption(ctx, card.selectorOptionId);
+    if (setYear === undefined) return null;
+    const pairs = (card.teamOnCardIds ?? []).map((teamId) => ({ playerId: playerIds[0], teamId }));
+    const covered = await computeCoverage(ctx, { sportId: card.sportId, setYear, pairs });
+    const open = covered.filter((c) => !c.covered);
+    const shown = new Set(args.gaps.map((g) => `${g.playerId}|${g.teamId}`));
+    // A year the career will not hold leaves the gap in place.
+    const stint = defaultGapStint(setYear);
+    if (!careerStintYearsHoldable(stint.fromYear, stint.toYear)) return null;
+    for (const gap of open) {
+      if (!shown.has(`${gap.playerId}|${gap.teamId}`)) continue;
+      await appendCareerStintsImpl(ctx, [
+        { playerId: gap.playerId, teamId: gap.teamId as Id<"teams">, ...stint },
+      ]);
+    }
     return null;
   },
 });
@@ -573,29 +381,31 @@ function careerStintYearsHoldable(fromYear: number, toYear: number | undefined):
  *
  * ## Contract
  *
- * - `field` names a `sourceDisagreements` entry on the card, with or without
- *   a `chosen` (Change picks again). `value` is one of the
- *   entry's `values`, or a typed value (`typed: true`, the "Type another"
+ * - `field` names a `sourceDisagreements` entry on the card. `value` is one of
+ *   the entry's `values`, or a typed value (`typed: true`, the "Type another"
  *   control; then it is cleansed with the shared name matcher and must not be
  *   empty). Names are capped at `MAX_PICK_NAMES` of at most
  *   `MAX_PICK_NAME_LENGTH` characters.
- * - Each parsed name is resolved: an exact single NB match links; an existing
- *   `tidyNames` answer applies; anything else becomes a pending name plus a
- *   name row (born `pending`, lookup enqueued AFTER the write) and a
- *   `cardPrintedNames` row through the one writer. A generated title is
- *   regenerated (a hand-typed one is left alone). The card's own name follows
- *   the pick when it is one of the spellings the sources gave and is left
- *   alone when it matches none (typed by hand): `pickedCardName`.
- * - Stamps `chosen: { value, by: "operator", typed? }` on the entry. That stamp
- *   on its own does not bump `lastUpdated`; the link/pending writes it causes
- *   do.
+ * - Each parsed name is resolved: an exact single NB match links; anything else
+ *   stays a pending name on the card. A generated title is regenerated (a
+ *   hand-typed one is left alone). The card's own name follows the pick when it
+ *   is one of the spellings the sources gave and is left alone when it matches
+ *   none (typed by hand): `pickedCardName`.
+ * - REMOVES the entry from the card (NEO-656: "Once you pick a source, the card
+ *   keeps only the result"). That removal on its own does not bump
+ *   `lastUpdated`; the link/pending writes it causes do.
+ * - `offered` (D13): the values the walk kept for this card. A card that was
+ *   picked a moment ago no longer carries the entry, so Change, and Apply to the
+ *   same, work from `offered` while the card is open: at most 3 values, the
+ *   `MAX_PICK_NAMES` / `MAX_PICK_NAME_LENGTH` caps and 4096 bytes. The call is
+ *   refused without it when the card has no entry.
  * - `cardIds` (at most `MAX_APPLY_CARDS`): "Apply to the cards with the same
  *   disagreement". The server checks EACH card carries the same field with the
- *   same set of values and no `chosen`; a card that differs is refused and
- *   counted, never written. The open card is written in the call; the rest by
- *   scheduled `APPLY_PAGE_SIZE`-card pages, each of which re-checks the card
- *   against the open card's offered values (the same set, the picked value
- *   still among them) and enqueues the lookups of each card's OWN leaf.
+ *   same set of values; a card that differs (one already picked included) is
+ *   refused and counted, never written. The open card is written in the call;
+ *   the rest by scheduled `APPLY_PAGE_SIZE`-card pages, each of which re-checks
+ *   the card against the open card's offered values (the same set, the picked
+ *   value still among them).
  *
  * Returns the cards written in the call, the cards queued for scheduled pages,
  * and the cards refused.
@@ -607,6 +417,7 @@ export const pickSourceValue = mutation({
     value: v.array(v.string()),
     typed: v.optional(v.literal(true)),
     cardIds: v.optional(v.array(v.id("cardChecklist"))),
+    offered: v.optional(v.array(v.array(v.string()))),
   },
   returns: v.object({
     applied: v.number(),
@@ -626,18 +437,20 @@ export const pickSourceValue = mutation({
     }
     const card = await ctx.db.get(args.cardId);
     if (!card) throw new ConvexError("That card is gone. Refresh and try again.");
+    // The card's own entry, else the values the walk kept (D13).
     const found = entryFor(card, args.field);
-    if (!found) throw new ConvexError("That card has nothing to pick.");
-    if (!args.typed && !found.entry.values.some((o) => sameValue(o.value, names))) {
+    const entry = found ? found.entry : entryFromOffered(args.field, args.offered);
+    if (!args.typed && !entry.values.some((o) => sameValue(o.value, names))) {
       throw new ConvexError("That isn't one of the values the sources gave.");
     }
     const cache = newNameWriteCache(ctx);
-    const result = await applyPickToCard(ctx, card, {
+    await applyPickToCard(ctx, card, {
       field: args.field,
       names,
       typed: args.typed === true,
       userId,
       cache,
+      entry,
     });
 
     // The same disagreement on other cards: checked per card, never assumed.
@@ -646,7 +459,7 @@ export const pickSourceValue = mutation({
     for (const id of others) {
       const other = await ctx.db.get(id);
       const theirs = other ? entryFor(other, args.field) : undefined;
-      if (other && theirs && !theirs.entry.chosen && sameDisagreement(found.entry, theirs.entry)) {
+      if (other && theirs && sameDisagreement(entry, theirs.entry)) {
         accepted.push(id);
       } else refused += 1;
     }
@@ -657,15 +470,9 @@ export const pickSourceValue = mutation({
         typed: args.typed,
         // The open card's own entry: each page checks every card it is handed
         // against it, so a card edited since this call is never trusted.
-        offered: found.entry.values.map((o) => o.value),
+        offered: entry.values.map((o) => o.value),
         cardIds: accepted.slice(at, at + APPLY_PAGE_SIZE),
         userId,
-      });
-    }
-    // Lookups for the names this left pending go out after the write commits.
-    if (result.pending) {
-      await ctx.scheduler.runAfter(0, internal.tidyNames.enqueuePendingLookups, {
-        scopeId: card.selectorOptionId,
       });
     }
     return { applied: 1, scheduled: accepted.length, refused };
@@ -688,20 +495,17 @@ export const pickSourceValuePage = internalMutation({
     const cache = newNameWriteCache(ctx);
     let applied = 0;
     let refused = 0;
-    // A name row lives in the card's OWN leaf, so each leaf that was left a
-    // pending name gets its own lookup enqueue.
-    const pendingLeaves = new Set<Id<"selectorOptions">>();
     for (const id of args.cardIds) {
       const card = await ctx.db.get(id);
       const found = card ? entryFor(card, args.field) : undefined;
-      // Compare-and-set: a card chosen or edited since the call is left alone,
-      // and so is one that no longer carries the disagreement the operator saw:
-      // the same set of values, with the picked one still among them (a typed
-      // value is the operator's own and needs no offer).
+      // Compare-and-set: a card picked or edited since the call is left alone
+      // (its entry is gone), and so is one that no longer carries the
+      // disagreement the operator saw: the same set of values, with the picked
+      // one still among them (a typed value is the operator's own and needs no
+      // offer).
       if (
         !card ||
         !found ||
-        found.entry.chosen ||
         !sameValueSets(
           args.offered,
           found.entry.values.map((o) => o.value),
@@ -711,18 +515,14 @@ export const pickSourceValuePage = internalMutation({
         refused += 1;
         continue;
       }
-      const r = await applyPickToCard(ctx, card, {
+      await applyPickToCard(ctx, card, {
         field: args.field,
         names: args.value,
         typed: args.typed === true,
         userId: args.userId,
         cache,
       });
-      if (r.pending) pendingLeaves.add(card.selectorOptionId);
       applied += 1;
-    }
-    for (const scopeId of pendingLeaves) {
-      await ctx.scheduler.runAfter(0, internal.tidyNames.enqueuePendingLookups, { scopeId });
     }
     return { applied, refused };
   },
@@ -871,9 +671,8 @@ export const applyTeamPage = internalMutation({
  * `from` (compare-and-set: a card edited since is skipped and counted). `to`
  * is trimmed and capped like `updateCard`'s variation. The title is always
  * regenerated: the walk overwrites a hand-typed title too (Jason's decision,
- * NEO-645). A `variation:` key in
- * `tidyReviewed` for the old value no longer matches, so a still-long new
- * value re-raises on its own.
+ * NEO-645). A still-long new value stays blue on its own: nothing remembers it
+ * as seen (NEO-656).
  *
  * Returns the cards written and the cards skipped.
  */
@@ -1143,13 +942,11 @@ export const retitleLeafPage = internalMutation({
   },
 });
 
-/** Cards one `recheckCareerGapPage` reads. */
-export const CAREER_RECHECK_PAGE_SIZE = 100;
-
 /**
- * After Add to career: drop the careerGap check from the leaf's OTHER cards of
- * the player the new stint now covers. A page of the leaf's cards in sort order,
- * scheduling the next. `tidyChecks` writes never bump `lastUpdated`.
+ * NEO-656 — kept as a no-op for one release. After Add to career this paged the
+ * leaf's cards to drop a stored career-gap check; there is no stored check any
+ * more (the gap is read live), but a page scheduled before the deploy may still
+ * be in flight and must find its function. Remove in the release after.
  */
 export const recheckCareerGapPage = internalMutation({
   args: {
@@ -1158,21 +955,5 @@ export const recheckCareerGapPage = internalMutation({
     cursor: v.union(v.string(), v.null()),
   },
   returns: v.object({ cleared: v.number(), done: v.boolean() }),
-  handler: async (ctx, args) => {
-    const page = await ctx.db
-      .query("cardChecklist")
-      .withIndex("by_selector_option_and_sort", (q) => q.eq("selectorOptionId", args.leafId))
-      .paginate({ numItems: CAREER_RECHECK_PAGE_SIZE, cursor: args.cursor });
-    let cleared = 0;
-    for (const card of page.page) {
-      cleared += await recheckCareerGaps(ctx, card, args.playerId);
-    }
-    if (!page.isDone) {
-      await ctx.scheduler.runAfter(0, internal.tidyCards.recheckCareerGapPage, {
-        ...args,
-        cursor: page.continueCursor,
-      });
-    }
-    return { cleared, done: page.isDone };
-  },
+  handler: async () => ({ cleared: 0, done: true }),
 });

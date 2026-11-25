@@ -3,6 +3,7 @@ export * from "../../convex/features/cardAttention";
 import {
   deriveCardAttention,
   type AttentionCardRow,
+  type LiveAttention,
   type TidyAttentionKind,
 } from "../../convex/features/cardAttention";
 
@@ -56,8 +57,8 @@ export function teamLookupStatusLine(count: number, needYouCount = 0): string {
  * attention filter and the Tidy Up walk all ask, so they cannot disagree. A
  * card with only purple notes is not counted: notes never make a stop.
  */
-export function needsTidyUp(row: AttentionCardRow): boolean {
-  return deriveCardAttention(row).level !== "none";
+export function needsTidyUp(row: AttentionCardRow, live?: LiveAttention): boolean {
+  return deriveCardAttention(row, live).level !== "none";
 }
 
 /**
@@ -73,7 +74,6 @@ export const TIDY_ATTENTION_LABELS: Record<TidyAttentionKind, string> = {
   noTeam: "no team on this card yet",
   autograph: "autograph format not set",
   titleOverLimit: "title is over the 80-character limit",
-  newPlayerCareer: "new player, check their career",
   careerGap: "team is missing from the player's career",
   titleCut: "listing title was cut short",
   variationOverLimit: "variation text is over the 65-character limit",

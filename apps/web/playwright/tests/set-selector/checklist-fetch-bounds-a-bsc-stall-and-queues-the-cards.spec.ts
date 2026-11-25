@@ -115,6 +115,24 @@ const STALLED = STALL_IDS.length;
 const HOLD_MS = 15_000;
 /** The attention reasons that put a card's TEAM to the operator (`TIDY_ATTENTION_LABELS`). */
 const TEAM_REASON = "team name not yet linked|no team on this card yet";
+/** Set once Sync is pressed: from then on the fetch may have queued this user's cards on the BSC team lane. */
+const run = { synced: false };
+
+// NEO-644: pass or fail, the cards this spec left waiting come off the BSC team lane. The lane is
+// one slot per deployment, so they would otherwise run after the spec ends, in front of every other
+// shard's per-card team lookups. Only this test user's items are cancelled (`bscFake.clearTeamLane`);
+// one already running finishes. Before the `bscFake` fixture's own teardown clears the faults and gate.
+// When the test itself passed, the cards it proved queued must be the ones cleared (N >= 1): a teardown
+// that finds none (the fetch stopped tagging this user's items) goes red. A red test keeps its own error.
+test.afterEach(async ({ bscFake }, testInfo) => {
+  if (!run.synced) return;
+  run.synced = false;
+  const cleared = await bscFake.clearTeamLane();
+  testInfo.annotations.push({ type: "bsc-team-lane-cleared", description: String(cleared) });
+  if (testInfo.status === testInfo.expectedStatus) {
+    expect(cleared, "this user's queued BSC team lookups cancelled by the teardown").toBeGreaterThanOrEqual(1);
+  }
+});
 
 test(
   "Checklist fetch — a BSC stall on some cards ends within one wave: the fetch lands and the unanswered cards wait in the background queue, not in the operator's count (NEO-487)",
@@ -135,6 +153,7 @@ test(
       bscFault.slow(BSC_PATH.results, HOLD_MS, { times: 1, ttlS: 600 }),
       ...STALL_IDS.map((cardId) => bscFault.hangs(BSC_PATH.cardListing, { cardId, ttlS: 600 })),
     ]);
+    run.synced = true;
     await syncChecklistButton(page).click();
     // NEO-628 audit: the page's own line, deterministically. Match Cards opens on the fetch's first
     // streamed rows, and there are none while the catalogue read is held, so the dialog cannot be

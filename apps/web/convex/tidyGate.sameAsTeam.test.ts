@@ -1,8 +1,8 @@
 /**
- * NEO-645 — a player name the same card prints as its team (a team card) is an
- * ordinary name, as it is on main's Tidy Up wizard: the gate queues it and asks;
- * it never answers "Not a player" for the operator. An operator's own answer
- * survives the next gate run.
+ * NEO-645 / NEO-656 — a player name the same card prints as its team (a team
+ * card) is an ordinary name, as it is on main's Tidy Up wizard: the gate lists
+ * it as unknown and asks; it never links it or answers "Not a player" for the
+ * operator. The gate stores nothing.
  */
 
 import { convexTest } from "convex-test";
@@ -10,7 +10,6 @@ import { afterEach, describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { normalizeTeamName } from "./teams";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
 
@@ -97,11 +96,8 @@ async function gate(t: T, s: { sportId: Sel; insert: Sel }, cards: ReturnType<ty
   });
 }
 
-const playerRows = async (t: T) =>
-  (await t.run((ctx) => ctx.db.query("tidyNames").collect())).filter((r) => r.kind === "player");
-
 describe("a player name the card prints as its team", () => {
-  test("is an ordinary name: asked like any other, no automatic answer", async () => {
+  test("is an ordinary name: listed like any other, no automatic link", async () => {
     const t = newT();
     const s = await setup(t);
     const result = await gate(t, s, [
@@ -109,35 +105,22 @@ describe("a player name the card prints as its team", () => {
       card(["Aaron Judge"], 2, [TEAM]),
     ]);
     expect(result.unknownPlayers.slice().sort()).toEqual([TEAM, "Aaron Judge"].sort());
-    const rows = await playerRows(t);
-    const teamCard = rows.find((r) => r.nameNormalized === normalizeEntityName(TEAM));
-    expect(teamCard).toBeDefined();
-    expect(teamCard?.answer).toBeUndefined();
-    const judge = rows.find((r) => r.nameNormalized === normalizeEntityName("Aaron Judge"));
-    expect(judge?.answer).toBeUndefined();
+    expect(result.gateLinks ?? []).toEqual([]);
   });
 
-  test("the shared name matcher (accents, case, punctuation) changes nothing: still asked", async () => {
+  test("the shared name matcher (accents, case, punctuation) changes nothing: still listed", async () => {
     const t = newT();
     const s = await setup(t);
-    await gate(t, s, [card(["new york  YANKEES."], 1, [TEAM])]);
-    const [row] = await playerRows(t);
-    expect(row.answer).toBeUndefined();
+    const result = await gate(t, s, [card(["new york  YANKEES."], 1, [TEAM])]);
+    expect(result.unknownPlayers).toEqual(["new york  YANKEES."]);
+    expect(result.gateLinks ?? []).toEqual([]);
   });
 
-  test("an operator's answer on the name survives the next gate run", async () => {
+  test("a second gate run gives the same answer: nothing was remembered", async () => {
     const t = newT();
     const s = await setup(t);
-    await gate(t, s, [card([TEAM], 1, [TEAM])]);
-    const [row] = await playerRows(t);
-    await t.run((ctx) =>
-      ctx.db.patch(row._id, {
-        answer: { kind: "notEntity", by: "operator" },
-        answerGen: (row.answerGen ?? 0) + 1,
-      }),
-    );
-    await gate(t, s, [card([TEAM], 1, [TEAM])]);
-    const [after] = await playerRows(t);
-    expect(after.answer).toEqual({ kind: "notEntity", by: "operator" });
+    const first = await gate(t, s, [card([TEAM], 1, [TEAM])]);
+    const second = await gate(t, s, [card([TEAM], 1, [TEAM])]);
+    expect(second.unknownPlayers).toEqual(first.unknownPlayers);
   });
 });

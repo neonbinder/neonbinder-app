@@ -20,14 +20,19 @@
  *     (plain);
  *   - the footer: "Back", "Save for later (Esc)" (closes the walk, writes
  *     nothing), "Skip: not ready to list" (moves on, writes nothing), "Save &
- *     next (Enter)" (marks the card's blue items seen and moves on; held while
- *     anything is pink), and the status line "N to fix before this card can
- *     save. Skip it and it can't be listed until it's fixed.";
+ *     next (Enter)" (moves on; held while anything is pink; with a Career gap
+ *     on screen it ADDS the default stint to the player, NEO-656 D14), and the
+ *     status line "N to fix before this card can save. Skip it and it can't be
+ *     listed until it's fixed.";
  *   - the header's progress bar ("Wizard progress") reads "N cards left" in its
  *     `aria-valuetext` (`expectCardsLeft`);
- *   - the end screen: "N cards skipped, not ready to list", "Still looking up
- *     teams for N cards…" or "All tidy. Nothing on this checklist needs you.",
- *     and a "Done (Esc)" button.
+ *   - the end screen: a verdict line by each walked card's LIVE level (NEO-656
+ *     B20): pink "N cards skipped, not ready to list", else blue "N cards still
+ *     to check", else "All tidy. Nothing on this checklist needs you."; the
+ *     tally "F cards fixed, S skipped[, C still to check]." (`expectTidyEndScreen`,
+ *     `readTidyEndScreen`); "Still looking up teams for N cards…"; and a "Done
+ *     (Esc)" button. Nothing is stored about a card anyone looked at, so a blue
+ *     card Saved & next'd still counts as "still to check" while it is blue.
  *
  * The position is in the URL (`?tidy=<card>|first|done`), so a move is proved by
  * the address changing and the browser's Back walks back through the cards.
@@ -111,13 +116,6 @@ const NOT_A_TEAM = /^Not a team( .+)?$/;
  * callers scope it to the row's group ("Player <printed>" / "Team <printed>").
  */
 export const EDIT = /^Edit (?!cameo )/;
-
-/**
- * A career gap's "Keep as is" (CareerGapRow): "Keep as is", or "Keep as is for <player>" when the
- * Career tile holds more than one row. A new player's Wikidata row shares the tile (and the
- * "Career <player>" group name) but has no such button, so this names the gap rows alone.
- */
-const KEEP_AS_IS = /^Keep as is( for .+)?$/;
 
 /** The open walk. Contract: a locator, nothing waited for. */
 export function tidyWalk(page: Page): Locator {
@@ -283,6 +281,90 @@ export async function finishTidyWalk(page: Page): Promise<void> {
   await expect(page).not.toHaveURL(/[?&]tidy=/);
 }
 
+// ── the end screen ───────────────────────────────────────────────────────────
+
+/** The pink verdict: "6 cards skipped, not ready to list" (cards walked that are still pink). */
+export function cardsSkippedText(n: number): string {
+  return `${n} ${n === 1 ? "card" : "cards"} skipped, not ready to list`;
+}
+
+/** The blue verdict: "2 cards still to check" (cards walked that are blue and nothing worse). */
+export function cardsStillToCheckText(n: number): string {
+  return `${n} ${n === 1 ? "card" : "cards"} still to check`;
+}
+
+/** The verdict when no walked card is pink or blue (and no team lookup is still out). */
+export const TIDY_ALL_CLEAR = "All tidy. Nothing on this checklist needs you.";
+
+/**
+ * The tally under the verdict: "9 cards fixed, 2 skipped." or "9 cards fixed, 0 skipped, 1 still
+ * to check."; a sitting with nothing skipped or left to check and something fixed adds " Totally rad.".
+ */
+export function cardsTallyText(fixed: number, skipped: number, stillToCheck = 0): string {
+  const head = `${fixed} ${fixed === 1 ? "card" : "cards"} fixed, ${skipped} skipped${
+    stillToCheck > 0 ? `, ${stillToCheck} still to check` : ""
+  }.`;
+  return skipped === 0 && stillToCheck === 0 && fixed > 0 ? `${head} Totally rad.` : head;
+}
+
+const END_VERDICT = /^([0-9]+ cards? skipped, not ready to list|[0-9]+ cards? still to check|All tidy\. Nothing on this checklist needs you\.)$/;
+const END_TALLY = /^([0-9]+) cards? fixed, ([0-9]+) skipped(?:, ([0-9]+) still to check)?\.( Totally rad\.)?$/;
+
+/** What the end screen says, read off it. `verdict`/`tally` are null where the screen shows none. */
+export interface TidyEndScreen {
+  /** The status line: pink skipped, else blue still to check, else "All tidy…"; none while team lookups are out. */
+  verdict: string | null;
+  /** The tally line; none when the sitting walked no card. */
+  tally: string | null;
+  /** The tally's numbers (0 when there is no tally). */
+  fixed: number;
+  skipped: number;
+  stillToCheck: number;
+}
+
+/**
+ * Read the end screen's verdict and tally, for a caller that does not know its
+ * counts up front (a seed walk); a spec that knows them asserts with
+ * `expectTidyEndScreen`. The verdict and the tally are by each walked card's
+ * LIVE level when the walk ended (NEO-656 B20), not by the button pressed on it.
+ * Contract: ENTRY the walk is open. EXIT unchanged; the end screen is up (7 s).
+ */
+export async function readTidyEndScreen(page: Page): Promise<TidyEndScreen> {
+  await expect(endScreen(page), "the walk is on its end screen").toBeVisible();
+  const verdicts = await tidyWalk(page).getByRole("status").filter({ hasText: END_VERDICT }).allTextContents();
+  const tallies = await tidyWalk(page).getByText(END_TALLY).allTextContents();
+  expect(verdicts.length, "the end screen shows at most one verdict").toBeLessThanOrEqual(1);
+  expect(tallies.length, "the end screen shows at most one tally").toBeLessThanOrEqual(1);
+  const tally = tallies[0]?.trim() ?? null;
+  const m = tally === null ? null : END_TALLY.exec(tally);
+  return {
+    verdict: verdicts[0]?.trim() ?? null,
+    tally,
+    fixed: m ? Number(m[1]) : 0,
+    skipped: m ? Number(m[2]) : 0,
+    stillToCheck: m?.[3] ? Number(m[3]) : 0,
+  };
+}
+
+/**
+ * The end screen reads exactly: the verdict (pink `cardsSkippedText(skipped)`
+ * when any walked card is still pink, else blue `cardsStillToCheckText`, else
+ * `TIDY_ALL_CLEAR`) and the tally `cardsTallyText(fixed, skipped, stillToCheck)`.
+ * A walked card counts by its LIVE level at the end (B20): a blue card Saved &
+ * next'd or Skipped is "still to check" either way, and a card fixed elsewhere
+ * in the sitting counts as fixed. Not for a walk still waiting on team lookups
+ * (no verdict then). Contract: ENTRY the walk is open. EXIT unchanged; 7 s each.
+ */
+export async function expectTidyEndScreen(
+  page: Page,
+  { fixed, skipped = 0, stillToCheck = 0 }: { fixed: number; skipped?: number; stillToCheck?: number },
+): Promise<void> {
+  await expect(endScreen(page), "the walk is on its end screen").toBeVisible();
+  const verdict = skipped > 0 ? cardsSkippedText(skipped) : stillToCheck > 0 ? cardsStillToCheckText(stillToCheck) : TIDY_ALL_CLEAR;
+  await expect(tidyWalk(page).getByRole("status").filter({ hasText: END_VERDICT }), "the end screen's verdict").toHaveText(verdict);
+  await expect(tidyWalk(page).getByText(END_TALLY), "the end screen's tally").toHaveText(cardsTallyText(fixed, skipped, stillToCheck));
+}
+
 /**
  * The open card's "#<number>" text on the card. The header line ("#38b · Image
  * Variation · Mike Trout") draws its number in a span of its own (so "#FS-3"
@@ -370,7 +452,9 @@ export async function skipCard(page: Page): Promise<void> {
 }
 
 /**
- * "Save & next (Enter)": mark the open card's blue items seen and move on.
+ * "Save & next (Enter)": move on. With a Career gap on screen it ADDS the
+ * default stint (the set's year) to that player first (NEO-656 D14): a spec
+ * that does not mean to write a career skips such a card (`skipCard`).
  * Contract: ENTRY a card is open with nothing pink (Save & next is usable,
  * waited for 7 s: a card with pink left fails here, by name). EXIT the next
  * card or the end screen is up.
@@ -533,6 +617,46 @@ export async function createPlayerOnOpenRow(page: Page): Promise<string> {
   return rowName;
 }
 
+// ── Apply to all cards printing a name ──────────────────────────────────────
+
+/** A pressed Apply to all's line: "Linked 3 more cards." / "Cleared 1 more card.", plus " N left as they were.". */
+const APPLY_DONE = /^(Linked|Cleared) [0-9]+ more cards?\.( [0-9]+ left as (it was|they were)\.)?$/;
+/** Every settled Apply to all line, a press that changed nothing included. */
+const APPLY_SETTLED = /^((Linked|Cleared) [0-9]+ more cards?\.( [0-9]+ left as (it was|they were)\.)?|No cards changed\.|Applied\.)$/;
+
+/**
+ * NEO-656 (B1): an answer to a printed name links the OPEN card only. "Apply
+ * to all cards printing “<printed>”" (under the answered name on the `tile`)
+ * offers the same answer to the checklist's other cards still WAITING on that
+ * name (J3: a card linked to something else is never moved), parallels
+ * included. Press it and return the line it leaves: "Linked N more cards." (a
+ * link) or "Cleared N more cards." (Not a player / Not a team), plus " M left
+ * as they were." when the server refused some. A press that changed nothing
+ * ("No cards changed.") or failed fails here, by name.
+ *
+ * Contract: ENTRY a settled card whose `printed` name is answered, and at least
+ * one other card waiting on it (the button is shown only then; waited for, 7 s).
+ * EXIT the line is up. The caller asserts the count it expects.
+ */
+export async function applyNameToAll(page: Page, tile: "Player" | "Team", printed: string): Promise<string> {
+  const scope = tidyTile(page, tile);
+  const label = `Apply to all cards printing “${printed}”`;
+  const button = scope.getByRole("button", { name: label, exact: true, disabled: false });
+  // One status per Apply to all on the tile; an earlier press's line can still be up.
+  const settled = scope.getByRole("status").filter({ hasText: APPLY_SETTLED });
+  await expect(button, `the ${tile} tile offers ${label}`).toBeVisible();
+  const before = await settled.allTextContents();
+  await button.click();
+  // A failed press shows "Didn't apply, try again." and no line, so it fails on this count, by name.
+  await expect(settled, `${label} reported what it changed (no line: did it fail?)`).toHaveCount(before.length + 1);
+  await expect(scope.getByRole("alert").filter({ hasText: "Didn't apply, try again." }), `${label} failed`).toHaveCount(0);
+  const after = await settled.allTextContents();
+  for (const line of before) after.splice(after.indexOf(line), 1);
+  const line = (after[0] ?? "").trim();
+  expect(line, `${label} linked or cleared other cards`).toMatch(APPLY_DONE);
+  return line;
+}
+
 // ── answering the Team tile ──────────────────────────────────────────────────
 
 /** The Team tile's printed-name rows still waiting for an answer (each offers "Not a team"). */
@@ -540,6 +664,24 @@ function openTeamRows(page: Page): Locator {
   return tidyTile(page, "Team")
     .getByRole("group", { name: /^Team / })
     .filter({ has: page.getByRole("button", { name: NOT_A_TEAM }) });
+}
+
+/**
+ * Any preselected fill chip, by its WHOLE name "<team>, suggested" or "<team>, suggested · <why>"
+ * (TeamFillChips). Anchored, and the team's last character is not a space: a name that reads
+ * "<team> , suggested" (the sr-only word padded off the team, NEO-656 BUG-2) is not one.
+ */
+const ANY_SUGGESTED_CHIP = /^\S(.*\S)?, suggested( · \S.*)?$/;
+
+/**
+ * The open card's preselected fill chip for `team`, by its EXACT accessible name: "<team>,
+ * suggested · <why>" (`why` is "<player> played here" on a career chip), or "<team>, suggested"
+ * when the chip names no player (`why` left out). Contract: a locator, nothing waited for; a chip
+ * that is offered but not preselected never matches.
+ */
+export function suggestedTeamChip(page: Page, team: string, why?: string): Locator {
+  const name = why === undefined ? `${team}, suggested` : `${team}, suggested · ${why}`;
+  return tidyTile(page, "Team").getByRole("button", { name, exact: true });
 }
 
 /** Answer one printed team name by creating it in the inline New team form (the row's "+ New team"). */
@@ -588,8 +730,8 @@ export async function createTeamOnOpenRow(page: Page): Promise<string> {
  *    to <team>"), else create it in the inline New team form. Never "Not a
  *    team". Each answer reaches every card in the scope that prints the name.
  *  - a card with no team (`noTeam`): `"prefilled"` (default) saves the chips the
- *    product pre-selected ("Save team" / "Save teams", the old wizard's default)
- *    and leaves a card with none pink; `"noTeamOnCard"` answers "No team on
+ *    product pre-selected (a click on a team chip saves it; the preselected chip
+ *    is named "<team>, suggested[ · <why>]", `suggestedTeamChip`) and leaves a card with none pink; `"noTeamOnCard"` answers "No team on
  *    this card".
  *
  * Contract: ENTRY a settled card. EXIT no printed team name is waiting. The
@@ -633,14 +775,15 @@ export async function answerPinkTeamTiles(
   await expect(openTeamRows(page), `Team rows still waiting after ${maxRows} answers`).toHaveCount(0);
 
   if ((await pinkTile(page, "Team").count()) > 0) {
-    // What is left pink is a card with no team: the fill chips.
-    const save = tile.getByRole("button", { name: /^Save teams?$/, disabled: false });
+    // What is left pink is a card with no team: the fill chips. A preselected chip's whole name
+    // is "<team>, suggested[ · <why>]" (`suggestedTeamChip`); a click on it saves the pre-fill.
+    const preselected = tile.getByRole("button", { name: ANY_SUGGESTED_CHIP, disabled: false });
     const none = tile.getByRole("button", { name: "No team on this card", exact: true, disabled: false });
     await expect(none, "the Team tile is pink with no name row left, so it is asking for a team").toBeVisible();
     if (noTeam === "noTeamOnCard") {
       await none.click();
-    } else if ((await save.count()) > 0) {
-      await save.click();
+    } else if ((await preselected.count()) > 0) {
+      await preselected.first().click();
     } else {
       return answered;
     }
@@ -681,32 +824,13 @@ export interface WalkTally {
   teams: number;
   /** Cards that opened with a pink "Sources disagree" tile (never answered here; such a card is skipped). */
   disagreements: number;
-  /** Career gaps answered "Keep as is" before Save & next (`career: "keep"`, the default). */
-  careerKept: number;
+  /**
+   * Cards left with Skip because a Career gap was on screen and nothing was pink (`career: "skip"`,
+   * the default). They are blue, so the end screen counts them "still to check" (B20).
+   */
+  careerSkipped: number;
   /** Skipped cards per tile still pink when they were skipped (a card counts under each of its pink tiles). */
   skippedFor: Partial<Record<TidyTileName, number>>;
-}
-
-/**
- * Answer every open career gap on the card "Keep as is" (writes nothing to the player), so a
- * following Save & next adds no stint. Each press acts at once and its line goes; a new player's
- * Wikidata rows (no Keep as is) stay. Returns the number of gaps kept.
- *
- * Contract: ENTRY the card is settled. EXIT no career gap is open on it.
- */
-export async function keepOpenCareerGaps(page: Page, { maxGaps = 8 }: { maxGaps?: number } = {}): Promise<number> {
-  // A Career tile that appeared with an answer is the "Looking at this card" skeleton until its read lands.
-  await expectCardSettled(page);
-  const keep = tidyTile(page, "Career").getByRole("group", { name: /^Career / }).getByRole("button", { name: KEEP_AS_IS });
-  let kept = 0;
-  for (let open = await keep.count(); open > 0; open--) {
-    if (kept >= maxGaps) throw new Error(`more than ${maxGaps} career gaps on one card`);
-    await keep.first().click();
-    kept++;
-    await expect(keep, "Keep as is answered the career gap at once").toHaveCount(open - 1);
-  }
-  await expect(keep, "no career gap is left open for Save & next to add").toHaveCount(0);
-  return kept;
 }
 
 /** The tiles that can be pink, in the walk's order. */
@@ -722,16 +846,18 @@ const PINKABLE: readonly TidyTileName[] = ["Sources disagree", "Player", "Team",
  * decide). Does NOT press Done: the caller asserts the end screen first, then
  * `finishTidyWalk`.
  *
- * Career gaps (blue): Save & next with a gap still open ADDS a stint from the
- * set's year to that player's career (CareerGapRow's default). A walk that does
- * not care about careers must not write them onto shared catalogue players, so
- * by default (`career: "keep"`) every open gap is answered "Keep as is" before
- * Save & next, which writes nothing to the player. `career: "add"` leaves the
- * gaps open, so Save & next adds them. A new player's Wikidata career lines are
- * never touched (Save & next writes nothing from them), but a new player whose
- * card names one NB team gets that team's stint for the set's year: the
- * prefilled "+ Add stint" form is open, and Save & next adds it (NEO-657). That
- * player is the walk's own, never a shared catalogue row.
+ * Career gaps (blue, NEO-656 D14/D17): Save & next with a Career tile on screen
+ * ADDS a stint from the set's year to that player's career (main's default).
+ * A walk that does not care about careers must not write them onto shared
+ * catalogue players, so by default (`career: "skip"`) a card with nothing pink
+ * and a Career tile up is Skipped instead (no write; it stays blue, so the end
+ * screen counts it "still to check") and counted in `careerSkipped`. There is
+ * no "Keep as is" any more (B23). `career: "add"` presses Save & next over the
+ * gaps, so it writes them: never on a catalogue player.
+ * A new player made on the card (Add as new player) whose card names one NB team
+ * has that team's stint for the set's year prefilled in an open "+ Add stint"
+ * form (NEO-657): Save & next adds it as shown, so `career: "add"` writes it to
+ * the walk's own player, never a shared catalogue row.
  *
  * Contract: ENTRY the walk is open. EXIT the end screen is up. Returns the
  * tally. `maxCards` is a runaway guard (the seed's Base is 335 cards).
@@ -742,15 +868,15 @@ export async function walkAnsweringEverything(
     maxCards = 400,
     noTeam = "prefilled",
     autograph = "On-card auto",
-    career = "keep",
+    career = "skip",
   }: {
     maxCards?: number;
     noTeam?: "prefilled" | "noTeamOnCard";
     autograph?: "On-card auto" | "Sticker auto" | "leave";
-    career?: "keep" | "add";
+    career?: "skip" | "add";
   } = {},
 ): Promise<WalkTally> {
-  const tally: WalkTally = { cards: 0, saved: 0, skipped: 0, players: 0, teams: 0, disagreements: 0, careerKept: 0, skippedFor: {} };
+  const tally: WalkTally = { cards: 0, saved: 0, skipped: 0, players: 0, teams: 0, disagreements: 0, careerSkipped: 0, skippedFor: {} };
   await expectTidyWalkOpen(page);
   for (let i = 0; i < maxCards; i++) {
     if (await endScreen(page).isVisible()) break;
@@ -763,8 +889,11 @@ export async function walkAnsweringEverything(
     // Settled into one state: the status line says what is still pink, or Save & next is usable.
     const save = tidyFooterButton(page, "saveAndNext", { usable: true });
     await expect(save.or(mustFixLine(page)).first()).toBeVisible();
-    if (await save.isVisible()) {
-      if (career === "keep") tally.careerKept += await keepOpenCareerGaps(page);
+    if ((await save.isVisible()) && career === "skip" && (await tidyTile(page, "Career").count()) > 0) {
+      // A Career gap is open: Save & next would write its default stint onto the player.
+      await skipCard(page);
+      tally.careerSkipped++;
+    } else if (await save.isVisible()) {
       await saveAndNext(page);
       tally.saved++;
     } else {

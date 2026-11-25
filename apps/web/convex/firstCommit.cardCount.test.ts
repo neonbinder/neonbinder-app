@@ -290,10 +290,6 @@ describe("the seed's first Base commit saves every card", () => {
     );
     expect(resolved.unknownPlayers.length).toBe(BSC_TOTAL);
     expect(resolved.unknownTeams.length).toBeGreaterThan(0);
-    // NEO-645: every unknown is a `tidyNames` row, so the walk can ask it.
-    expect(
-      (await t.run((ctx) => ctx.db.query("tidyNames").collect())).length,
-    ).toBeGreaterThan(0);
 
     // 3. COMMIT — the number the flow asserts.
     const committed = await asAdmin.action(

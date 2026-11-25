@@ -450,8 +450,7 @@ export async function rehomeSetRowsToBrand(
  * `.paginate()`: `_creationTime` is the implicit last column of every index
  * and unique within a table, so "strictly after it" is an exact resume point,
  * and Convex allows one `.paginate()` per execution while a chain of
- * transactions is not one execution. The same walk `readTeamFillCards` and
- * `entityReviewQueue`'s bulk decide do.
+ * transactions is not one execution. The same walk `readTeamFillCards` does.
  *
  * `cursor` is the last row EXAMINED — including rows this page deliberately
  * left where they were (a name clash, an operator placement, a non-match).
@@ -532,8 +531,7 @@ async function rehomeFromBrandUnknownPage(
  * continuation carries on: every page its own transaction, each one durable
  * on its own. There is no client in this loop to drive it (the sets column is
  * reactive and the operator has already moved on), which is why this is a
- * schedule rather than the `{ hasMore, cursor }` hand-back
- * `entityReviewQueue.decideAllRemaining` gives the wizard.
+ * schedule rather than a `{ hasMore, cursor }` hand-back.
  *
  * ## What the operator sees while it drains
  *

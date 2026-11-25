@@ -1330,10 +1330,28 @@ function PlayerCardsSection({ player }: { player: Player }) {
       ]),
     [player.sportId, player.alsoSportIds],
   );
+  const cardsHeadingId = useId();
+  // Only a list that actually scrolls takes a tab stop. Measured, never a
+  // card count: at 200% text or a 320px reflow fewer rows fit the box.
+  const cardsScrollerRef = useRef<HTMLDivElement>(null);
+  const [cardsOverflow, setCardsOverflow] = useState(false);
+  useLayoutEffect(() => {
+    const el = cardsScrollerRef.current;
+    if (!el) return;
+    const measure = () => setCardsOverflow(el.scrollHeight > el.clientHeight);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    if (el.firstElementChild) ro.observe(el.firstElementChild);
+    return () => ro.disconnect();
+  }, [cards]);
 
   return (
     <div className="space-y-3 border-t border-rule pt-4">
-      <h3 className="text-base font-semibold">Cards</h3>
+      <h3 id={cardsHeadingId} className="text-base font-semibold">
+        Cards
+      </h3>
       {cards === undefined ? (
         <p className="text-sm text-ink-3">Loading cards…</p>
       ) : cards.length === 0 ? (
@@ -1343,37 +1361,49 @@ function PlayerCardsSection({ player }: { player: Player }) {
         </p>
       ) : (
         <>
-          <ul
-            aria-label={`Cards for ${player.name}`}
-            className="max-h-72 divide-y divide-rule overflow-y-auto rounded-md border border-rule"
+          {/* A scroller a keyboard cannot focus cannot be scrolled from the
+              keyboard (axe scrollable-region-focusable): a named group
+              holds the scroll and takes a tab stop once the list overflows,
+              as ParallelBuildPanel's results do. */}
+          <div
+            ref={cardsScrollerRef}
+            role="group"
+            aria-labelledby={cardsHeadingId}
+            tabIndex={cardsOverflow ? 0 : undefined}
+            className={`max-h-72 overflow-y-auto rounded-md border border-rule${cardsOverflow ? " focus-outline" : ""}`}
           >
-            {cards.map((card) => (
-              <li
-                key={card.cardId}
-                className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-2 px-3 py-1.5 text-sm"
-              >
-                <span className="tabular-nums text-ink-3">
-                  {card.cardNumber ? `#${card.cardNumber}` : ""}
-                </span>
-                <span className="min-w-0">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="truncate text-ink-2">
-                      {card.cardName || "Untitled card"}
+            <ul
+              aria-label={`Cards for ${player.name}`}
+              className="divide-y divide-rule"
+            >
+              {cards.map((card) => (
+                <li
+                  key={card.cardId}
+                  className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-2 px-3 py-1.5 text-sm"
+                >
+                  <span className="tabular-nums text-ink-3">
+                    {card.cardNumber ? `#${card.cardNumber}` : ""}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="truncate text-ink-2">
+                        {card.cardName || "Untitled card"}
+                      </span>
+                      {!ownSports.has(card.sportId as string) && (
+                        <SportTag label={card.sportValue} className="shrink-0" />
+                      )}
                     </span>
-                    {!ownSports.has(card.sportId as string) && (
-                      <SportTag label={card.sportValue} className="shrink-0" />
-                    )}
+                    <span
+                      className="block truncate text-xs text-ink-3"
+                      title={card.setLabel}
+                    >
+                      {card.setLabel}
+                    </span>
                   </span>
-                  <span
-                    className="block truncate text-xs text-ink-3"
-                    title={card.setLabel}
-                  >
-                    {card.setLabel}
-                  </span>
-                </span>
-              </li>
-            ))}
-          </ul>
+                </li>
+              ))}
+            </ul>
+          </div>
           {cards.length >= PLAYER_CARDS_CAP && (
             <p className="text-xs text-ink-3">
               Showing the first {PLAYER_CARDS_CAP} cards.

@@ -15,7 +15,7 @@
  * Whatever the gate shows as needing the operator, the commit must not resolve
  * silently, and the reverse.
  */
-import { tidyRowAsReviewRow } from "./lib/tidyAnswerDecisions";
+import type { GateLink } from "./lib/tidyAnswerDecisions";
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -189,7 +189,7 @@ function commit(
   w: World,
   cards: ReturnType<typeof makeCard>[],
   extra: {
-    batchId?: string;
+    gateLinks?: GateLink[];
     careerNewPlayers?: Array<{ ref: string; name: string; stints: never[] }>;
   } = {},
 ) {
@@ -201,23 +201,22 @@ function commit(
   });
 }
 
+/** The gate's automatic team links (NEO-656: facts it returns, nothing stored). */
+function teamLinks(result: { gateLinks?: GateLink[] }) {
+  return (result.gateLinks ?? []).filter((l) => l.kind === "team");
+}
+
 /**
- * NEO-645: the gate's team rows are `tidyNames` rows. Each is read the way the
- * commit prelude reads it (`tidyRowAsReviewRow`), with the place candidates the
- * row stores (`candidateTeamIds`, `candidatePlace`) as the `teamContext` the
- * old queue row carried, so every assertion below keeps its meaning. The
- * batch argument is gone with the batches.
+ * The place's candidates, as the walk reads them after the commit
+ * (`tidyLeafFacts` over the stored cards): the printed team names still
+ * pending, with the in-league teams a place offered.
  */
-async function teamRows(t: T, _fromGate?: unknown) {
-  return (await t.run((ctx) => ctx.db.query("tidyNames").collect()))
-    .filter((r) => r.kind === "team")
-    .map((r) => ({
-      ...tidyRowAsReviewRow(r),
-      teamContext: {
-        candidateTeamIds: r.candidateTeamIds ?? [],
-        place: r.candidatePlace === true,
-      },
-    }));
+async function pendingTeamItems(t: T, w: World, cards: ReturnType<typeof makeCard>[]) {
+  await commit(t, w, cards);
+  const facts = await t
+    .withIdentity(ADMIN)
+    .action(api.selectorOptions.tidyLeafFacts, { selectorOptionId: w.leafId });
+  return facts.gateItems.filter((i) => i.kind === "team");
 }
 
 async function storedCards(t: T, w: World) {
@@ -238,7 +237,7 @@ describe("the review gate: a printed place reads the card's players, never the y
     const result = await gate(t, w, [makeCard({ players: ["Ichiro Suzuki"] })]);
 
     expect(result.unknownTeams).toEqual([]);
-    expect(await teamRows(t, result.batchId)).toEqual([]);
+    expect(teamLinks(result)).toEqual([]);
   });
 
   test("a player with a Pilots stint is the Pilots: a visible, changeable careerTeam row against the year", async () => {
@@ -249,13 +248,9 @@ describe("the review gate: a printed place reads the card's players, never the y
     const result = await gate(t, w, [makeCard({ players: ["Don Mincher"] })]);
 
     expect(result.unknownTeams).toEqual([]);
-    const rows = await teamRows(t, result.batchId);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].decision).toMatchObject({
-      action: "link",
-      linkedTeamId: w.pilots,
-      autoLinked: "careerTeam",
-    });
+    const links = teamLinks(result);
+    expect(links).toHaveLength(1);
+    expect(links[0]).toMatchObject({ teamId: w.pilots, origin: "careerTeam" });
   });
 
   test("no players on the card: the operator is asked, nothing linked, and both Seattle teams are offered", async () => {
@@ -265,16 +260,14 @@ describe("the review gate: a printed place reads the card's players, never the y
     const result = await gate(t, w, [makeCard({ players: [] })]);
 
     expect(result.unknownTeams).toEqual([PLACE]);
-    expect((await teamRows(t, result.batchId)).every((r) => r.decision === undefined)).toBe(true);
+    expect(teamLinks(result)).toEqual([]);
     // The step shows the printed place and the in-league teams there, not the Kraken.
-    const [row] = await teamRows(t, result.batchId);
+    const [row] = await pendingTeamItems(t, w, [makeCard({ players: [] })]);
     expect(row.name).toBe(PLACE);
-    expect([...(row.teamContext?.candidateTeamIds ?? [])].sort()).toEqual(
-      [w.pilots, w.mariners].sort(),
-    );
+    expect([...(row.candidateTeamIds ?? [])].sort()).toEqual([w.pilots, w.mariners].sort());
     // The candidates are teams located at the place, none named it: the step's
     // lead-in says so ("from Seattle"), and reads it back from the query.
-    expect(row.teamContext?.place).toBe(true);
+    expect(row.candidatePlace).toBe(true);
   });
 
   test("a player with no stint on either Seattle team says nothing: the operator is asked", async () => {
@@ -339,7 +332,7 @@ describe("the review gate: a printed place reads the card's players, never the y
     ]);
 
     expect(result.unknownTeams).toEqual([PLACE]);
-    expect((await teamRows(t, result.batchId)).some((r) => r.decision?.autoLinked)).toBe(false);
+    expect(teamLinks(result)).toEqual([]);
   });
 
   test("only ONE in-league team at the place: the gate does not settle it either (pairing did, or the operator does) - as before", async () => {
@@ -360,9 +353,9 @@ describe("the review gate: a printed place reads the card's players, never the y
       const result = await gate(t, w, [makeCard({ players: ["Don Mincher"] })]);
       expect(result.unknownTeams).toEqual([PLACE]);
       // Asked, not decided, and no candidates to offer: nothing read a place.
-      const rows = await teamRows(t, result.batchId);
-      expect(rows.every((r) => r.decision === undefined)).toBe(true);
-      expect(rows.flatMap((r) => r.teamContext?.candidateTeamIds ?? [])).toEqual([]);
+      expect(teamLinks(result)).toEqual([]);
+      const items = await pendingTeamItems(t, w, [makeCard({ players: ["Don Mincher"] })]);
+      expect(items.flatMap((i) => i.candidateTeamIds ?? [])).toEqual([]);
     }
   });
 
@@ -384,7 +377,7 @@ describe("the review gate: a printed place reads the card's players, never the y
     // One row answers to the name (the alias): it links as a name always did,
     // and the place leg never ran, so the Pilots stint was not consulted.
     expect(result.unknownTeams).toEqual([]);
-    expect((await teamRows(t, result.batchId)).some((r) => r.decision?.linkedTeamId === w.pilots)).toBe(false);
+    expect(teamLinks(result).some((l) => l.teamId === w.pilots)).toBe(false);
   });
 
   test("resolveGateTeamNames: the answer's shape, and a caller without the set reads no place", async () => {
@@ -452,7 +445,7 @@ describe("the commit prelude: the same place, the same answers, never silently a
 
     const asked = await gate(t, w, cards);
     expect(asked.unknownTeams).toEqual([]);
-    const result = await commit(t, w, cards, { batchId: asked.batchId });
+    const result = await commit(t, w, cards, { gateLinks: asked.gateLinks });
 
     expect(result.unreviewedNameCount).toBe(0);
     expect((await storedCards(t, w))[0].teamOnCardIds).toEqual([w.pilots]);

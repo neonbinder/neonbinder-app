@@ -5,8 +5,6 @@
  * Every insert path asks the same question (`players.nameFragmentMatches`):
  *   - `players.findOrCreate` / `players.createByAdmin` refuse with
  *     `data.code === "PLAYER_NAME_FRAGMENT"` unless `oneNamePlayer: true`;
- *   - `entityReviewQueue.recordDecision` refuses a plain create the same way;
- *   - the bulk "Add All Remaining as New" leaves the row undecided;
  *   - the commit prelude holds a create back (no row, the name unreviewed).
  *
  * An exact-name row still links, a mononym with no clash is written as
@@ -19,7 +17,6 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { NAME_FRAGMENT_SCAN_LIMIT, normalizePlayerName } from "./players";
-import { ENTITY_REVIEW_BULK_PAGE } from "./entityReviewQueue";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -292,36 +289,6 @@ describe("NEO-463: findOrCreate and createByAdmin refuse a fragment without the 
 });
 
 // ===========================================================================
-// Entity review: recordDecision and the bulk create
-// ===========================================================================
-
-async function insertReviewRow(
-  t: T,
-  opts: {
-    selectorOptionId: Id<"selectorOptions">;
-    sportId: Id<"selectorOptions">;
-    batchId: string;
-    name: string;
-    kind?: "player" | "team";
-    decision?: { action: "create"; oneNamePlayer?: true };
-  },
-): Promise<Id<"entityReviewQueue">> {
-  return t.run(async (ctx) =>
-    ctx.db.insert("entityReviewQueue", {
-      selectorOptionId: opts.selectorOptionId,
-      batchId: opts.batchId,
-      createdByUserId: ADMIN_IDENTITY.subject,
-      kind: opts.kind ?? "player",
-      name: opts.name,
-      sportId: opts.sportId,
-      status: "ready",
-      ...(opts.decision ? { decision: opts.decision } : {}),
-    }),
-  );
-}
-
-
-// ===========================================================================
 // The commit backstop
 // ===========================================================================
 
@@ -383,25 +350,16 @@ function card(cardNumber: string, players: string[]) {
 }
 
 describe("NEO-463: the commit holds a fragment back instead of writing it", () => {
-  test("a plain create on a fragment writes no player and lists the name as unreviewed", async () => {
+  test("a fragment name writes no player and is listed as unreviewed", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, variantTypeId } = await seedSet(t);
     await insertPlayer(t, sportId, "Larry Walker");
-    // A decision recorded before the rule, or one a fuller name arrived behind.
-    await insertReviewRow(t, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      batchId: "c1",
-      name: "Walker",
-      decision: { action: "create" },
-    });
 
     const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [card("1", ["Walker"]), card("2", [])],
-      batchId: "c1",
     });
 
     // The commit still lands.

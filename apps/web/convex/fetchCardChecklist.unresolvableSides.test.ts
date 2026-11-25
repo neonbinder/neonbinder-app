@@ -14,11 +14,9 @@
  * `addCustomCard`), but since `fetchCardChecklist` was the ONLY place
  * unknowns were ever computed, those names could never be resolved via the
  * review wizard at all. This file covers the fix: the custom-subtree branch
- * now runs the same `resolveUnknownsAndStartBatch` pass the marketplace path
- * uses (BSC/SL fetching itself is still fully skipped — only the
- * pending-name resolution runs), and the batch it opens is scoped to the
- * calling user via `createdByUserId` (see `entityReviewQueue.test.ts` for
- * the scoping mechanism itself).
+ * runs the same pending-name resolution the marketplace path uses (BSC/SL
+ * fetching itself is still fully skipped). NEO-656: nothing is stored for the
+ * caller (no batch), so two callers see the same unknowns.
  *
  * No BSC/SL adapter mocking needed here (unlike
  * `fetchCardChecklistTeamLookup.test.ts`) — the whole point of the
@@ -134,7 +132,7 @@ async function seedCustomCardWithPendingPlayer(
 }
 
 describe("fetchCardChecklist — a path with no marketplace ids", () => {
-  test("surfaces a custom card's pendingPlayerNames as an unknown and opens a review batch", async () => {
+  test("surfaces a custom card's pendingPlayerNames as an unknown", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_A);
     const selectorOptionId = await seedCustomSport(t);
@@ -169,15 +167,12 @@ describe("fetchCardChecklist — a path with no marketplace ids", () => {
       { selectorOptionId, sportId: selectorOptionId, cards: [] },
     );
     expect(resolved.unknownPlayers).toEqual(["Custom Subtree Player"]);
-    // NEO-645: the name is one `tidyNames` row (no batch), unanswered.
-    const rows = await t.run((ctx) => ctx.db.query("tidyNames").collect());
-    expect(rows).toHaveLength(1);
-    expect(rows[0].answer).toBeUndefined();
-    expect(rows[0].name).toBe("Custom Subtree Player");
-    expect(rows[0].kind).toBe("player");
+    // NEO-656: the gate stores nothing; the name stays pending on the card.
+    const cards = await t.run((ctx) => ctx.db.query("cardChecklist").collect());
+    expect(cards.map((c) => c.pendingPlayerNames)).toEqual([["Custom Subtree Player"]]);
   });
 
-  test("a path with no marketplace ids commits with the fixed skip message, no batch opened", async () => {
+  test("a path with no marketplace ids commits with the fixed skip message", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_A);
     const selectorOptionId = await seedCustomSport(t);
@@ -196,10 +191,9 @@ describe("fetchCardChecklist — a path with no marketplace ids", () => {
     );
     expect(resolved.unknownPlayers).toEqual([]);
     expect(resolved.unknownTeams).toEqual([]);
-    expect(await t.run((ctx) => ctx.db.query("tidyNames").collect())).toEqual([]);
   });
 
-  test("two different users fetching the SAME custom subtree share ONE name row (NEO-645: no batches)", async () => {
+  test("two different users fetching the SAME custom subtree are both told the same unknown name", async () => {
     // Direct regression coverage for the exact bug class this session fixed
     // in production: a shared review batch used to leak one caller's
     // pending names into another caller's wizard. Confirms the fix holds
@@ -225,8 +219,10 @@ describe("fetchCardChecklist — a path with no marketplace ids", () => {
 
     expect(resultA.unknownPlayers).toEqual(["Shared Set Player"]);
     expect(resultB.unknownPlayers).toEqual(["Shared Set Player"]);
-    // The name row belongs to the set, not to a caller: both gates found it.
-    expect(await t.run((ctx) => ctx.db.query("tidyNames").collect())).toHaveLength(1);
+    // The name belongs to the card, not to a caller: nothing is stored per
+    // user, so both gates found it and the card still carries it once.
+    const cards = await t.run((ctx) => ctx.db.query("cardChecklist").collect());
+    expect(cards.map((c) => c.pendingPlayerNames)).toEqual([["Shared Set Player"]]);
   });
 });
 

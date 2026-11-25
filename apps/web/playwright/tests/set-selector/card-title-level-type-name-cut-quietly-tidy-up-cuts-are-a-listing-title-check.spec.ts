@@ -15,23 +15,30 @@
 //   * With a print run of 25 saved, the drawer's Regenerate keeps "/25" and
 //     the level's name, gives up the team, the number and the first name, and
 //     the note lists all three. A generated title still past the Tidy Up line
-//     keeps its flag, so the checklist still badges the card "is worth a check:
-//     listing title was cut short" and the header pill counts it.
+//     keeps its flag, so the checklist still badges the card "is worth a check"
+//     and the header pill counts it. Blue reads live data (NEO-656 J5, B22):
+//     the new player has no career yet, so the badge also says "team is missing
+//     from the player's career", the commit-free live career check.
 //   * The pill opens the walk on that card. Its Listing title tile is "To
 //     check" (blue, not pink): the title is shown as text with its meter and the
 //     same "Left out to fit" line, it does not open for editing, and Save &
-//     next is usable. The walk's place is in the address (Back closes it,
-//     Forward reopens it on the card). Save & next is the operator's answer:
-//     the walk ends "All tidy", the badge and the pill go, and the drawer still
-//     holds the title (Save & next writes no title).
+//     next is usable. The Career tile beside it is blue too. The walk's place
+//     is in the address (Back closes it, Forward reopens it on the card).
+//   * Save & next adds the default stint for the career gap it shows (D14) and
+//     writes no title. Nothing records the card as seen (J4): the cut title is
+//     still data, so the walk ends "1 card still to check", the badge keeps the
+//     title reason alone (the career reason went with the stint, live) and the
+//     pill still counts the card. The drawer still holds the title.
 //
 // R2 - every title is a full-string match computed with the generator
 // (`assessListingTitle`), so a type name that is not singular, not cut, cut
 // before a quieter token or reported left out, a /N that is cut, or a card that
 // never reaches Tidy Up each fail. A cut title that turned pink (an over-cap
-// editor, Save & next held) or stayed blue after Save & next fails on the tile's
-// description, the textbox count, the usable Save & next and the badge. The "Left out to fit" absences of the type
-// name and the sport are proved by the exact note text.
+// editor, Save & next held) fails on the tile's description, the textbox count
+// and the usable Save & next; a Save & next that hid the cut (a stored "seen")
+// fails on the end screen, the badge and the pill; a career reason that stayed
+// after the stint fails on the badge's exact name. The "Left out to fit"
+// absences of the type name and the sport are proved by the exact note text.
 //
 // Fixture arithmetic - exact on every runner. ATTEMPT_TOKEN is 12 characters at
 // most, so the set name, the surname and the team are padded to fixed lengths;
@@ -60,16 +67,17 @@
 // worker's custom sport › 2026 › Topps (SET-REGISTRY.md, prefix `prf`), its own
 // variant type "Proofs" and level, a minted player (no lookup in the custom
 // sport) and a minted team with no Location, all made in the UI for this
-// attempt. Nothing is deleted: the set is this attempt's alone.
+// attempt. Nothing is deleted: the set is this attempt's alone. The stint
+// Save & next writes lands on that minted player, never a catalogue one.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToCustomSet, setBuilderReady } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
 import {
   expectCardSettled,
   expectTidyWalkOpen,
+  expectTidyEndScreen,
   finishTidyWalk,
   mustFixLine,
-  needsYouPill,
   pinkTile,
   saveAndNext,
   tidyFooterButton,
@@ -179,10 +187,12 @@ test(
     // ── STEP 3: still in Tidy Up, as a check ──
     // A generated title still past the Tidy Up line keeps the flag: the
     // drawer's Regenerate is not the operator's answer. Blue, so the badge says
-    // "worth a check", not "needs attention".
-    const badge = page.getByRole("img", {
-      name: new RegExp(`^Card ${NUMBER}(, .*)? is worth a check: listing title was cut short$`),
-    });
+    // "worth a check", not "needs attention". The minted player has no stint
+    // with the team, so the live career check (B22) is the badge's first reason.
+    const badgeOf = (reasons: string) =>
+      page.getByRole("img", { name: new RegExp(`^Card ${NUMBER}(, .*)? is worth a check: ${reasons}$`) });
+    const badge = badgeOf("team is missing from the player's career; listing title was cut short");
+    const titleBadge = badgeOf("listing title was cut short");
     await expect(badge).toBeVisible();
     // Blue only, so the pill has no ", N to fix" (its whole name is the count).
     const pill = page.getByRole("button", { name: "1 needs you", exact: true });
@@ -204,6 +214,11 @@ test(
     await expect(titleTile.getByText(`Left out to fit: ${team}, #${NUMBER}, ${FIRST}`, { exact: true })).toBeVisible();
     await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
     await expect(titleTile.getByRole("textbox")).toHaveCount(0);
+    // The live career gap is its own blue tile, and Save & next says what it does.
+    const careerTile = tidyTile(page, "Career");
+    await expect(careerTile).toHaveAccessibleDescription(/To check/);
+    await expect(careerTile.getByRole("group", { name: `Career ${player}`, exact: true })).toBeVisible();
+    await expect(careerTile.getByText("Save & next adds it to the career.", { exact: true })).toBeVisible();
     // Nothing on the card is pink: Save & next is usable and no "to fix" line shows.
     await expect(tidyFooterButton(page, "saveAndNext", { usable: true })).toBeVisible();
     await expect(mustFixLine(page)).toHaveCount(0);
@@ -221,15 +236,19 @@ test(
     await expect(titleTile.getByText(listedTitle, { exact: true })).toBeVisible();
     await expect(titleTile).toHaveAccessibleDescription(/To check/);
 
-    // Save & next is the operator's answer: the card is reviewed and the walk ends.
+    // Save & next adds the career's default stint and writes no title. Nothing
+    // marks the card seen (J4): the cut title is still data, so it ends blue.
     await saveAndNext(page);
-    await expect(walk.getByText("All tidy. Nothing on this checklist needs you.", { exact: true })).toBeVisible();
+    await expectTidyEndScreen(page, { fixed: 0, stillToCheck: 1 });
     await finishTidyWalk(page);
 
-    // ── STEP 4: out of Tidy Up, the title unchanged ──
+    // ── STEP 4: out of Tidy Up, the title unchanged and still a check ──
+    // The stint covers the team, so the career reason is gone (live); the
+    // title reason stays until the title is fixed, and the pill still counts it.
     await expect(editCardButton(page, NUMBER)).toBeVisible();
+    await expect(titleBadge).toBeVisible();
     await expect(badge).toHaveCount(0);
-    await expect(needsYouPill(page)).toHaveCount(0);
+    await expect(pill).toBeVisible();
     await editCardButton(page, NUMBER).click();
     await expect(cardTitle).toHaveValue(listedTitle);
     await expect(leftOut).toHaveText(`Left out to fit: ${team}, #${NUMBER}, ${FIRST}`);

@@ -1,5 +1,5 @@
 import type { Id } from "../../convex/_generated/dataModel";
-import type { TidyCheck, TidyDisagreement } from "../../convex/features/cardAttention";
+import type { TidyDisagreement } from "../../convex/features/cardAttention";
 
 /**
  * A `getCardChecklist` row, structurally.
@@ -111,8 +111,4 @@ export type CardChecklistRow = {
   sourceDisagreements?: TidyDisagreement[];
   /** NEO-645: the card's own photos; the face on the walk draws them. */
   imageUrls?: { front?: string; back?: string };
-  /** NEO-645: facts stored where they change (career gap, new player, team fill). */
-  tidyChecks?: TidyCheck[];
-  /** NEO-645: the blue items already seen, by fingerprint key. */
-  tidyReviewed?: { at: number; keys: string[] };
 };

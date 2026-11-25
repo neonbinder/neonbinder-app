@@ -19,7 +19,7 @@
  * `t.query`, so the REAL queries run against the in-memory database.
  */
 
-import { tidyRowAsReviewRow } from "./lib/tidyAnswerDecisions";
+import type { GateItem } from "./lib/tidyAnswerDecisions";
 import { convexTest } from "convex-test";
 import { getFunctionName } from "convex/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -28,6 +28,7 @@ import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { ActionCtx } from "./_generated/server";
 import { normalizePlayerName } from "./players";
+import { computeGateFacts, gateCardInputs } from "./selectorOptions";
 import { normalizeTeamName } from "./teams";
 import {
   NAMESAKE_NAMES_PER_CALL,
@@ -193,23 +194,77 @@ async function gate(
   sportId: Sel,
   players: string[],
   teams: string[] = [],
+  cardNumber = "I-1",
 ) {
-  return t.withIdentity(ADMIN_IDENTITY).action(
-    api.selectorOptions.resolveChecklistEntities,
-    { selectorOptionId, sportId, cards: [fetchedCard(players, teams)] },
-  );
+  return gateCards(t, selectorOptionId, sportId, [fetchedCard(players, teams, cardNumber)]);
 }
 
 /**
- * NEO-645 — the gate's rows are `tidyNames` rows (one per leaf, kind and name,
- * answered by `decision` -> `answer`), read through the adapter the commit
- * prelude reads them through, so every assertion below keeps its meaning.
- * There is no batch: the argument is kept so each call site still reads as the
- * gate run it came from.
+ * NEO-656 — the real action answers the client (unknown lists, `gateLinks`,
+ * `autoLinkedCount`); the per-name facts it derives them from (`gateItems`:
+ * preselects, history picks, the auto answer) are read from `computeGateFacts`
+ * over the same cards, the derivation the walk reads. Nothing is stored.
  */
-async function rowsOf(t: T, _fromGate?: unknown) {
-  const rows = await t.run((ctx) => ctx.db.query("tidyNames").collect());
-  return rows.map((row) => tidyRowAsReviewRow(row));
+async function gateCards(
+  t: T,
+  selectorOptionId: Sel,
+  sportId: Sel,
+  cards: ReturnType<typeof fetchedCard>[],
+) {
+  const result = await t
+    .withIdentity(ADMIN_IDENTITY)
+    .action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId,
+      sportId,
+      cards,
+    });
+  const prelude = await t.query(internal.selectorOptions.reviewGatePrelude, {
+    selectorOptionId,
+    sportId,
+  });
+  const ctx = {
+    runQuery: (ref: never, args: never) => t.query(ref, args),
+    runMutation: (ref: never, args: never) => t.mutation(ref, args),
+  } as unknown as ActionCtx;
+  const inputs = gateCardInputs(cards);
+  const facts = await computeGateFacts(ctx, {
+    selectorOptionId,
+    sportId,
+    sportLabel: prelude.sportLabel,
+    additionalPlayerNames: inputs.additionalPlayerNames,
+    additionalTeamNames: inputs.additionalTeamNames,
+    cardTeamNamesByPlayer: inputs.cardTeamNamesByPlayer,
+    cardPlayerNamesByTeam: inputs.cardPlayerNamesByTeam,
+    prelude,
+    timing: { hops: 0, phases: {} },
+  });
+  return { ...result, items: facts.gateItems };
+}
+
+type Fact = GateItem & {
+  decision?: {
+    action: "link";
+    linkedPlayerId?: Id<"players">;
+    linkedTeamId?: Id<"teams">;
+    autoLinked: string;
+  };
+};
+
+/** The gate's per-name facts, with the automatic answer shaped as a link decision. */
+function rowsOf(result: { items: GateItem[] }): Fact[] {
+  return result.items.map((item) => ({
+    ...item,
+    ...(item.auto
+      ? {
+          decision: {
+            action: "link" as const,
+            ...(item.auto.playerId ? { linkedPlayerId: item.auto.playerId } : {}),
+            ...(item.auto.teamId ? { linkedTeamId: item.auto.teamId } : {}),
+            autoLinked: item.auto.origin,
+          },
+        }
+      : {}),
+  }));
 }
 
 /** `runQuery` straight onto the real internal queries, for `scanSetHistory`. */
@@ -232,7 +287,7 @@ describe("the gate: set history against today's in-sport lookup (D3)", () => {
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
 
     expect(result.unknownPlayers).toEqual([]);
-    expect(await rowsOf(t, result.batchId)).toEqual([]);
+    expect(await rowsOf(result)).toEqual([]);
   });
 
   test("history naming a different player than the lookup is a visible row, history first", async () => {
@@ -247,18 +302,14 @@ describe("the gate: set history against today's in-sport lookup (D3)", () => {
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
 
     expect(result.unknownPlayers).toEqual([]);
-    const [row] = await rowsOf(t, result.batchId);
+    const [row] = await rowsOf(result);
     expect(row).toMatchObject({
       kind: "player",
       sportId: football,
-      status: "ready",
       decision: { action: "link", linkedPlayerId: boFootball, autoLinked: "setHistory" },
     });
     expect(row.decision).not.toHaveProperty("addSetSport");
-    expect(row.enrichment?.existingCandidates?.map((c) => [c.playerId, c.sportValue])).toEqual([
-      [boFootball, "Football"],
-      [boBaseball, "Baseball"],
-    ]);
+    expect(row.auto?.candidatePlayerIds).toEqual([boFootball, boBaseball]);
   });
 
   test("history resolves a name the lookup could not (two in-sport namesakes)", async () => {
@@ -274,9 +325,9 @@ describe("the gate: set history against today's in-sport lookup (D3)", () => {
     // Not an unknown, and not a pick step: the set already said which.
     expect(result.unknownPlayers).toEqual([]);
     expect(result.ambiguousPlayers).toEqual([]);
-    const [row] = await rowsOf(t, result.batchId);
+    const [row] = await rowsOf(result);
     expect(row.decision).toMatchObject({ linkedPlayerId: b, autoLinked: "setHistory" });
-    expect(row.enrichment?.existingCandidates?.map((c) => c.playerId)).toEqual([b, a]);
+    expect(row.auto?.candidatePlayerIds).toEqual([b, a]);
   });
 
   test("two players linked under one name is a pick between exactly those, never looked up", async () => {
@@ -294,20 +345,11 @@ describe("the gate: set history against today's in-sport lookup (D3)", () => {
 
     expect(result.unknownPlayers).toEqual(["Bo Jackson"]);
     expect(result.ambiguousPlayers).toEqual(["Bo Jackson"]);
-    const [row] = await rowsOf(t, result.batchId);
+    const [row] = await rowsOf(result);
     expect(row.decision).toBeUndefined();
-    expect(row.status).toBe("ready");
-    const ids = (row.enrichment?.existingCandidates ?? []).map((c) => c.playerId).sort();
+    const ids = [...(row.historyPlayerIds ?? [])].sort();
     expect(ids).toEqual([one, two].sort());
     expect(ids).not.toContain(outsider);
-    const enqueued = await t.run(async (ctx) =>
-      (await (ctx as unknown as {
-        db: { system: { query: (n: string) => { collect: () => Promise<Array<{ name: string }>> } } };
-      }).db.system.query("_scheduled_functions").collect()).filter((r) =>
-        r.name.includes("enqueueEntityReviewLookups"),
-      ),
-    );
-    expect(enqueued).toHaveLength(0);
   });
 
   test("a name the set never linked is today's path, untouched", async () => {
@@ -320,8 +362,7 @@ describe("the gate: set history against today's in-sport lookup (D3)", () => {
     const result = await gate(t, p.insert, baseball, ["Ken Griffey Jr."]);
 
     expect(result.unknownPlayers).toEqual(["Ken Griffey Jr."]);
-    const [row] = await rowsOf(t, result.batchId);
-    expect(row.status).toBe("pending");
+    const [row] = await rowsOf(result);
     expect(row.decision).toBeUndefined();
   });
 });
@@ -338,7 +379,7 @@ describe("the gate: what counts as set history", () => {
 
     const result = await gate(t, p.base, baseball, ["Bo Jackson"]);
 
-    const [row] = await rowsOf(t, result.batchId);
+    const [row] = await rowsOf(result);
     expect(row.decision).toMatchObject({ linkedPlayerId: bo, autoLinked: "setHistory" });
   });
 
@@ -356,7 +397,7 @@ describe("the gate: what counts as set history", () => {
 
     const result = await gate(t, p.insert, baseball, ["Bo Jackson", "Vincent Jackson"]);
 
-    const rows = await rowsOf(t, result.batchId);
+    const rows = await rowsOf(result);
     expect(rows.map((r) => r.name).sort()).toEqual(["Bo Jackson", "Vincent Jackson"]);
     for (const row of rows) {
       expect(row.sportId).toBe(football);
@@ -381,7 +422,7 @@ describe("the gate: what counts as set history", () => {
 
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
 
-    expect((await rowsOf(t, result.batchId))[0]?.decision).toMatchObject({
+    expect((await rowsOf(result))[0]?.decision).toMatchObject({
       linkedPlayerId: vincent,
       autoLinked: "setHistory",
     });
@@ -401,10 +442,10 @@ describe("the gate: what counts as set history", () => {
 
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
 
-    const [row] = await rowsOf(t, result.batchId);
+    const [row] = await rowsOf(result);
     expect(row.decision).toBeUndefined();
     expect(
-      (row.enrichment?.existingCandidates ?? []).map((c) => c.playerId).sort(),
+      [...(row.historyPlayerIds ?? [])].sort(),
     ).toEqual([bo, vincent].sort());
     expect(result.ambiguousPlayers).toEqual(["Bo Jackson"]);
   });
@@ -420,7 +461,7 @@ describe("the gate: what counts as set history", () => {
 
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
 
-    expect((await rowsOf(t, result.batchId))[0]?.decision).toMatchObject({
+    expect((await rowsOf(result))[0]?.decision).toMatchObject({
       linkedPlayerId: bo,
       autoLinked: "setHistory",
     });
@@ -443,7 +484,7 @@ describe("the gate: what counts as set history", () => {
 
     const result = await gate(t, p.insert, baseball, ["Deion Sanders"]);
 
-    const rows = await rowsOf(t, result.batchId);
+    const rows = await rowsOf(result);
     expect(rows).toHaveLength(1);
     expect(rows[0].name).toBe("Deion Sanders");
     expect(rows[0].decision).toMatchObject({ linkedPlayerId: deion });
@@ -460,7 +501,7 @@ describe("the gate: what counts as set history", () => {
 
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
 
-    expect((await rowsOf(t, result.batchId))[0]?.decision).toMatchObject({
+    expect((await rowsOf(result))[0]?.decision).toMatchObject({
       linkedPlayerId: bo,
     });
   });
@@ -477,7 +518,7 @@ describe("the gate: what counts as set history", () => {
 
     const result = await gate(t, p.insert, baseball, ["Jose Ramirez"]);
 
-    expect((await rowsOf(t, result.batchId))[0]?.decision).toMatchObject({
+    expect((await rowsOf(result))[0]?.decision).toMatchObject({
       linkedPlayerId: jose,
     });
   });
@@ -494,7 +535,7 @@ describe("the gate: what counts as set history", () => {
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
 
     expect(result.unknownPlayers).toEqual(["Bo Jackson"]);
-    const [row] = await rowsOf(t, result.batchId);
+    const [row] = await rowsOf(result);
     expect(row.decision).toBeUndefined();
     expect(row.sportId).toBe(baseball);
   });
@@ -512,7 +553,7 @@ describe("the gate: what counts as set history", () => {
 
     // Fetching Blue: Gold is another variant's earlier answer.
     const sibling = await gate(t, blue, baseball, ["Bo Jackson"]);
-    expect((await rowsOf(t, sibling.batchId))[0]?.decision).toMatchObject({
+    expect((await rowsOf(sibling))[0]?.decision).toMatchObject({
       linkedPlayerId: bo,
     });
   });
@@ -543,12 +584,12 @@ describe("the gate: Hall of Fame (rule D) is a visible link, and history outrank
     const result = await gate(t, p.insert, baseball, ["Frank Thomas"]);
 
     expect(result.unknownPlayers).toEqual([]);
-    const [row] = await rowsOf(t, result.batchId);
+    const [row] = await rowsOf(result);
     expect(row).toMatchObject({
       sportId: baseball,
       decision: { action: "link", linkedPlayerId: legend, autoLinked: "hallOfFame" },
     });
-    expect(row.enrichment?.existingCandidates?.map((c) => c.playerId)).toEqual([legend, other]);
+    expect(row.auto?.candidatePlayerIds).toEqual([legend, other]);
   });
 
   test("when history names the same Hall of Famer the name is silent", async () => {
@@ -561,7 +602,7 @@ describe("the gate: Hall of Fame (rule D) is a visible link, and history outrank
     const result = await gate(t, p.insert, baseball, ["Frank Thomas"]);
 
     expect(result.unknownPlayers).toEqual([]);
-    expect(await rowsOf(t, result.batchId)).toEqual([]);
+    expect(await rowsOf(result)).toEqual([]);
   });
 
   test("when history names the OTHER man, history wins over the Hall of Famer", async () => {
@@ -573,7 +614,7 @@ describe("the gate: Hall of Fame (rule D) is a visible link, and history outrank
 
     const result = await gate(t, p.insert, baseball, ["Frank Thomas"]);
 
-    const [row] = await rowsOf(t, result.batchId);
+    const [row] = await rowsOf(result);
     expect(row.decision).toMatchObject({ linkedPlayerId: other, autoLinked: "setHistory" });
   });
 
@@ -588,25 +629,18 @@ describe("the gate: Hall of Fame (rule D) is a visible link, and history outrank
     const p = await product(t, baseball, { year: "2024" });
     const { legend, other } = await thomases(t, baseball);
 
-    const result = await t.withIdentity(ADMIN_IDENTITY).action(
-      api.selectorOptions.resolveChecklistEntities,
-      {
-        selectorOptionId: p.insert,
-        sportId: baseball,
-        cards: [fetchedCard(["Frank Thomas"], ["Pittsburgh Pirates"])],
-      },
-    );
+    const result = await gate(t, p.insert, baseball, ["Frank Thomas"], ["Pittsburgh Pirates"]);
 
     expect(result.unknownPlayers).toEqual([]);
     expect(result.ambiguousPlayers).toEqual([]);
     expect(result.autoLinkedCount).toBe(1);
-    const rows = (await rowsOf(t, result.batchId)).filter((r) => r.kind === "player");
+    const rows = (await rowsOf(result)).filter((r) => r.kind === "player");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       sportId: baseball,
       decision: { action: "link", linkedPlayerId: other, autoLinked: "careerTeam" },
     });
-    expect(rows[0].enrichment?.existingCandidates?.map((c) => c.playerId)).toEqual([other, legend]);
+    expect(rows[0].auto?.candidatePlayerIds).toEqual([other, legend]);
   });
 });
 
@@ -624,11 +658,10 @@ describe("the gate: a printed team name that set history answers (rule F)", () =
     const result = await gate(t, p.insert, baseball, [], ["Oakland Raiders"]);
 
     expect(result.unknownTeams).toEqual([]);
-    const [row] = await rowsOf(t, result.batchId);
+    const [row] = await rowsOf(result);
     expect(row).toMatchObject({
       kind: "team",
       sportId: football,
-      status: "ready",
       decision: { action: "link", linkedTeamId: raiders, autoLinked: "setHistory" },
     });
   });
@@ -642,11 +675,11 @@ describe("the gate: a printed team name that set history answers (rule F)", () =
     await committed(t, p.base, "1", { teamIds: [raiders] });
 
     const nick = await gate(t, p.insert, baseball, [], ["Raiders"]);
-    expect((await rowsOf(t, nick.batchId))[0]?.decision).toMatchObject({
+    expect((await rowsOf(nick))[0]?.decision).toMatchObject({
       linkedTeamId: raiders,
     });
     const alias = await gate(t, p.insert, baseball, [], ["LA Raiders"]);
-    expect((await rowsOf(t, alias.batchId)).some((r) => r.decision?.action === "link")).toBe(true);
+    expect((await rowsOf(alias)).some((r) => r.decision?.action === "link")).toBe(true);
   });
 
   test("two history teams answering to one printed name leave it unknown", async () => {
@@ -661,7 +694,7 @@ describe("the gate: a printed team name that set history answers (rule F)", () =
     const result = await gate(t, p.insert, baseball, [], ["Giants"]);
 
     expect(result.unknownTeams).toEqual(["Giants"]);
-    const [row] = await rowsOf(t, result.batchId);
+    const [row] = await rowsOf(result);
     expect(row.decision).toBeUndefined();
   });
 
@@ -713,9 +746,9 @@ describe("the gate: autoLinkedCount tells the client a batch holds decided rows 
 
     expect(result.unknownPlayers).toEqual([]);
     expect(result.unknownTeams).toEqual([]);
-    expect((await rowsOf(t, result.batchId)).length).toBeGreaterThan(0);
+    expect((await rowsOf(result)).length).toBeGreaterThan(0);
     expect(result.autoLinkedCount).toBe(2);
-    const rows = await rowsOf(t, result.batchId);
+    const rows = await rowsOf(result);
     expect(rows.map((r) => r.decision)).toEqual(
       expect.arrayContaining([
         { action: "link", linkedTeamId: browns1902, autoLinked: "setHistory" },
@@ -734,12 +767,12 @@ describe("the gate: autoLinkedCount tells the client a batch holds decided rows 
 
     // History and the lookup agree (D3): silent, no batch.
     const silent = await gate(t, p.insert, baseball, ["Bo Jackson"]);
-    expect(await rowsOf(t, silent.batchId)).toEqual([]);
+    expect(await rowsOf(silent)).toEqual([]);
     expect(silent.autoLinkedCount).toBe(0);
 
     // An unknown name opens a batch, but nothing in it was decided for the operator.
     const unknown = await gate(t, p.insert, baseball, ["Nobody Anywhere"], ["Nowhere Nobodies"]);
-    expect((await rowsOf(t, unknown.batchId)).length).toBeGreaterThan(0);
+    expect((await rowsOf(unknown)).length).toBeGreaterThan(0);
     expect(unknown.unknownTeams).toEqual(["Nowhere Nobodies"]);
     expect(unknown.autoLinkedCount).toBe(0);
   });
@@ -766,10 +799,9 @@ describe("the gate: E1, the same product one year earlier", () => {
 
     const result = await gate(t, now.insert, baseball, ["Bo Jackson"]);
 
-    const [row] = await rowsOf(t, result.batchId);
+    const [row] = await rowsOf(result);
     expect(row.decision).toBeUndefined();
-    expect(row.status).toBe("ready");
-    expect(row.enrichment?.preselect).toMatchObject({
+    expect(row.preselect).toMatchObject({
       playerId: boA,
       sportValue: "Football",
       reason: "priorYearProduct",
@@ -787,7 +819,7 @@ describe("the gate: E1, the same product one year earlier", () => {
 
     const result = await gate(t, now.insert, baseball, ["Bo Jackson"]);
 
-    expect((await rowsOf(t, result.batchId))[0].enrichment?.preselect).toBeUndefined();
+    expect((await rowsOf(result))[0].preselect).toBeUndefined();
   });
 
   test.each([
@@ -804,7 +836,7 @@ describe("the gate: E1, the same product one year earlier", () => {
 
     const result = await gate(t, now.insert, baseball, ["Bo Jackson"]);
 
-    expect((await rowsOf(t, result.batchId))[0].enrichment?.preselect).toBeUndefined();
+    expect((await rowsOf(result))[0].preselect).toBeUndefined();
   });
 
   test("the prior year in ANOTHER sport's tree is not the same product", async () => {
@@ -816,7 +848,7 @@ describe("the gate: E1, the same product one year earlier", () => {
 
     const result = await gate(t, now.insert, baseball, ["Bo Jackson"]);
 
-    expect((await rowsOf(t, result.batchId))[0].enrichment?.preselect).toBeUndefined();
+    expect((await rowsOf(result))[0].preselect).toBeUndefined();
   });
 
   test("two prior-year rows that are both 'Series 1' under Topps are not exactly one: no suggestion", async () => {
@@ -831,7 +863,7 @@ describe("the gate: E1, the same product one year earlier", () => {
 
     const result = await gate(t, now.insert, baseball, ["Bo Jackson"]);
 
-    expect((await rowsOf(t, result.batchId))[0].enrichment?.preselect).toBeUndefined();
+    expect((await rowsOf(result))[0].preselect).toBeUndefined();
   });
 
   test("E1 outranks E2: the prior year's player beats the one namesake in NB", async () => {
@@ -846,12 +878,12 @@ describe("the gate: E1, the same product one year earlier", () => {
 
     const result = await gate(t, now.insert, baseball, ["Bo Jackson"]);
 
-    const [row] = await rowsOf(t, result.batchId);
-    expect(row.enrichment?.preselect).toMatchObject({
+    const [row] = await rowsOf(result);
+    expect(row.preselect).toMatchObject({
       playerId: vincent,
       reason: "priorYearProduct",
     });
-    expect(row.enrichment?.preselect?.playerId).not.toBe(lone);
+    expect(row.preselect?.playerId).not.toBe(lone);
   });
 });
 
@@ -865,11 +897,10 @@ describe("the gate: E2, the only namesake in any sport", () => {
 
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
 
-    const [row] = await rowsOf(t, result.batchId);
+    const [row] = await rowsOf(result);
     expect(row.decision).toBeUndefined();
-    expect(row.status).toBe("ready");
     expect(row.sportId).toBe(baseball);
-    expect(row.enrichment?.preselect).toMatchObject({
+    expect(row.preselect).toMatchObject({
       playerId: bo,
       sportId: football,
       sportValue: "Football",
@@ -888,9 +919,8 @@ describe("the gate: E2, the only namesake in any sport", () => {
 
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
 
-    const [row] = await rowsOf(t, result.batchId);
-    expect(row.enrichment?.preselect).toBeUndefined();
-    expect(row.status).toBe("pending");
+    const [row] = await rowsOf(result);
+    expect(row.preselect).toBeUndefined();
   });
 
   test("an ALIAS counts as answering to the name", async () => {
@@ -909,7 +939,7 @@ describe("the gate: E2, the only namesake in any sport", () => {
 
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
 
-    expect((await rowsOf(t, result.batchId))[0].enrichment?.preselect).toMatchObject({
+    expect((await rowsOf(result))[0].preselect).toMatchObject({
       playerId: vincent,
       reason: "onlyNamesake",
     });
@@ -931,7 +961,7 @@ describe("the gate: E2, the only namesake in any sport", () => {
 
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
 
-    expect((await rowsOf(t, result.batchId))[0].enrichment?.preselect).toMatchObject({
+    expect((await rowsOf(result))[0].preselect).toMatchObject({
       playerId: bo,
     });
   });
@@ -945,9 +975,9 @@ describe("the gate: E2, the only namesake in any sport", () => {
 
     const result = await gate(t, p.insert, baseball, ["Bob Allen"]);
 
-    const [row] = await rowsOf(t, result.batchId);
-    expect(row.enrichment?.existingCandidates).toHaveLength(2);
-    expect(row.enrichment?.preselect).toBeUndefined();
+    const [row] = await rowsOf(result);
+    expect(result.ambiguousPlayers).toEqual(["Bob Allen"]);
+    expect(row.preselect).toBeUndefined();
   });
 
   test("a name with no namesake anywhere is an ordinary pending row", async () => {
@@ -957,9 +987,8 @@ describe("the gate: E2, the only namesake in any sport", () => {
 
     const result = await gate(t, p.insert, baseball, ["Travis Bazzana"]);
 
-    const [row] = await rowsOf(t, result.batchId);
-    expect(row.status).toBe("pending");
-    expect(row.enrichment?.preselect).toBeUndefined();
+    const [row] = await rowsOf(result);
+    expect(row.preselect).toBeUndefined();
   });
 });
 
@@ -973,17 +1002,15 @@ describe("the gate: rule E at volume and with stale ids", () => {
     const last = names[names.length - 1];
     const lone = await player(t, football, last);
 
-    const result = await t.withIdentity(ADMIN_IDENTITY).action(
-      api.selectorOptions.resolveChecklistEntities,
-      {
-        selectorOptionId: p.insert,
-        sportId: baseball,
-        cards: names.map((n, i) => fetchedCard([n], [], `I-${i}`)),
-      },
+    const result = await gateCards(
+      t,
+      p.insert,
+      baseball,
+      names.map((n, i) => fetchedCard([n], [], `I-${i}`)),
     );
 
-    const row = (await rowsOf(t, result.batchId)).find((r) => r.name === last)!;
-    expect(row.enrichment?.preselect).toMatchObject({ playerId: lone, reason: "onlyNamesake" });
+    const row = (await rowsOf(result)).find((r) => r.name === last)!;
+    expect(row.preselect).toMatchObject({ playerId: lone, reason: "onlyNamesake" });
   });
 
   test("a prior-year player deleted since is no suggestion, and the row is looked up as ever", async () => {
@@ -998,9 +1025,8 @@ describe("the gate: rule E at volume and with stale ids", () => {
 
     const result = await gate(t, now.insert, baseball, ["Bo Jackson"]);
 
-    const [row] = await rowsOf(t, result.batchId);
-    expect(row.enrichment?.preselect).toBeUndefined();
-    expect(row.status).toBe("pending");
+    const [row] = await rowsOf(result);
+    expect(row.preselect).toBeUndefined();
   });
 });
 
@@ -1083,7 +1109,7 @@ describe("scanSetHistory: an incomplete history is not used at all", () => {
     // scan is ignored, so the lone baseball Bo Jackson answers, silently.
     const result = await gate(t, p.insert, baseball, ["Bo Jackson"]);
     expect(result.unknownPlayers).toEqual([]);
-    expect(await rowsOf(t, result.batchId)).toEqual([]);
+    expect(await rowsOf(result)).toEqual([]);
     void boBaseball;
   });
 });

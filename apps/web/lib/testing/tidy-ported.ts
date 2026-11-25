@@ -2,9 +2,9 @@
  * NEO-645 — fixtures shared by the `tidy*.ported.test.ts` files.
  *
  * Those files carry the behaviours the retired `entityReviewQueue` batch tests
- * pinned, on the per-card walk's storage. The shape of every one is the same:
- * a set with one leaf, a commit that leaves a printed name unanswered, then the
- * tile's own mutation (`tidyNames.createPlayer`, `answerName`, `teams.findOrCreate`,
+ * pinned, on the per-card walk. The shape of every one is the same:
+ * a set with one leaf, a commit that leaves a printed name pending on the card,
+ * then the tile's own mutation (`tidyNames.createPlayer`, `answerName`, `teams.findOrCreate`,
  * `players.addStint`) acting on the card the operator has open.
  *
  * Lives under lib/ rather than convex/ so it is never deployed as a module.
@@ -97,35 +97,6 @@ export function makeCard(
   };
 }
 
-/**
- * The name row the gate writes for a name nobody has answered: `ready`, no
- * answer, optionally with the lookup's payload. The commit that follows stamps
- * the name on the card and writes its printed row.
- */
-export async function seedUnansweredName(
-  t: T,
-  opts: {
-    scopeId: Sel;
-    sportId: Sel;
-    kind: "player" | "team";
-    name: string;
-    enrichment?: Record<string, unknown>;
-    status?: "pending" | "ready" | "error";
-  },
-): Promise<Id<"tidyNames">> {
-  return t.run(async (ctx) =>
-    ctx.db.insert("tidyNames", {
-      scopeId: opts.scopeId,
-      kind: opts.kind,
-      nameNormalized: normalizeEntityName(opts.name),
-      name: opts.name,
-      sportId: opts.sportId,
-      status: opts.status ?? "ready",
-      ...(opts.enrichment ? { enrichment: opts.enrichment as never } : {}),
-    }),
-  );
-}
-
 export async function commit(
   t: T,
   s: { variantTypeId: Sel; sportId: Sel },
@@ -147,7 +118,7 @@ export async function readCards(t: T, selectorOptionId: Sel): Promise<Doc<"cardC
   );
 }
 
-export async function allOf<N extends "players" | "teams" | "tidyNames" | "leagues">(
+export async function allOf<N extends "players" | "teams" | "leagues">(
   t: T,
   table: N,
 ): Promise<Doc<N>[]> {

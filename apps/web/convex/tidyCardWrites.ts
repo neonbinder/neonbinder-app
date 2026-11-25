@@ -1,11 +1,15 @@
 /**
  * NEO-645 — what an answered name does to ONE card.
  *
- * The one place the card-side effect of a `tidyNames` answer is decided and
- * written. `tidyNames.answerName` (the open card), the fan-out page, `createPlayer`
- * and `tidyCards.pickSourceValue` all go through `writeNameChange`, so a card
- * reached by the fan-out ends up byte-for-byte like the card the operator
- * answered on.
+ * The one place the card-side effect of an answered name is decided and
+ * written. `tidyNames.answerName` (the open card), `applyNameToAll`'s pages,
+ * `createPlayer` and `tidyCards.pickSourceValue` all go through
+ * `writeNameChange`, so a card reached by Apply to all ends up byte-for-byte
+ * like the card the operator answered on.
+ *
+ * NEO-656: the card is the only record. A name is read from the card itself
+ * (`playerLinks.nameOnCard`, `pendingPlayerNames`, `pendingTeamNames`), never
+ * from a stored row (`printedRefOf`).
  *
  * ## Pure planner, thin writer
  *
@@ -18,7 +22,7 @@
  * teamless-sport default (NEO-426) on a card that just lost its last pending
  * player name.
  *
- * ## Costs (measured by `tidyNames.fanOut.test.ts`, see FAN_OUT_OPS_PER_CARD)
+ * ## Costs (measured by `tidyNames.applyToAll.test.ts`, see APPLY_TO_ALL_PAGE_SIZE)
  *
  * Per card: 1 get, 1 patch, `syncCardPlayerLinks` (1 read + writes) or
  * `syncCardTeamLinks` (1 read + writes + league settle), the title read through
@@ -27,10 +31,8 @@
  * are ALWAYS rebuilt (T4, `regenerateTitleFields`), one read of the card's facts.
  */
 
-import type { Infer } from "convex/values";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import type { tidyNameAnswerValidator } from "./schema";
 import { syncCardPlayerLinks } from "./cardPlayerLinks";
 import { syncCardTeamLinks } from "./cardTeamLinks";
 import { newCardLeagueCache, type CardLeagueCache } from "./cardLeague";
@@ -40,7 +42,7 @@ import {
 } from "./storedCardTitle";
 import { rebuildListingText } from "./tidyListingText";
 import { dropCameosNowPrimary, withoutPrimaryCameos } from "./cardSecondaryPlayers";
-import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, TIDY_CHECKS_MAX } from "./features/cardAttention";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import { createSportNoTeamReader } from "./sportTeamless";
 import {
@@ -53,12 +55,21 @@ import { noTeamCardVerdict, stampNoTeam } from "./lib/selectorTeams";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 
 type Card = Doc<"cardChecklist">;
-export type StoredAnswer = Infer<typeof tidyNameAnswerValidator>;
+
+/**
+ * The answer a card is expected to be holding, for the compare-and-set of
+ * `applyNameToAll` and for undoing a team link. NOT stored anywhere (NEO-656):
+ * the caller reads it off the card or holds it for the sitting.
+ */
+export type StoredAnswer =
+  | { kind: "linkPlayer"; playerId: Id<"players"> }
+  | { kind: "linkTeam"; teamId: Id<"teams"> }
+  | { kind: "notEntity" };
 
 /** The card side of one printed name: which name, where it sat. */
 export type PrintedRef = {
   kind: "player" | "team";
-  /** `normalizeEntityName` of the printed spelling: the `tidyNames` key. */
+  /** `normalizeEntityName` of the printed spelling: the name's key. */
   nameNormalized: string;
   /** This card's own spelling. */
   printed: string;
@@ -308,7 +319,6 @@ export async function writeNameChange(
   // gets the commit's team fill, with the commit's verdict and rule 8: a card
   // the commit could not offer it to (the name was still pending) is not left
   // to stop on the Team tile when the career gives exactly one team.
-  let teamFillCheck: Extract<NonNullable<Card["tidyChecks"]>[number], { kind: "teamFill" }> | undefined;
   if (
     (card.pendingPlayerNames?.length ?? 0) > 0 &&
     cardMayTakeFill(card, fields)
@@ -316,7 +326,6 @@ export async function writeNameChange(
     const filled = await planFillOnAnswer(ctx, card, fields.playerIds, cache.fill);
     if (filled && filled.teamIds.length > 0) {
       fields = { ...fields, teamOnCardIds: filled.teamIds };
-      teamFillCheck = { kind: "teamFill", teamIds: filled.teamIds, reason: filled.reason };
     }
   }
   const playersChanged =
@@ -340,20 +349,6 @@ export async function writeNameChange(
   if (teamsChanged && fields.teamOnCardIds.length > 0) {
     patch.teamNoneConfirmedAt = undefined;
     patch.teamNoneConfirmedByUserId = undefined;
-  }
-  // A team changed by hand retires the "team filled from ..." note (Q1-A): the
-  // note says NB filled it, and it no longer does.
-  if (teamsChanged && (card.tidyChecks ?? []).some((c) => c.kind === "teamFill")) {
-    const kept = (card.tidyChecks ?? []).filter((c) => c.kind !== "teamFill");
-    patch.tidyChecks = kept.length > 0 ? kept : undefined;
-  }
-  // The note of the fill this call just made (after the clearing above, which
-  // is about a team changed by hand).
-  if (teamFillCheck) {
-    patch.tidyChecks = [
-      ...(patch.tidyChecks ?? card.tidyChecks ?? []).filter((c) => c.kind !== "teamFill"),
-      teamFillCheck,
-    ].slice(-TIDY_CHECKS_MAX);
   }
   const next: Card = { ...card, ...patch } as Card;
 
@@ -410,20 +405,74 @@ export async function writeNameChange(
   return { titleChanged };
 }
 
-/** Distinct normalised keys of a card's printed names of one kind, in order. */
-export function unlinkedBeforeCount(
+/**
+ * NEO-656 (D6) — the ref of a printed name, read from the CARD alone, and the
+ * number of the card's player names before it that are not linked.
+ *
+ * The card does not record how linked and pending names interleave, so a name
+ * still waiting is placed after the links the card already has:
+ * `order = playerLinks.length + pendingIndex` and `unlinkedBefore = pendingIndex`,
+ * which `planNameChange` turns into the slot `playerLinks.length`. `playerIds`
+ * stays equal to `playerLinks` (same ids, same order). A name already linked
+ * keeps its own slot (Change replaces in place). A name on neither list (a name
+ * the walk is re-asking after Not a player) is placed last, like a waiting one.
+ * `printed` is the card's own spelling when the card holds the name, else the
+ * spelling given.
+ */
+export function printedRefOf(
   card: Parameters<typeof nameFieldsOf>[0],
-  printed: ReadonlyArray<{ kind: "player" | "team"; nameNormalized: string; order: number }>,
-  ref: PrintedRef,
-): number {
+  kind: "player" | "team",
+  key: string,
+  spelling: string,
+): { ref: PrintedRef; unlinkedBefore: number } {
   const fields = nameFieldsOf(card);
-  const linkedKeys = new Set(fields.playerLinks.map((l) => normalizeEntityName(l.nameOnCard)));
-  return printed.filter(
-    (p) =>
-      p.kind === "player" &&
-      ref.kind === "player" &&
-      p.order < ref.order &&
-      p.nameNormalized !== ref.nameNormalized &&
-      !linkedKeys.has(p.nameNormalized),
-  ).length;
+  const matches = isKey(key);
+  if (kind === "player") {
+    const linkAt = fields.playerLinks.findIndex((l) => matches(l.nameOnCard));
+    if (linkAt >= 0) {
+      return {
+        ref: {
+          kind,
+          nameNormalized: key,
+          printed: fields.playerLinks[linkAt].nameOnCard,
+          order: linkAt,
+        },
+        unlinkedBefore: 0,
+      };
+    }
+    const pendingAt = fields.pendingPlayerNames.findIndex(matches);
+    const waiting = pendingAt >= 0 ? pendingAt : fields.pendingPlayerNames.length;
+    return {
+      ref: {
+        kind,
+        nameNormalized: key,
+        printed: pendingAt >= 0 ? fields.pendingPlayerNames[pendingAt] : spelling,
+        order: fields.playerLinks.length + waiting,
+      },
+      unlinkedBefore: waiting,
+    };
+  }
+  const pendingAt = fields.pendingTeamNames.findIndex(matches);
+  return {
+    ref: {
+      kind,
+      nameNormalized: key,
+      printed: pendingAt >= 0 ? fields.pendingTeamNames[pendingAt] : spelling,
+      order: pendingAt >= 0 ? pendingAt : fields.pendingTeamNames.length,
+    },
+    unlinkedBefore: 0,
+  };
+}
+
+/** Does the card still hold this name (waiting, or linked by `nameOnCard`)? */
+export function cardHoldsName(
+  card: Parameters<typeof nameFieldsOf>[0],
+  kind: "player" | "team",
+  key: string,
+): boolean {
+  const fields = nameFieldsOf(card);
+  const matches = isKey(key);
+  return kind === "player"
+    ? fields.pendingPlayerNames.some(matches) || fields.playerLinks.some((l) => matches(l.nameOnCard))
+    : fields.pendingTeamNames.some(matches);
 }

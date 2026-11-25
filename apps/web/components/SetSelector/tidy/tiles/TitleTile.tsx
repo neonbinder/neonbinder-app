@@ -202,8 +202,6 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
       );
       setShortening(false);
       setDraft(null);
-      // The panel (field, Save and apply, Cancel) is gone with the save.
-      answered();
     } finally {
       setSetNameBusy(false);
     }
@@ -456,8 +454,12 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
-                applySetName().catch((err: unknown) =>
-                  setSetNameError(userFacingMessage(err, "Didn't save, try again.")),
+                // The panel (field, Save and apply, Cancel) is gone with the save,
+                // so the walk moves focus on. The button path does the same
+                // through ApplyToAllButton.
+                applySetName().then(
+                  () => answered(),
+                  (err: unknown) => setSetNameError(userFacingMessage(err, "Didn't save, try again.")),
                 );
               } else if (e.key === "Escape") {
                 e.preventDefault();

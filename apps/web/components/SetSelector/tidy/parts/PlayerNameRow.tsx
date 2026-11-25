@@ -1,6 +1,6 @@
 import { useId, useMemo, useRef, useState } from "react";
 import { QuestionMarkCircleIcon } from "@heroicons/react/16/solid";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { formatCareerLine } from "../../../../lib/players/player-description";
@@ -15,18 +15,16 @@ import NameFragmentPanel, {
 } from "../../NameFragmentPanel";
 import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../../../../lib/players/name-limits";
 import type { TidyCardContext, TidyRow } from "../tile-types";
-import { TidyNote, WRAP_LABEL_CLASS } from "../TidyTile";
+import { WRAP_LABEL_CLASS } from "../TidyTile";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
+import { useNameLookup, useWalkMemory } from "../walk-memory";
 import EditLine from "./EditLine";
-import {
-  linkedForText,
-  noteworthyReason,
-  preselectReasonLine,
-  stintYears,
-} from "./copy";
-import { printedOnText } from "./printed-on";
+import { preselectReasonLine, stintYears } from "./copy";
+import NameApplyToAll from "./NameApplyToAll";
+import { printedOnOf, printedOnText } from "./printed-on";
 import type { TidyWrite } from "./tidy-write";
+import { useReopenedFocus } from "./use-reopened-focus";
 import { useSportValue } from "./use-sport-value";
 import WikidataBlock from "./WikidataBlock";
 
@@ -61,32 +59,39 @@ export function PlayerSummary({
   );
 }
 
+/** Answering a name needs the sport it is asked in; with none there is nothing to send. */
+function needSport(sportId: Id<"selectorOptions"> | undefined): Id<"selectorOptions"> {
+  if (!sportId) throw new Error("Pick a sport.");
+  return sportId;
+}
+
 /**
  * One printed player name on the open card, in whatever state it is in:
  *
- *  - unanswered (pink): the question, with every way to answer it inline;
- *  - linked, by us ("Linked for you") or by the operator: the player with Edit
- *    at the end of its line, and a note saying why when NB made a judgement;
- *  - "Not a player": said so, and Edit.
+ *  - waiting (pink): the question, with every way to answer it inline;
+ *  - linked: the player with Edit at the end of its line, and "Apply to all"
+ *    while other cards of this checklist still wait on the name.
  *
- * Every answer is `tidyNames.answerName` / `createPlayer`, scoped by the server
- * to the leaf that printed the name; this component never names a scope.
+ * "Not a player" has its own row (`RuledOutPlayerRow`): the name is off the card
+ * then, so the walk's memory holds it while the card is open.
+ *
+ * Every answer is `tidyNames.answerName` / `createPlayer`, and each links THIS
+ * card only (NEO-656). The card names its own state: a name is linked when it
+ * is a `playerLinks.nameOnCard`, waiting when it is in `pendingPlayerNames`.
  */
 export default function PlayerNameRow({
   row,
   name,
   linked,
-  reason,
   setSportId,
   multi,
   lead = true,
   write,
+  leafCards,
 }: {
   row: TidyRow;
   name: ContextName;
   linked: ContextPlayer | undefined;
-  /** The server's "Linked for you" reason, if any; only a judgement call is noted. */
-  reason: string | undefined;
   setSportId: Id<"selectorOptions"> | undefined;
   /** More than one name on the card: controls carry the name so no two read alike. */
   multi: boolean;
@@ -97,45 +102,34 @@ export default function PlayerNameRow({
    */
   lead?: boolean;
   write: TidyWrite;
+  /** The checklist's cards: "Printed on", and who "Apply to all" would reach. */
+  leafCards: readonly TidyRow[];
 }) {
-  const answer = name.row?.answer;
   const answerName = useMutation(api.tidyNames.answerName);
+  const memory = useWalkMemory();
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
   // When the answer lands the question unmounts under the operator's focus. The
   // walk moves it on (`useAnswered`): never to this row's Edit, where one more
   // Enter would undo the answer.
 
-  const clear = () =>
-    write.run(
-      () =>
-        answerName({
-          cardId: row._id,
-          kind: "player",
-          name: name.printed,
-          answer: { kind: "clear" },
-        }),
-      "Couldn't change that answer. Try again.",
-    );
-
-  const note = noteworthyReason(reason);
-
-  if (answer?.kind === "notEntity") {
-    return (
-      <div ref={wrapRef} role="group" aria-label={`Player ${name.printed}`} className="grid gap-1.5">
-        <EditLine
-          editLabel={`Edit ${name.printed}`}
-          busy={write.busy}
-          onEdit={() => void clear()}
-          textClass="text-sm text-ink-2"
-        >
-          <span className="font-medium text-ink">{name.printed}</span> is not a player.
-        </EditLine>
-      </div>
-    );
-  }
-
-  if (answer?.kind === "linkPlayer") {
+  if (!name.pending) {
+    // The re-opened name gets the facts a pending one has (its own sport, its
+    // set-history pick): `reopenName` asks for them once the write has landed.
+    const clear = () =>
+      memory.reopenName("player", name.printed, () =>
+        write.run(
+          () =>
+            answerName({
+              cardId: row._id,
+              kind: "player",
+              name: name.printed,
+              sportId: needSport(linked?.sportId ?? setSportId),
+              answer: { kind: "clear" },
+            }),
+          "Couldn't change that answer. Try again.",
+        ),
+      );
     return (
       <div ref={wrapRef} role="group" aria-label={`Player ${name.printed}`} className="grid gap-1.5">
         <EditLine
@@ -145,7 +139,15 @@ export default function PlayerNameRow({
         >
           <PlayerSummary player={linked} fallbackName={name.printed} />
         </EditLine>
-        {note && <TidyNote>{linkedForText(note)}</TidyNote>}
+        {name.playerId && (
+          <NameApplyToAll
+            cardId={row._id}
+            kind="player"
+            printed={name.printed}
+            answer={{ kind: "linkPlayer", playerId: name.playerId }}
+            leafCards={leafCards}
+          />
+        )}
       </div>
     );
   }
@@ -159,7 +161,68 @@ export default function PlayerNameRow({
       lead={lead}
       write={write}
       wrapRef={wrapRef}
+      leafCards={leafCards}
     />
+  );
+}
+
+/**
+ * A name the operator ruled out ("Not a player") on the card that is open. The
+ * name is off the card, so the walk's memory is all that holds it; Edit puts it
+ * back to waiting. Gone with the card: once the walk moves on, the card is what
+ * it is.
+ */
+export function RuledOutPlayerRow({
+  row,
+  printed,
+  setSportId,
+  write,
+  leafCards,
+}: {
+  row: TidyRow;
+  printed: string;
+  setSportId: Id<"selectorOptions"> | undefined;
+  write: TidyWrite;
+  leafCards: readonly TidyRow[];
+}) {
+  const memory = useWalkMemory();
+  const answerName = useMutation(api.tidyNames.answerName);
+  const clear = async () => {
+    memory.oweFocus(row._id, "player", printed);
+    const ok = await write.run(
+      () =>
+        answerName({
+          cardId: row._id,
+          kind: "player",
+          name: printed,
+          sportId: needSport(memory.defaultSportFor("player", printed, setSportId)),
+          answer: { kind: "clear" },
+        }),
+      "Couldn't change that answer. Try again.",
+    );
+    // The row re-opens as soon as the card says so, which can be before this
+    // await resolves: the focus is owed first, and given back if the write fails.
+    if (ok) memory.forgetAnswer(row._id, "player", printed);
+    else memory.takeFocusOwed(row._id, "player", printed);
+  };
+  return (
+    <div role="group" aria-label={`Player ${printed}`} className="grid gap-1.5">
+      <EditLine
+        editLabel={`Edit ${printed}`}
+        busy={write.busy}
+        onEdit={() => void clear()}
+        textClass="text-sm text-ink-2"
+      >
+        <span className="font-medium text-ink">{printed}</span> is not a player.
+      </EditLine>
+      <NameApplyToAll
+        cardId={row._id}
+        kind="player"
+        printed={printed}
+        answer={{ kind: "notEntity" }}
+        leafCards={leafCards}
+      />
+    </div>
   );
 }
 
@@ -171,6 +234,7 @@ function UnansweredPlayerName({
   lead,
   write,
   wrapRef,
+  leafCards,
 }: {
   row: TidyRow;
   name: ContextName;
@@ -179,12 +243,17 @@ function UnansweredPlayerName({
   lead: boolean;
   write: TidyWrite;
   wrapRef: React.RefObject<HTMLDivElement | null>;
+  leafCards: readonly TidyRow[];
 }) {
   const answerName = useMutation(api.tidyNames.answerName);
+  // A pick the lookup offered goes through the action that proves it server-side
+  // (the set's history scan cannot run in a mutation).
+  const answerOfferedName = useAction(api.tidyNames.answerOfferedName);
   const createPlayer = useMutation(api.tidyNames.createPlayer);
-  const setNameSport = useMutation(api.tidyNames.setNameSport);
-  const requestLookup = useMutation(api.tidyNames.requestLookup);
   const answered = useAnswered();
+  const memory = useWalkMemory();
+  // Edit on a ruled-out name re-opens this row: focus lands on its first control.
+  useReopenedFocus(memory, row._id, "player", name.printed, wrapRef);
 
   /** A write that ANSWERS the name: on success the walk moves focus on. */
   const answer = async (fn: () => Promise<unknown>, fallback: string): Promise<boolean> => {
@@ -193,11 +262,21 @@ function UnansweredPlayerName({
     return ok;
   };
 
-  const nameRow = name.row;
-  const rowSportId = nameRow?.sportId ?? setSportId;
-  const queryName = nameRow?.name ?? name.printed;
-  const enrichment = nameRow?.enrichment;
-  const status = nameRow?.status ?? "ready";
+  // The Sport chip is local: it is the question's sport for this sitting, never
+  // saved. The facts' sport (an auto-linked player's home) leads, else the set's.
+  const [chipSportId, setChipSportId] = useState<Id<"selectorOptions"> | undefined>(undefined);
+  const rowSportId = chipSportId ?? memory.defaultSportFor("player", name.printed, setSportId);
+  const queryName = name.printed;
+  const { lookup, retry, askFull } = useNameLookup({
+    memory,
+    cardId: row._id,
+    kind: "player",
+    name: name.printed,
+    sportId: rowSportId,
+  });
+  const enrichment = lookup?.enrichment;
+  const lookupStatus = lookup?.status ?? "pending";
+  const lookupFailed = rowSportId !== undefined && lookupStatus === "error";
   const suffix = multi ? ` ${name.printed}` : "";
 
   const [linkOpen, setLinkOpen] = useState(false);
@@ -236,7 +315,7 @@ function UnansweredPlayerName({
   const exactRows = (matches ?? []).filter((m) => m.confidence === "exact");
   const exactSingle = exactRows.length === 1 && !exactRows[0].matchedAlias ? exactRows[0] : null;
 
-  // NEO-254: the players already filed under this exact name. The server's own
+  // NEO-254: the players already filed under this exact name. The lookup's own
   // list when it has one, else the live exact rows when there is more than one.
   const storedCandidates: SameNameCandidate[] =
     (enrichment?.existingCandidates?.length ?? 0) >= 2 ? (enrichment?.existingCandidates ?? []) : [];
@@ -277,23 +356,37 @@ function UnansweredPlayerName({
       !(pickStep && sameNameCandidates.some((c) => c.playerId === m._id)),
   );
   const creating = !pickStep && !showPreselect && !showExact;
-  // Nothing is created until both lookups have answered: either can still turn
-  // "new" into a link, a same-name pick or the fragment question, and a created
-  // player can't be taken back.
-  const checking = rowSportId !== undefined && (nearMatches === undefined || fragmentCheck === undefined);
+  // Nothing is created until the lookups have answered: any of them can still
+  // turn "new" into a link, a same-name pick or the fragment question, and a
+  // created player can't be taken back. The Wikidata lookup carries the set's
+  // history picks, so it is one of them (a failed one is not: Try again is
+  // offered and the rest still decide).
+  const checking =
+    rowSportId !== undefined &&
+    (nearMatches === undefined || fragmentCheck === undefined || lookupStatus === "pending");
+
+  // A player the lookup itself offered may be in another sport: the server
+  // takes the link without the sport check only for those (`offered`).
+  const offeredIds = new Set<string>([
+    ...(preselect ? [preselect.playerId as string] : []),
+    ...(enrichment?.existingCandidates ?? []).map((c) => c.playerId as string),
+  ]);
 
   const link = (playerId: string) =>
     answer(
       async () => {
-        await answerName({
+        const offered = offeredIds.has(playerId);
+        await (offered ? answerOfferedName : answerName)({
           cardId: row._id,
           kind: "player",
           name: name.printed,
+          sportId: needSport(rowSportId),
           answer: {
             kind: "linkPlayer",
             playerId: playerId as Id<"players">,
             ...(crossSport && addSetSport ? { addSetSport: true as const } : {}),
           },
+          ...(offered ? { offered: true as const } : {}),
         });
         setLinkOpen(false);
       },
@@ -313,46 +406,64 @@ function UnansweredPlayerName({
     ),
   );
 
+  // What the operator saw the lookup find seeds the new player (B14).
+  const seen =
+    enrichment &&
+    (enrichment.wikidataId !== undefined ||
+      enrichment.isHallOfFame !== undefined ||
+      (enrichment.careerTeams?.length ?? 0) > 0)
+      ? {
+          ...(enrichment.wikidataId !== undefined ? { wikidataId: enrichment.wikidataId } : {}),
+          ...(enrichment.isHallOfFame !== undefined ? { isHallOfFame: enrichment.isHallOfFame } : {}),
+          ...(enrichment.careerTeams ? { careerTeams: enrichment.careerTeams } : {}),
+        }
+      : undefined;
+
   const create = (oneNamePlayer: boolean) =>
     checking ? Promise.resolve(false) : answer(
-      () =>
-        createPlayer({
+      async () => {
+        const made = await createPlayer({
           cardId: row._id,
           name: name.printed,
+          sportId: needSport(rowSportId),
           ...(oneNamePlayer ? { oneNamePlayer: true as const } : {}),
           ...(excludedNames.length > 0 ? { excludedCareerTeamNames: excludedNames } : {}),
-        }),
+          ...(seen ? { enrichment: seen } : {}),
+        });
+        memory.rememberMadePlayer(row._id, made.playerId);
+      },
       "Couldn't add that player. Try again.",
     );
 
-  const notAPlayer = () =>
-    answer(
+  const notAPlayer = async () => {
+    const ok = await answer(
       () =>
         answerName({
           cardId: row._id,
           kind: "player",
           name: name.printed,
+          sportId: needSport(rowSportId),
           answer: { kind: "notEntity" },
         }),
       "Couldn't save that answer. Try again.",
     );
+    if (ok) memory.rememberAnswer(row._id, "player", name.printed, { kind: "notEntity", printed: name.printed });
+  };
 
   const addAnyway = () => {
     setCreateAnyway(true);
-    // Ask Wikidata now: a name born without a lookup gets one at this press.
-    void write.run(
-      () => requestLookup({ cardId: row._id, kind: "player", name: name.printed }),
-      "Couldn't ask for the lookup. Try again.",
-    );
+    // The first answer held Wikidata back for a same-name choice or a preselect.
+    askFull();
   };
 
-  const switchSport = (sportId: Id<"selectorOptions">) =>
-    write.run(
-      () => setNameSport({ cardId: row._id, kind: "player", name: name.printed, sportId }),
-      "Couldn't switch the sport. Try again.",
-    );
+  const switchSport = (sportId: Id<"selectorOptions">) => {
+    // A new question: the old answer's career ticks and "add anyway" do not carry.
+    setChipSportId(sportId);
+    setExcludedCareer(new Set());
+    setCreateAnyway(false);
+  };
 
-  const printedOn = printedOnText(name.printedOn);
+  const printedOn = printedOnText(printedOnOf(leafCards, "player", name.printed));
   const disabled = write.busy ? true : undefined;
   // The reason line under the suggestion, and the id the suggestion's button
   // is described by while that line is on screen.
@@ -406,20 +517,26 @@ function UnansweredPlayerName({
       {/* Mounted for the whole life of the row, so the sentence is a change to a
           live region that is already in the page. */}
       <p role="status" className="text-xs italic text-ink-3 empty:hidden">
-        {creating && !linkOpen && checking ? "Checking for players by that name…" : null}
+        {creating && !linkOpen && checking
+          ? "Checking for players by that name…"
+          : lookupFailed && !linkOpen
+            ? "Couldn't look this one up."
+            : null}
       </p>
 
       {creating && !linkOpen && !checking && (
         <div className="grid gap-1">
           <p className="text-sm text-ink wrap-anywhere">{`“${queryName}” is new to NeonBinder.`}</p>
-          <WikidataBlock
-            status={status}
-            enrichment={enrichment}
-            excludedCareerTeams={excludedCareer}
-            onToggleCareerTeam={toggleCareerTeam}
-            disabled={write.busy}
-            labelSuffix={suffix}
-          />
+          {!lookupFailed && (
+            <WikidataBlock
+              status={lookupStatus}
+              enrichment={enrichment}
+              excludedCareerTeams={excludedCareer}
+              onToggleCareerTeam={toggleCareerTeam}
+              disabled={write.busy}
+              labelSuffix={suffix}
+            />
+          )}
         </div>
       )}
 
@@ -537,7 +654,19 @@ function UnansweredPlayerName({
           >
             Not a player (checklist, team card, stadium)
           </NeonButton>
-          {nameRow && setSportId && rowSportId && (
+          {lookupFailed && (
+            <NeonButton
+              size="1"
+              variant="secondary"
+              outline
+              aria-label={`Try again${suffix}`}
+              aria-disabled={disabled}
+              onClick={retry}
+            >
+              Try again
+            </NeonButton>
+          )}
+          {setSportId && rowSportId && (
             <span className="text-xs text-ink-3">
               <SportSwitch
                 value={rowSportId}
@@ -545,7 +674,7 @@ function UnansweredPlayerName({
                 disabled={write.busy}
                 label={multi ? `Sport for ${name.printed}` : "Sport for this name"}
                 prefix="Sport:"
-                onChange={(sportId) => void switchSport(sportId)}
+                onChange={switchSport}
               />
             </span>
           )}

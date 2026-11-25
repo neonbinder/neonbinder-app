@@ -45,8 +45,11 @@
 //     and the operator links it to the club the checklist means, Oakland Athletics
 //     (1968-2024), with the remember-box OFF so no alias is saved. No other card's
 //     Team tile is pink: every name pair brought its team. Frank Thomas is two players
-//     on file; the Hall of Famer is linked for you, said in a purple note when his
-//     card is on the walk. The save reads back: numbers stay SIG-xx, #SIG-BW is
+//     on file; the Hall of Famer is linked without asking, so when his card is on the
+//     walk its Player tile is not pink, and no "Linked for you" note says why (NEO-656
+//     J1). A card whose Career tile is up (a catalogue player's career not covering the
+//     card's team and year, read live, J5) is Skipped: Save & next would write a stint
+//     onto a shared catalogue player. The save reads back: numbers stay SIG-xx, #SIG-BW is
 //     Kansas City Royals, #SIG-JW is Oakland Athletics.
 //   PHASE C (NEO-496 plan decision 4), the SET's own checklist in Panini's
 //     spreadsheet layout (an xlsx with the credit line above the header, built
@@ -69,7 +72,8 @@
 // and C), so a re-run fails at "No cards in this checklist yet." by name:
 // re-seed first. In PHASES A-A2 every player and
 // club but Oakland A's is on the catalogue, so no player is minted; the walk writes only the
-// club link, an autograph format where a card asks for one, and "seen" marks (Save & next).
+// club link and an autograph format where a card asks for one (a card with a Career gap is
+// Skipped, so no stint is written; NEO-656 keeps no "seen" mark).
 // PHASE C leaves Unleashed's walk with Save for later, so it mints nothing either.
 //
 // Not a hand-rolled drill by choice (R9): the helpers drill a Base or a brand's
@@ -463,6 +467,7 @@ test(
     const fileNumber = new Map(checklistRows(CHECKLISTS.signatureSeries2026MisspelledLowder).map((r) => [bscNumber(r), r.number]));
     const seen: string[] = [];
     let savedWithTheNote = 0;
+    let careerSkipped = 0;
     // The walk's order is (ready, number), not fixed: visit every card it shows, bounded by the set's size.
     for (let i = 0; i <= MIXED.cards; i++) {
       const done = tidyFooterButton(page, "done");
@@ -521,10 +526,11 @@ test(
       }
 
       if (number === "SIG-FT") {
-        // Two Frank Thomases on file: the Hall of Famer was linked without asking, and the tile says why.
-        await expect(tidyTile(page, "Player").getByRole("note").filter({ hasText: /^Linked for you/ })).toHaveText(
-          "Linked for you: none of the others on file played that year, but this one is in the Hall of Fame",
-        );
+        // Two Frank Thomases on file: the Hall of Famer was linked without asking, so nothing on the
+        // Player tile waits; J1 (NEO-656): no "Linked for you" note says why.
+        await expect(tidyTile(page, "Player")).toBeVisible();
+        await expect(pinkTile(page, "Player")).toHaveCount(0);
+        await expect(tidyTile(page, "Player").getByRole("note").filter({ hasText: /^Linked for you/ })).toHaveCount(0);
       }
 
       // An autograph insert: a card that asks how it is signed gets an answer (the old wizard's
@@ -532,7 +538,12 @@ test(
       await answerPinkAutographTile(page);
       const save = tidyFooterButton(page, "saveAndNext", { usable: true });
       await expect(save.or(mustFixLine(page)).first()).toBeVisible();
-      if (await save.isVisible()) {
+      if ((await save.isVisible()) && (await tidyTile(page, "Career").count()) > 0) {
+        // NEO-656 D14: Save & next over an open Career gap adds a stint to the (shared catalogue)
+        // player. This spec writes no career, so the card is Skipped and stays blue.
+        await skipCard(page);
+        careerSkipped++;
+      } else if (await save.isVisible()) {
         await expect(numbersNote).toBeVisible();
         await saveAndNext(page);
         savedWithTheNote++;
@@ -546,7 +557,7 @@ test(
       expect.arrayContaining(["SIG-RL", "SIG-JW"]),
     );
     expect(savedWithTheNote, "a card saved with Save & next while its numbers note was up").toBeGreaterThan(0);
-    test.info().annotations.push({ type: "walk", description: `cards on the walk: ${seen.join(", ")}; saved with the note: ${savedWithTheNote}` });
+    test.info().annotations.push({ type: "walk", description: `cards on the walk: ${seen.join(", ")}; saved with the note: ${savedWithTheNote}; skipped for a career gap: ${careerSkipped}` });
     await finishTidyWalk(page);
 
     // ── READ BACK: the saved cards ──
@@ -802,8 +813,9 @@ async function openDonrussSet(page: Page, env: Parameters<typeof drillToColdManu
  * "Athletics" row is not) from "Search all teams", with the remember-box unticked so no alias is
  * saved. The link saves as it is made (J1).
  *
- * Contract: ENTRY a settled card whose Team tile asks about "Oakland A's". EXIT the row reads linked
- * (the club's name and its "Edit <club>", NEO-645 C1), and the Team tile is no longer pink.
+ * Contract: ENTRY a settled card whose Team tile asks about "Oakland A's". EXIT the card's team line
+ * is the club (its "Edit <club>"), the printed name's row is gone (NEO-656 B11: a linked team has no
+ * per-name row), and the Team tile is no longer pink.
  */
 async function linkClubOnTheWalk(page: Page): Promise<void> {
   await expect(pinkTile(page, "Team"), "the club no one has on file holds the Team tile").toHaveCount(1);
@@ -821,8 +833,10 @@ async function linkClubOnTheWalk(page: Page): Promise<void> {
   await row.getByRole("combobox", { name: "Search all teams" }).click();
   // Empty and focused, the combobox lists the row's near matches by label: the era is in the name.
   await page.getByRole("option", { name: /^Oakland Athletics .*1968.2024/ }).click();
-  await expect(row.getByText("Oakland Athletics", { exact: true })).toBeVisible();
-  await expect(row.getByRole("button", { name: "Edit Oakland Athletics", exact: true })).toBeVisible();
-  await expect(row.getByRole("checkbox")).toHaveCount(0);
+  const linked = tidyTile(page, "Team").getByRole("group", { name: "Team Oakland Athletics", exact: true });
+  await expect(linked.getByText("Oakland Athletics", { exact: true })).toBeVisible();
+  await expect(linked.getByRole("button", { name: "Edit Oakland Athletics", exact: true })).toBeVisible();
+  await expect(row, "the printed name's row goes once it is linked").toHaveCount(0);
+  await expect(tidyTile(page, "Team").getByRole("checkbox")).toHaveCount(0);
   await expect(pinkTile(page, "Team")).toHaveCount(0);
 }

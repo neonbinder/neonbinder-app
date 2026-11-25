@@ -188,46 +188,7 @@ async function seed(t: T): Promise<Fixture> {
       lastUpdated: NOW,
     });
 
-    // ── staged review, candidates, skips ───────────────────────────────────
-    const qPlayer = await ctx.db.insert("entityReviewQueue", {
-      selectorOptionId: insA,
-      batchId: "batch-a",
-      createdByUserId: "admin",
-      kind: "player",
-      name: "Pat Example",
-      sportId: sport,
-      status: "ready",
-    });
-    const qTeam = await ctx.db.insert("entityReviewQueue", {
-      selectorOptionId: insA,
-      batchId: "batch-a",
-      createdByUserId: "admin",
-      kind: "team",
-      name: "Example Farm Club",
-      sportId: sport,
-      status: "pending",
-      source: { kind: "careerTeamOf", playerRowId: qPlayer },
-    });
-    // Outside: one on the kept variant type, one on the sibling.
-    await ctx.db.insert("entityReviewQueue", {
-      selectorOptionId: insertVt,
-      batchId: "batch-vt",
-      createdByUserId: "admin",
-      kind: "player",
-      name: "Someone",
-      sportId: sport,
-      status: "ready",
-    });
-    await ctx.db.insert("entityReviewQueue", {
-      selectorOptionId: baseVt,
-      batchId: "batch-base",
-      createdByUserId: "admin",
-      kind: "player",
-      name: "Someone Else",
-      sportId: sport,
-      status: "ready",
-    });
-
+    // ── staged candidates ──────────────────────────────────────────────────
     const candidate = (selectorOptionId: SO, cardNumber: string) =>
       ctx.db.insert("checklistCandidates", {
         selectorOptionId,
@@ -243,31 +204,6 @@ async function seed(t: T): Promise<Fixture> {
       });
     const cand = await candidate(parA2, "CP-9");
     await candidate(baseP, "9");
-
-    const skip = (selectorOptionId: SO, name: string) =>
-      ctx.db.insert("entityReviewSkips", {
-        selectorOptionId,
-        kind: "player",
-        nameNormalized: name.toLowerCase(),
-        name,
-        skippedAt: NOW,
-        skippedByUserId: "admin",
-      });
-    const skipIn = await skip(insB, "CHECKLIST");
-    await skip(baseVt, "CHECKLIST");
-
-    // ── NEO-645: a name row in the doomed subtree, one beside it on the base ──
-    const tidyName = (scopeId: SO, name: string) =>
-      ctx.db.insert("tidyNames", {
-        scopeId,
-        kind: "player",
-        nameNormalized: name.toLowerCase(),
-        name,
-        sportId: sport,
-        status: "ready",
-      });
-    const tidyIn = await tidyName(insB, "Someone Tidy");
-    await tidyName(baseVt, "Someone Tidy");
 
     // ── sync status: one keyed on a subtree row, one on the variant type
     //    (its insert column, naming a subtree row), one on the sibling ─────
@@ -335,11 +271,7 @@ async function seed(t: T): Promise<Fixture> {
         cardCrossListings: [xOut, xIn, xInternal],
         // NEO-313 — the fixture's cards are inserted directly, so no index rows.
         cardPlayerLinks: [],
-        entityReviewQueue: [qPlayer, qTeam],
         checklistCandidates: [cand],
-        entityReviewSkips: [skipIn],
-        tidyNames: [tidyIn],
-        cardPrintedNames: [],
         selectorSyncStatus: [statusIn, statusVt],
         publishedChecklistLinks: [linkInsA, linkParA2],
       },
@@ -403,23 +335,6 @@ async function danglingReferences(t: T): Promise<string[]> {
       await check(`cardCrossListings ${row._id}.cardChecklistId`, row.cardChecklistId);
       await check(`cardCrossListings ${row._id}.selectorOptionId`, row.selectorOptionId);
     }
-    for (const row of await ctx.db.query("entityReviewQueue").collect()) {
-      await check(`entityReviewQueue ${row._id}.selectorOptionId`, row.selectorOptionId);
-      await check(`entityReviewQueue ${row._id}.sportId`, row.sportId);
-      if (row.source?.kind === "careerTeamOf") {
-        await check(`entityReviewQueue ${row._id}.source`, row.source.playerRowId);
-      }
-      if (row.source?.kind === "leagueOf") {
-        await check(`entityReviewQueue ${row._id}.source`, row.source.teamRowId);
-      }
-    }
-    for (const row of await ctx.db.query("entityReviewSkips").collect()) {
-      await check(`entityReviewSkips ${row._id}.selectorOptionId`, row.selectorOptionId);
-    }
-    for (const row of await ctx.db.query("tidyNames").collect()) {
-      await check(`tidyNames ${row._id}.scopeId`, row.scopeId);
-      await check(`tidyNames ${row._id}.sportId`, row.sportId);
-    }
     for (const row of await ctx.db.query("checklistCandidates").collect()) {
       await check(`checklistCandidates ${row._id}.selectorOptionId`, row.selectorOptionId);
     }
@@ -480,10 +395,7 @@ const EXPECTED_TOTALS = {
   selectorOptions: { total: 4, insert: 2, parallel: 2, other: 0 },
   cardChecklist: 7,
   cardCrossListings: 3,
-  entityReviewQueue: 2,
   checklistCandidates: 1,
-  entityReviewSkips: 1,
-  tidyNames: 1,
   selectorSyncStatus: 2,
 };
 
@@ -521,8 +433,7 @@ describe("NEO-304: dry run", () => {
           cards: 3,
           cardsWithImages: 1,
           crossListingsOut: 1,
-          reviewQueue: 2,
-          syncStatus: 1,
+            syncStatus: 1,
         },
       },
       {
@@ -564,8 +475,7 @@ describe("NEO-304: dry run", () => {
           cards: 3,
           cardsWithImages: 1,
           crossListingsOut: 1,
-          reviewQueue: 2,
-          syncStatus: 1,
+            syncStatus: 1,
         },
       },
       {
@@ -575,8 +485,7 @@ describe("NEO-304: dry run", () => {
         parentId: f.insertVt,
         bsc: {},
         sportlots: {},
-        // A legacy skip and (NEO-645) a name row: both are the operator's rulings.
-        holds: { cards: 1, skips: 2 },
+        holds: { cards: 1 },
       },
       {
         id: f.parA1,
@@ -741,10 +650,7 @@ describe("NEO-304: armed run", () => {
         selectorOptions: { total: 0, insert: 0, parallel: 0, other: 0 },
         cardChecklist: 0,
         cardCrossListings: 0,
-        entityReviewQueue: 0,
         checklistCandidates: 0,
-        entityReviewSkips: 0,
-        tidyNames: 0,
         selectorSyncStatus: 0,
       },
     });
@@ -791,10 +697,7 @@ describe("NEO-304: armed run", () => {
       selectorOptions: { total: 0, insert: 0, parallel: 0, other: 0 },
       cardChecklist: 0,
       cardCrossListings: 0,
-      entityReviewQueue: 0,
       checklistCandidates: 0,
-      entityReviewSkips: 0,
-      tidyNames: 0,
       selectorSyncStatus: 0,
     };
     let calls = 0;
@@ -1109,47 +1012,6 @@ describe("NEO-304 security audit conditions", () => {
     expect(resolveTimeBudgetMs(-5)).toBe(0);
     expect(resolveTimeBudgetMs(0)).toBe(0);
     expect(resolveTimeBudgetMs(2_000)).toBe(2_000);
-  });
-
-  test("staged review rows nested past the depth cap refuse the page instead of dangling", async () => {
-    // Condition 3. No batch builds a chain this deep; if one exists, skipping
-    // its tail would delete a row the tail still points at.
-    vi.stubEnv(ENV_FLAG, "true");
-    const t = convexTest(schema, modules);
-    const f = await seed(t);
-    await t.run(async (ctx) => {
-      let previous = await ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: f.insB,
-        batchId: "deep",
-        createdByUserId: "admin",
-        kind: "player",
-        name: "Root",
-        sportId: f.sport,
-        status: "ready",
-      });
-      for (let i = 0; i < 10; i += 1) {
-        previous = await ctx.db.insert("entityReviewQueue", {
-          selectorOptionId: f.insB,
-          batchId: "deep",
-          createdByUserId: "admin",
-          kind: "team",
-          name: `Link ${i}`,
-          sportId: f.sport,
-          status: "ready",
-          source: { kind: "careerTeamOf", playerRowId: previous },
-        });
-      }
-    });
-    const before = await snapshot(t);
-
-    await expect(
-      t.mutation(internal.wipeVariantTypeSubtree.wipeNodeRefsPage, {
-        variantTypeId: f.insertVt,
-        confirm: phraseFor(f.insertVt),
-        nodeId: f.insB,
-      }),
-    ).rejects.toThrow(/nest deeper/);
-    expect(await snapshot(t)).toEqual(before);
   });
 
   test("a variation with variations of its own is a blocker: listed, then refused", async () => {

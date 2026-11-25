@@ -9,11 +9,14 @@
  *
  * The walk is every card whose attention level is not "none": the same rule
  * the badge, the pill count and the grid filter use, so count = walk = pill.
+ * NEO-656: the level is read from the data every time, including the career
+ * gaps (`useLeafCareerGaps`), so a card the sitting saved still counts while
+ * anything on it holds.
  *
- *   1. lookups finished first. A card whose automatic team lookup, or whose
- *      name lookups (`tidyNames.lookupsPending`), have not landed yet sorts
- *      after the ones that have, so the operator does not open a half-loaded
- *      card while a loaded one is waiting;
+ *   1. lookups finished first. A card whose automatic team lookup has not
+ *      landed yet sorts after the ones that have, so the operator does not open
+ *      a half-loaded card while a loaded one is waiting. (NEO-656: the name
+ *      lookups run when a card opens, so they no longer order the walk.)
  *   2. then the leaf's own order (`leafRank`; the Base checklist first). One
  *      checklist is one leaf, so this is a constant today. It is a parameter
  *      so a walk that spans leaves needs no new sort;
@@ -34,18 +37,17 @@
  * card skipped last time is offered again. A refresh keeps them.
  */
 import { compareCardNumbers } from "@/lib/cards/card-number";
-import { normalizeEntityName } from "@/lib/entities/normalize-name";
 import {
   deriveCardAttention,
   isAwaitingTeamLookup,
   type AttentionCardRow,
+  type LiveCareerGap,
 } from "../card-attention";
 import type { TidyAttention } from "./tile-types";
 
-/** What `tidyNames.lookupsPending` answers, as the walk reads it. */
-export type PendingLookups = {
-  names: ReadonlyArray<{ kind: "player" | "team"; nameNormalized: string }>;
-};
+/** The career gaps read live, by card id (`useLeafCareerGaps`). A card with none is absent. */
+export type CareerGapsByCard = ReadonlyMap<string, readonly LiveCareerGap[]>;
+const NO_GAPS: CareerGapsByCard = new Map();
 
 /** The row fields the walk reads, on top of what the attention rule reads. */
 export type WalkRow = AttentionCardRow & {
@@ -54,36 +56,11 @@ export type WalkRow = AttentionCardRow & {
 };
 
 /**
- * One key for a name row: its kind and its normalised spelling. One function,
- * so the day the name rows move to another normaliser it is one edit here.
+ * Have this card's lookups finished? Its automatic team lookup has answered.
+ * A lookup never blocks a card, it only moves it later.
  */
-export function lookupKey(kind: "player" | "team", name: string): string {
-  return `${kind}:${normalizeEntityName(name.trim())}`;
-}
-
-/** The set of `lookupKey`s still looking, from the subscribed read. */
-export function pendingLookupKeys(pending: PendingLookups | undefined): ReadonlySet<string> {
-  const keys = new Set<string>();
-  for (const n of pending?.names ?? []) keys.add(`${n.kind}:${n.nameNormalized}`);
-  return keys;
-}
-
-/**
- * Have this card's lookups finished? Its automatic team lookup has answered,
- * and none of its pending names has a name row still looking. Unknown (the
- * read has not arrived, or it returned `more`) counts as finished: a lookup
- * never blocks a card, it only moves it later.
- */
-export function lookupsFinished(row: WalkRow, pendingKeys: ReadonlySet<string>): boolean {
-  if (isAwaitingTeamLookup(row)) return false;
-  if (pendingKeys.size === 0) return true;
-  for (const name of row.pendingPlayerNames ?? []) {
-    if (pendingKeys.has(lookupKey("player", name))) return false;
-  }
-  for (const name of row.pendingTeamNames ?? []) {
-    if (pendingKeys.has(lookupKey("team", name))) return false;
-  }
-  return true;
+export function lookupsFinished(row: WalkRow): boolean {
+  return !isAwaitingTeamLookup(row);
 }
 
 export type WalkEntry<Row extends WalkRow> = {
@@ -96,14 +73,14 @@ export type WalkEntry<Row extends WalkRow> = {
 /** Every card that needs a person, in walk order. */
 export function walkOrder<Row extends WalkRow>(
   rows: readonly Row[],
-  pendingKeys: ReadonlySet<string> = new Set(),
+  careerGaps: CareerGapsByCard = NO_GAPS,
   leafRank: (row: Row) => number = () => 0,
 ): WalkEntry<Row>[] {
   const entries: WalkEntry<Row>[] = [];
   for (const row of rows) {
-    const attention = deriveCardAttention(row);
+    const attention = deriveCardAttention(row, { careerGaps: careerGaps.get(row._id) });
     if (attention.level === "none") continue;
-    entries.push({ row, attention, ready: lookupsFinished(row, pendingKeys) });
+    entries.push({ row, attention, ready: lookupsFinished(row) });
   }
   // The rank is computed once per card, not inside the comparator.
   const rank = new Map(entries.map((e) => [e.row._id, leafRank(e.row)]));
@@ -121,9 +98,15 @@ export type WalkSitting = {
   passed: readonly string[];
   /** Every card shown, in the order shown, for Back. */
   trail: readonly string[];
+  /**
+   * The skipped cards "Review the N skipped" offered again and not yet left.
+   * Kept so a refresh during a review does not read as "No cards left" while
+   * they remain.
+   */
+  reviewing: readonly string[];
 };
 
-export const EMPTY_SITTING: WalkSitting = { passed: [], trail: [] };
+export const EMPTY_SITTING: WalkSitting = { passed: [], trail: [], reviewing: [] };
 
 /** The trail is capped; a leaf has at most ~1,000 cards and ids are short. */
 const TRAIL_MAX = 1200;
@@ -181,13 +164,36 @@ export function cardsLeft(
   return order.reduce((n, { row }) => n + (passed.has(row._id) ? 0 : 1), 0);
 }
 
-/** Cards the sitting passed that are still flagged: "not ready to list". */
+/**
+ * Cards the sitting passed that are still pink: "not ready to list". NEO-656
+ * (B20): counted by the card's level NOW, not by which button was pressed. A
+ * card fixed elsewhere in the sitting is not in `order` and drops out.
+ */
 export function cardsSkipped(
-  order: ReadonlyArray<{ row: { _id: string } }>,
+  order: ReadonlyArray<{ row: { _id: string }; attention: { level: string } }>,
   sitting: WalkSitting,
 ): number {
   const passed = new Set(sitting.passed);
-  return order.reduce((n, { row }) => n + (passed.has(row._id) ? 1 : 0), 0);
+  return order.reduce(
+    (n, { row, attention }) => n + (passed.has(row._id) && attention.level === "fix" ? 1 : 0),
+    0,
+  );
+}
+
+/**
+ * Cards the sitting passed that are blue and nothing worse: "still to check". A
+ * saved card with a blue item left (a career the set's year cannot hold) is
+ * still flagged by the data, so it is counted here and never as skipped.
+ */
+export function cardsStillToCheck(
+  order: ReadonlyArray<{ row: { _id: string }; attention: { level: string } }>,
+  sitting: WalkSitting,
+): number {
+  const passed = new Set(sitting.passed);
+  return order.reduce(
+    (n, { row, attention }) => n + (passed.has(row._id) && attention.level === "check" ? 1 : 0),
+    0,
+  );
 }
 
 /** "31 cards left" / "1 card left" / "No cards left". */
@@ -201,14 +207,23 @@ export function cardsSkippedText(skipped: number): string {
   return `${skipped} ${skipped === 1 ? "card" : "cards"} skipped, not ready to list`;
 }
 
+/** "2 cards still to check". */
+export function cardsStillToCheckText(count: number): string {
+  return `${count} ${count === 1 ? "card" : "cards"} still to check`;
+}
+
 /**
  * The end screen's tally: "9 cards fixed, 2 skipped." A sitting with nothing
- * skipped gets the sign-off too. The verdict line ("6 cards skipped, not ready
- * to list" / "All tidy") stays the status line; this is the count beside it.
+ * skipped or left to check gets the sign-off too. The verdict line ("6 cards
+ * skipped, not ready to list" / "All tidy") stays the status line; this is the
+ * count beside it. Blue cards left (`stillToCheck`) are said only when there are
+ * some: "9 cards fixed, 0 skipped, 1 still to check."
  */
-export function cardsTallyText(fixed: number, skipped: number): string {
-  const head = `${fixed} ${fixed === 1 ? "card" : "cards"} fixed, ${skipped} skipped.`;
-  return skipped === 0 && fixed > 0 ? `${head} Totally rad.` : head;
+export function cardsTallyText(fixed: number, skipped: number, stillToCheck = 0): string {
+  const head = `${fixed} ${fixed === 1 ? "card" : "cards"} fixed, ${skipped} skipped${
+    stillToCheck > 0 ? `, ${stillToCheck} still to check` : ""
+  }.`;
+  return skipped === 0 && stillToCheck === 0 && fixed > 0 ? `${head} Totally rad.` : head;
 }
 
 /** "3 to fix · 1 to check", with either half left out at zero. Empty at none. */
@@ -249,10 +264,15 @@ export function loadSitting(leafId: string): WalkSitting {
     if (!raw) return EMPTY_SITTING;
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null) return EMPTY_SITTING;
-    const { passed, trail } = parsed as { passed?: unknown; trail?: unknown };
+    const { passed, trail, reviewing } = parsed as {
+      passed?: unknown;
+      trail?: unknown;
+      reviewing?: unknown;
+    };
     return {
       passed: isIdList(passed) ? passed : [],
       trail: isIdList(trail) ? trail : [],
+      reviewing: isIdList(reviewing) ? reviewing : [],
     };
   } catch {
     return EMPTY_SITTING;

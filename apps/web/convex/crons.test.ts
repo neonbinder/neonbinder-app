@@ -18,16 +18,11 @@ describe("crons", () => {
   });
 });
 
-// NEO-645: a name lookup's output is working state; without the reaper it
-// would be kept forever.
+// NEO-656: nothing about a name lookup is stored any more, so neither tidy
+// cron (aging a stranded lookup, forgetting a day-old one) exists.
 describe("crons: tidy name lookups", () => {
-  test("forgets expired name lookup output hourly through tidyNames.sweepExpiredLookupOutput", () => {
-    const job = crons.crons["forget expired name lookup output"];
-    expect(job).toBeDefined();
-    expect(job.schedule).toEqual({ type: "interval", hours: 1 });
-    expect(getFunctionName(job.name)).toBe(
-      getFunctionName(internal.tidyNames.sweepExpiredLookupOutput),
-    );
-    expect(job.args).toEqual([{}]);
+  test("no cron reaches the tidy name rows", () => {
+    expect(crons.crons["age stale name lookups"]).toBeUndefined();
+    expect(crons.crons["forget expired name lookup output"]).toBeUndefined();
   });
 });
