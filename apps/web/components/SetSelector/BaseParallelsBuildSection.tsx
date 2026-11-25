@@ -5,6 +5,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
+import { ModeRadioGroup } from "../primitives/ModeRadioGroup";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
 import ParallelBuildPanel, {
@@ -83,6 +84,34 @@ export function buildAllLabel(
   return total === undefined
     ? `Build parallels from ${source}`
     : `Build ${plural(total, "parallel", "parallels")} from ${source}`;
+}
+
+/**
+ * NEO-673 — a set with no Base asks which of its parallels the others copy
+ * from. The question is the group's label; the parallel-row stand-in is
+ * described by it too (`BASE_PARALLELS_REASON_ID`).
+ */
+export const PICK_SOURCE_QUESTION = "Which parallel do the others copy from?";
+/** The pick's button: names the choice once there is one. */
+export function copyFromLabel(sourceValue: string | undefined): string {
+  return sourceValue ? `Copy from ${sourceValue}` : "Copy from…";
+}
+export function copyingFromText(sourceValue: string): string {
+  return `Copying from ${sourceValue}`;
+}
+export const CHANGE_SOURCE_LABEL = "Change";
+export const CHANGE_SOURCE_ARIA = "Change the parallel the others copy from";
+export const CANCEL_CHANGE_LABEL = "Cancel";
+export const CANCEL_CHANGE_ARIA = "Cancel changing the parallel the others copy from";
+export const PICK_FAILED_TEXT = "Couldn't save that choice. Try again.";
+
+/** A refusal's own sentence (a ConvexError's data), else the fixed one. */
+export function pickFailedText(error: unknown): string {
+  const data =
+    typeof error === "object" && error !== null
+      ? (error as { data?: unknown }).data
+      : undefined;
+  return typeof data === "string" && data.length > 0 ? data : PICK_FAILED_TEXT;
 }
 
 export const LOADING_TEXT = "Counting parallels…";
@@ -281,6 +310,26 @@ export default function BaseParallelsBuildSection({
   /** The list could not be read when the run started, so nothing was built. */
   const [startError, setStartError] = useState<string | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
+  /** NEO-673 — "Change" is open. In-view state, not navigation. */
+  const [changing, setChanging] = useState(false);
+  /** The parallel picked in the list; empty until one is. */
+  const [choice, setChoice] = useState("");
+  const [savingChoice, setSavingChoice] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
+  const changeRef = useRef<HTMLButtonElement | null>(null);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+  /** Where focus goes after the next commit: the list (opened) or Change (closed). */
+  const focusAfterRef = useRef<"list" | "change" | null>(null);
+  useEffect(() => {
+    const where = focusAfterRef.current;
+    if (!where) return;
+    focusAfterRef.current = null;
+    if (where === "change") changeRef.current?.focus();
+    else
+      pickerRef.current
+        ?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')
+        ?.focus();
+  });
   /**
    * The trigger goes `inert` under the confirm, and going inert blurs it, so
    * the dialog's own restore captured `<body>`. Put focus back here after the
@@ -302,13 +351,27 @@ export default function BaseParallelsBuildSection({
     return text ? [{ id: entry._id, text }] : [];
   });
   const ownRunLive = showsRun && runner.active;
+  const chosen = source?.kind === "chosenParallel";
+  // NEO-673: the list of parallels to pick from. While changing, the current
+  // pick is not in `parallels` (the server leaves the source out), so it
+  // leads the list, preselected: it is the standing choice, not a default.
+  const pickerOpen =
+    plan !== undefined &&
+    ((!source && plan.sourcePickable === true) || (chosen && changing));
+  const pickOptions =
+    pickerOpen && parallels
+      ? [...(chosen && source ? [{ _id: source.id, value: source.value }] : []), ...parallels]
+      : [];
+  const pickedName = pickOptions.find((o) => o._id === choice)?.value;
 
   // Why the button cannot run, in the order the operator would fix it.
   const reason: string | null =
     plan === undefined
       ? LOADING_TEXT
       : !source
-        ? noSourceText(plan.sourceBlocked)
+        ? plan.sourcePickable
+          ? PICK_SOURCE_QUESTION
+          : noSourceText(plan.sourceBlocked)
         : !source.hasCards
           ? sourceEmptyText(source.value)
           : !tally || tally.total === 0
@@ -336,6 +399,38 @@ export default function BaseParallelsBuildSection({
     else run();
   };
 
+  const openChange = () => {
+    if (!source) return;
+    setChoice(source.id);
+    setPickError(null);
+    setChanging(true);
+    focusAfterRef.current = "list";
+  };
+  const closeChange = () => {
+    setChanging(false);
+    setChoice("");
+    setPickError(null);
+    focusAfterRef.current = "change";
+  };
+  const savePick = () => {
+    if (!choice || savingChoice) return;
+    setPickError(null);
+    setSavingChoice(true);
+    // Through the client the section already holds, like the run's own reads.
+    convex
+      .mutation(api.parallelTypeSource.setParallelTypeSource, {
+        parallelTypeId: variantTypeId,
+        sourceId: choice as Id<"selectorOptions">,
+      })
+      .then(() => {
+        setChanging(false);
+        setChoice("");
+        focusAfterRef.current = "change";
+      })
+      .catch((error: unknown) => setPickError(pickFailedText(error)))
+      .finally(() => setSavingChoice(false));
+  };
+
   const label = buildAllLabel(sourceValue, tally?.total);
   const copy =
     confirming && sourceValue && tally
@@ -350,9 +445,28 @@ export default function BaseParallelsBuildSection({
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
         <div className="min-w-0 max-w-prose">
           <h3 id={HEADING_ID} className="text-sm font-semibold text-ink">
-            {sectionHeading(sourceValue)}
+            {sectionHeading(chosen ? undefined : sourceValue)}
           </h3>
-          {tally && tally.total > 0 && (
+          {chosen && source && !pickerOpen && (
+            <p className="mt-0.5 text-xs text-ink-2 break-words">
+              <span>{copyingFromText(source.value)}</span>
+              {!runner.active && (
+                <>
+                  <span aria-hidden="true"> · </span>
+                  <button
+                    ref={changeRef}
+                    type="button"
+                    aria-label={CHANGE_SOURCE_ARIA}
+                    onClick={openChange}
+                    className="rounded-sm underline text-neon-blue-text hover:no-underline focus-outline"
+                  >
+                    {CHANGE_SOURCE_LABEL}
+                  </button>
+                </>
+              )}
+            </p>
+          )}
+          {!pickerOpen && tally && tally.total > 0 && (
             <p className="mt-0.5 text-xs text-ink-3">
               {summaryText(tally)}
               {sourceValue ? ` ${explainerText(sourceValue)}` : ""}
@@ -361,7 +475,7 @@ export default function BaseParallelsBuildSection({
                 : ""}
             </p>
           )}
-          {attention.length > 0 && (
+          {!pickerOpen && attention.length > 0 && (
             <ul className="mt-1.5 space-y-0.5 text-xs text-notice-warn-ink">
               {attention.slice(0, ATTENTION_LIST_MAX).map((item) => (
                 <li key={item.id} className="break-words">
@@ -376,6 +490,7 @@ export default function BaseParallelsBuildSection({
             </ul>
           )}
         </div>
+        {!pickerOpen && (
         <NeonButton
           ref={buttonRef}
           className={`${fieldClass("build-all")} shrink-0 max-w-[20rem]`}
@@ -397,6 +512,7 @@ export default function BaseParallelsBuildSection({
         >
           <span className="min-w-0 truncate">{label}</span>
         </NeonButton>
+        )}
       </div>
 
       {/* The binder page before the run: one card-shaped sleeve per parallel,
@@ -404,7 +520,7 @@ export default function BaseParallelsBuildSection({
           draws the same sleeves and fills them as it goes, so the strip hands
           over to it rather than sitting beside it. Decorative — the summary
           says the same in words. */}
-      {parallels && parallels.length > 0 && !showsRun && (
+      {parallels && parallels.length > 0 && !showsRun && !pickerOpen && (
         <div aria-hidden="true" className="mt-3 flex flex-wrap gap-1">
           {parallels.map((entry) => (
             <span
@@ -416,7 +532,58 @@ export default function BaseParallelsBuildSection({
         </div>
       )}
 
-      {reason !== null && (
+      {pickerOpen && (
+        <div
+          ref={pickerRef}
+          className="mt-3"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && changing && !savingChoice) {
+              event.stopPropagation();
+              closeChange();
+            }
+          }}
+        >
+          <ModeRadioGroup
+            label={PICK_SOURCE_QUESTION}
+            // The stand-in on a parallel row points here while there is no
+            // source; once there is one, the group takes a generated id.
+            labelId={source ? undefined : REASON_ID}
+            value={choice}
+            options={pickOptions.map((o) => ({ value: o._id, label: o.value }))}
+            onChange={setChoice}
+          />
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <NeonButton
+              className="max-w-full"
+              onClick={savePick}
+              onKeyDown={(event) =>
+                activateOnEnter(event, savePick, !choice || savingChoice)
+              }
+              aria-disabled={!choice || savingChoice || undefined}
+              aria-busy={savingChoice || undefined}
+            >
+              <span className="min-w-0 break-words">{copyFromLabel(pickedName)}</span>
+            </NeonButton>
+            {changing && (
+              <NeonButton
+                variant="negative"
+                outline
+                aria-label={CANCEL_CHANGE_ARIA}
+                onClick={closeChange}
+              >
+                {CANCEL_CHANGE_LABEL}
+              </NeonButton>
+            )}
+          </div>
+          {pickError && (
+            <p role="alert" className="mt-2 text-xs text-notice-danger-ink">
+              {pickError}
+            </p>
+          )}
+        </div>
+      )}
+
+      {reason !== null && !pickerOpen && (
         // Loading is not a problem to fix, so it stays in the summary's grey;
         // every other reason is something the operator has to do first.
         <p

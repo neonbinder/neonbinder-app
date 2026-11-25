@@ -37,6 +37,11 @@ export interface ModeRadioGroupProps<T extends string = string> {
    * failed or a pick that is gone. It is set on the radiogroup.
    */
   describedBy?: string;
+  /**
+   * Id for the visible label, for a host that another control's
+   * `aria-describedby` must point at. Defaults to a generated id.
+   */
+  labelId?: string;
 }
 
 export function ModeRadioGroup<T extends string = string>({
@@ -46,9 +51,10 @@ export function ModeRadioGroup<T extends string = string>({
   onChange,
   className = "",
   describedBy,
+  labelId: labelIdProp,
 }: ModeRadioGroupProps<T>) {
   const baseId = useId();
-  const labelId = `${baseId}-label`;
+  const labelId = labelIdProp ?? `${baseId}-label`;
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
 
   // An unknown value still leaves one option reachable by Tab.

@@ -1109,6 +1109,15 @@ export default function SetSelector() {
         )?.value,
       };
     }
+    // NEO-673: the parallel the others copy from saves its own checklist,
+    // like an insert (Sync, Tidy Up); it has no build offer.
+    if (
+      isParallelTypeSelected &&
+      baseSource?.kind === "chosenParallel" &&
+      selectedVariantId === baseSource.id
+    ) {
+      return { role: "insert" };
+    }
     if (isParallelTypeSelected) {
       return {
         role: "parallel",
