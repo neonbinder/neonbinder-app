@@ -32,6 +32,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { detectGroupings } from "./parallelDetection";
 import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
+import { Switch } from "../primitives/Switch";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
 import { useDebouncedValue } from "../../src/hooks/useDebouncedValue";
@@ -591,6 +592,7 @@ function DropZone({
   compactWhenEmpty,
   boxFor,
   flash,
+  outlineWhenTarget,
 }: {
   id: string;
   title: string;
@@ -620,6 +622,12 @@ function DropZone({
   boxFor?: RowId;
   /** NEO-472 — lit briefly after a jump, so the eye finds where it landed. */
   flash?: boolean;
+  /**
+   * NEO-660 — a box that accepts the selection wears a dashed blue border at
+   * rest (solid on hover), so the targets read as targets. Only the Parallels
+   * boxes pass it; drag-over and the jump's ring keep their own looks.
+   */
+  outlineWhenTarget?: boolean;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id, disabled: refusesDrop });
   const titleId = useId();
@@ -633,6 +641,7 @@ function DropZone({
   const showEmpty =
     Array.isArray(children) ? children.length === 0 : !children;
   const compact = compactWhenEmpty && showEmpty;
+  const outlineTarget = Boolean(outlineWhenTarget && isClickTarget);
   return (
     <div
       ref={setNodeRef}
@@ -670,10 +679,16 @@ function DropZone({
           ? "border-selection bg-neon-blue/5"
           : flash
             ? "border-selection bg-raised-deep/30 ring-2 ring-selection ring-offset-2 ring-offset-raised-deep shadow-[0_0_14px_3px_rgb(0_194_255/calc(0.45*var(--glow)))]"
-            : highlight
-              ? "border-notice-warn-rule/50 bg-notice-warn-bg/25"
-              : "border-rule-strong bg-raised-deep/30"
-      } ${isClickTarget ? "cursor-pointer hover:border-control" : ""}`}
+            : outlineTarget
+              ? `border-dashed border-selection hover:border-solid ${
+                  // A suggested box keeps its yellow cue as a fill inside
+                  // the blue dashed border.
+                  highlight ? "bg-notice-warn-bg/25" : "bg-raised-deep/30"
+                }`
+              : highlight
+                ? "border-notice-warn-rule/50 bg-notice-warn-bg/25"
+                : "border-rule-strong bg-raised-deep/30"
+      } ${isClickTarget ? `cursor-pointer ${outlineTarget ? "" : "hover:border-control"}` : ""}`}
     >
       {compact ? (
         // Same nesting as the full header (box > row > title), so anything
@@ -879,6 +894,11 @@ export default function ParallelGroupingModal({
   const filterRef = useRef<HTMLInputElement | null>(null);
   /** NEO-472 — the box the last "has parallels" jump landed on, lit briefly. */
   const [jumpedTo, setJumpedTo] = useState<RowId | null>(null);
+  // NEO-660 — whether a ticked row's own "Parallels of …" box stays in the
+  // right pane. Off by default; per session, so it is not reset by a new
+  // selection.
+  const [showSelectedBoxes, setShowSelectedBoxes] = useState(false);
+  const showSelectedBoxesHintId = useId();
   const jumpTimerRef = useRef<number | null>(null);
   /**
    * NEO-472 (a11y) — each scroller is a Tab stop while it has something to
@@ -936,6 +956,7 @@ export default function ParallelGroupingModal({
     if (!isOpen) {
       setFilter("");
       setJumpedTo(null);
+      setShowSelectedBoxes(false);
     }
   }
 
@@ -1059,6 +1080,11 @@ export default function ParallelGroupingModal({
   );
 
   const selectedSet = useMemo(() => new Set(state.selected), [state.selected]);
+  // The Parallels boxes on screen: the filtered ones, less a selected row's
+  // own box while the switch is off.
+  const shownParentRows = visibleParentRows.filter(
+    (parent) => showSelectedBoxes || !selectedSet.has(parent._id),
+  );
   const selectedCount = state.selected.length;
 
   /**
@@ -1471,13 +1497,7 @@ export default function ParallelGroupingModal({
     selectedCount === 1
       ? "Click here to make the selected row a parallel"
       : `Click here to make the ${selectedCount} selected rows parallels`;
-  const othersSelected = selectedCount - 1;
-  const ownBoxHint =
-    selectedCount === 1
-      ? "This row is selected"
-      : othersSelected === 1
-        ? "This row is selected. Untick it to drop the other row here."
-        : `This row is selected. Untick it to drop the other ${othersSelected} rows here.`;
+  const ownBoxHint = "Selected";
 
   /**
    * NEO-472 — selected rows the filter is hiding. They stay selected (the
@@ -1639,7 +1659,7 @@ export default function ParallelGroupingModal({
                 e.stopPropagation();
                 setFilter("");
               }}
-              placeholder="Filter inserts, like 1991 Topps"
+              placeholder="Filter inserts, like Prismatic Green"
               aria-label="Filter inserts"
               className="w-full pl-2.5 pr-8 py-1.5 text-sm"
             />
@@ -1671,6 +1691,24 @@ export default function ParallelGroupingModal({
           </span>
           <span role="status" data-filter-announce className="sr-only">
             {announcedFilterCount}
+          </span>
+          {/* Out here, not in the right pane's scroller, so it never
+              scrolls away and both panes start level. The label wraps the
+              switch, so it names it with no id. */}
+          <label className="flex min-h-11 cursor-pointer items-center gap-3 md:ml-auto">
+            <Switch
+              checked={showSelectedBoxes}
+              onCheckedChange={setShowSelectedBoxes}
+              aria-describedby={showSelectedBoxesHintId}
+            />
+            <span className="text-sm font-medium text-ink-2 break-words">
+              Show boxes for selected inserts
+            </span>
+          </label>
+          {/* Outside the label, so it describes the switch without joining
+              its name. */}
+          <span id={showSelectedBoxesHintId} className="sr-only">
+            When off, each selected insert's own box is hidden.
           </span>
         </div>
 
@@ -1763,12 +1801,14 @@ export default function ParallelGroupingModal({
                   tabIndex={rightOverflows ? 0 : undefined}
                   className="space-y-4 md:min-h-0 md:overflow-y-auto md:p-1.5 rounded-lg focus-outline focus-visible:-outline-offset-2"
                 >
-                {isFiltering && visibleParentRows.length === 0 && (
+                {shownParentRows.length === 0 && (isFiltering || selectedCount > 0) && (
                   <p className="text-xs text-ink-3 italic py-1 break-words">
-                    No parallels to show for "{deferredFilter.trim()}"
+                    {isFiltering
+                      ? `No parallels to show for "${deferredFilter.trim()}"`
+                      : 'Every box here belongs to a selected insert. Turn on "Show boxes for selected inserts" to see them.'}
                   </p>
                 )}
-                {visibleParentRows.map((parent) => {
+                {shownParentRows.map((parent) => {
                   const children = childrenByParent.get(parent._id) ?? [];
                   const hasYellow = children.some((c) =>
                     state.suggested.has(c._id),
@@ -1802,6 +1842,7 @@ export default function ParallelGroupingModal({
                       boxFor={parent._id}
                       flash={jumpedTo === parent._id}
                       highlight={hasYellow}
+                      outlineWhenTarget
                     >
                       {children.map((info) =>
                         renderRow(info, true, true, false),

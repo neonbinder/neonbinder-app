@@ -177,6 +177,7 @@
 - [NEO-656 career in a 2nd tab](patterns_neo656_stage_a_walk_players_career_in_a_second_tab.md) — no Career tile for a new player; Players admin tab, chips update live
 - [Stored-tier fill](patterns_team_fill_stored_tier_career_tie_fixture.md) — career ties isolate Base-card fill; other insert not evidence; plants
 - [Foil × colour checklist spec shape](patterns_foil_colour_checklist_spec_shape.md) — NEO-616: City Designation walk tiles, answer-vs-save race, prefix-only pairing, titles dialog
+- [Show ticked boxes switch](patterns_group_parallels_show_ticked_boxes_switch.md) — NEO-660: ticked row's own box hidden; switch on before filter asserts
 - [Fresh-only on a no-reset deployment](patterns_iterate_fresh_only_on_a_no_reset_deployment.md) — e2e-run setup resets user 0; swap names to iterate; partial team name for the list
 - [NEO-657 two-player prefill](patterns_neo657_two_player_prefill_and_blue_city_walk.md) — "/" cells, CO names, plant; Pro Set walk all blue
 - [Post-commit walk waits on career gaps](patterns_post_commit_walk_waits_on_live_career_gaps.md) — NEO-656: no pill at the saved line; settle { opens: true }
