@@ -4,6 +4,12 @@
 // saved the moment it is picked (J1) and lands on the card: the player's own card list in Player
 // Management shows it, and a card linked across sports keeps its own sport's tag.
 //
+// NEO-671: the search carries "Remember “<printed>” as a name for this player", checked by
+// default, right under its input. Left on, the pick saves the printed spelling as one of the
+// linked player's aliases (player data; Player Management's "Aliases" box shows it); unticked,
+// nothing but the link is written. The catalogue pick (Gretzky) unticks it, so the reference row
+// stays as it was (R7a); the hand-made Football player keeps it on and wears the alias.
+//
 // Merges `checklist-wizard-link-commits` and `checklist-wizard-link-to-existing-player` (NEO-645
 // decision 20): both proved "link to an existing player", and the second one's fixture (fetch a
 // real set, then Cancel → Discard) no longer exists, because Match Cards' Confirm saves the cards
@@ -96,6 +102,7 @@ test(
     await skipUntil(page, openPlayerRows(page));
     const firstName = (await openPlayerRows(page).first().getAttribute("aria-label")) ?? "";
     expect(firstName, "the open row is named for its printed player").toMatch(/^Player .+/);
+    const firstPrinted = firstName.replace(/^Player /, "");
     const first = playerRow(page, firstName);
     await expect(pinkTile(page, "Player"), "an unknown printed player is a must-fix").toHaveCount(1);
     // The row's sport is the set's until someone switches it.
@@ -105,10 +112,25 @@ test(
     await expect(search).toBeVisible();
     // The search stands in for the row's buttons while it is open.
     await expect(first.getByRole("button", { name: LINK_EXISTING })).toHaveCount(0);
+    // NEO-671: the search offers to keep the printed spelling as a name for the pick, on by default.
+    const rememberFirst = first.getByRole("checkbox", {
+      name: `Remember “${firstPrinted}” as a name for this player`,
+      exact: true,
+    });
+    await expect(rememberFirst).toBeVisible();
+    await expect(rememberFirst).toBeChecked();
+    // A catalogue player is read-only here (R7a): untick it, so the link writes no alias.
+    await rememberFirst.uncheck();
+    await expect(rememberFirst).not.toBeChecked();
     await search.fill("Gretzky");
     const linkGretzky = first.getByRole("option", { name: `Link to ${GRETZKY}`, exact: true });
     await expect(linkGretzky).toBeVisible();
-    await expectAccessible(page, { within: walk, label: "Tidy Up walk, Link to existing search results" });
+    // The results sit under the box, which still reads unticked: typing does not reset it.
+    await expect(rememberFirst).not.toBeChecked();
+    await expectAccessible(page, {
+      within: walk,
+      label: "Tidy Up walk, Link to existing search results with the remember box",
+    });
     await linkGretzky.click();
     // Saved at once (J1): the row reads answered ("Edit <linked name>", NEO-645 C1), names him, and the tile is no longer pink.
     await expect(first.getByRole("button", { name: `Edit ${GRETZKY}`, exact: true })).toBeVisible();
@@ -122,6 +144,7 @@ test(
     await skipUntil(page, openPlayerRows(page));
     const secondName = (await openPlayerRows(page).first().getAttribute("aria-label")) ?? "";
     expect(secondName, "a different printed name").not.toBe(firstName);
+    const secondPrinted = secondName.replace(/^Player /, "");
     const second = playerRow(page, secondName);
     const secondCard = await tidyCardIdentity(page).allTextContents();
     const sportHockey = second.getByRole("button", { name: "Sport for this name: Hockey", exact: true });
@@ -140,7 +163,14 @@ test(
     await expect(pinkTile(page, "Player"), "switching the sport answers nothing").toHaveCount(1);
 
     await second.getByRole("button", { name: LINK_EXISTING, exact: true }).click();
+    // NEO-671: this row's box is on (the untick above was the first row's alone), and stays on.
+    const rememberSecond = second.getByRole("checkbox", {
+      name: `Remember “${secondPrinted}” as a name for this player`,
+      exact: true,
+    });
+    await expect(rememberSecond).toBeChecked();
     await second.getByRole("textbox", { name: "Search existing players" }).fill(gw);
+    await expect(rememberSecond).toBeChecked();
     await second.getByRole("option", { name: `Link to ${gw}`, exact: true }).click();
     await expect(second.getByRole("button", { name: `Edit ${gw}`, exact: true })).toBeVisible();
     await expect(second.getByText(gw, { exact: true })).toBeVisible();
@@ -170,12 +200,19 @@ test(
     // His own sport: the card carries no sport tag.
     await expect(gretzkyCards.getByRole("listitem").filter({ hasText: SET })).toHaveCount(1);
     await expect(gretzkyCards.getByRole("listitem").filter({ hasText: SET })).not.toContainText("Hockey");
+    // NEO-671: the box was unticked for him, so the printed spelling is not one of his names.
+    const aliases = page.getByRole("textbox", { name: "Aliases", exact: true });
+    await expect(aliases).toBeVisible();
+    await expect(aliases).not.toHaveValue(new RegExp(escapeRe(firstPrinted), "i"));
 
     const gwCards = await openPlayerCards(page, gw, "Football");
     const gwCard = gwCards.getByRole("listitem").filter({ hasText: SET });
     await expect(gwCard).toHaveCount(1);
     // Linked across sports: the card keeps its own sport, and says so.
     await expect(gwCard).toContainText("Hockey");
+    // NEO-671: linked with the box on, so the printed spelling is now one of his names, and the
+    // only one (he was added by hand above with none).
+    await expect(aliases).toHaveValue(secondPrinted);
     await expectAccessible(page, { label: "Player detail with the cross-sport linked card" });
   },
 );

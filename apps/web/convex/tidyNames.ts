@@ -66,6 +66,7 @@ import {
   playerBelongsToSport,
 } from "./players";
 import { rememberAliasesOnTeam } from "./rememberTeamAliases";
+import { rememberAliasesOnPlayer } from "./rememberPlayerAliases";
 import { MAX_TEAM_NAME_LENGTH } from "./teams";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { setHistoryOffersPlayer } from "./setHistory";
@@ -172,6 +173,8 @@ export const tidyAnswerInputValidator = v.union(
     kind: v.literal("linkPlayer"),
     playerId: v.id("players"),
     addSetSport: v.optional(v.literal(true)),
+    /** NEO-671: also keep the printed name as one of the player's aliases. */
+    saveAsAlias: v.optional(v.literal(true)),
   }),
   v.object({
     kind: v.literal("linkTeam"),
@@ -443,6 +446,9 @@ export async function applyAnswer(
       if (setSportId && player.sportId !== setSportId) {
         await addPlayerSport(ctx, player, setSportId);
       }
+    }
+    if (input.saveAsAlias) {
+      await rememberAliasesOnPlayer(ctx, player, [ref.printed], "tidyNames.answerName");
     }
     change = { kind: "linkPlayer", playerId: player._id };
   } else if (input.kind === "linkTeam") {

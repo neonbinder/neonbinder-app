@@ -45,11 +45,17 @@ vi.mock("convex/react", () => ({
 
 const linkSearchProps: Array<Record<string, unknown>> = [];
 vi.mock("../../EntityLinkSearch", () => ({
-  default: (props: { kind: string; onSelect: (id: string, n: string) => void; onCancel: () => void }) => {
+  default: (props: {
+    kind: string;
+    onSelect: (id: string, n: string) => void;
+    onCancel: () => void;
+    children?: React.ReactNode;
+  }) => {
     linkSearchProps.push(props);
-    const { kind, onSelect, onCancel } = props;
+    const { kind, onSelect, onCancel, children } = props;
     return (
     <div>
+      {children}
       <button type="button" onClick={() => onSelect("player-9", "Someone")}>
         {`Pick a ${kind}`}
       </button>
@@ -727,6 +733,127 @@ describe("PlayerTile: Link to existing… (NEO-645)", () => {
     expect(props.initialQuery).toBe("Jackson Holiday");
     // The search is main's: no card ranking is passed down.
     expect(props.contextCardId).toBeUndefined();
+  });
+});
+
+describe("PlayerTile: remember the printed name as a name for the picked player (NEO-671)", () => {
+  const REMEMBER = "Remember “Jackson Merrill” as a name for this player";
+  const close = { _id: "player-7", name: "Jackson Merrill Jr.", confidence: "close" as const };
+
+  it("is checked by default under Possible matches, and a pick from there sends saveAsAlias", async () => {
+    queryResults["players.nearMatches"] = [close];
+    renderTile();
+    const box = screen.getByRole("checkbox", { name: REMEMBER }) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(box.className).toContain("h-6");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /^Link to Jackson Merrill Jr\./ })));
+    expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+      cardId: CARD,
+      kind: "player",
+      name: "Jackson Merrill",
+      sportId: SPORT,
+      answer: { kind: "linkPlayer", playerId: "player-7", saveAsAlias: true },
+    });
+  });
+
+  it("unchecked, the same pick sends no flag", async () => {
+    queryResults["players.nearMatches"] = [close];
+    renderTile();
+    fireEvent.click(screen.getByRole("checkbox", { name: REMEMBER }));
+    expect((screen.getByRole("checkbox", { name: REMEMBER }) as HTMLInputElement).checked).toBe(false);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /^Link to Jackson Merrill Jr\./ })));
+    expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+      cardId: CARD,
+      kind: "player",
+      name: "Jackson Merrill",
+      sportId: SPORT,
+      answer: { kind: "linkPlayer", playerId: "player-7" },
+    });
+  });
+
+  it("is not shown with nothing to pick from", () => {
+    queryResults["players.nearMatches"] = [];
+    renderTile();
+    expect(screen.queryByRole("checkbox", { name: REMEMBER })).toBeNull();
+  });
+
+  it("is not shown beside the exact-name link, which sends no flag", async () => {
+    queryResults["players.nearMatches"] = [
+      { _id: "player-1", name: "Jackson Merrill", confidence: "exact", birthYear: 2003 },
+    ];
+    renderTile();
+    expect(screen.queryByRole("checkbox", { name: REMEMBER })).toBeNull();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Link to Jackson Merrill" })));
+    expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+      cardId: CARD,
+      kind: "player",
+      name: "Jackson Merrill",
+      sportId: SPORT,
+      answer: { kind: "linkPlayer", playerId: "player-1" },
+    });
+  });
+
+  it("an exact link sends no flag even while Possible matches shows the box checked", async () => {
+    queryResults["players.nearMatches"] = [
+      { _id: "player-1", name: "Jackson Merrill", confidence: "exact", birthYear: 2003 },
+      close,
+    ];
+    renderTile();
+    expect((screen.getByRole("checkbox", { name: REMEMBER }) as HTMLInputElement).checked).toBe(true);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Link to Jackson Merrill" })));
+    expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+      cardId: CARD,
+      kind: "player",
+      name: "Jackson Merrill",
+      sportId: SPORT,
+      answer: { kind: "linkPlayer", playerId: "player-1" },
+    });
+  });
+
+  it("is shown with Link to existing…, checked, and its pick sends the flag", async () => {
+    queryResults["players.nearMatches"] = [];
+    renderTile();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Link to existing…" })));
+    const box = screen.getByRole("checkbox", { name: REMEMBER }) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pick a player" })));
+    expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+      cardId: CARD,
+      kind: "player",
+      name: "Jackson Merrill",
+      sportId: SPORT,
+      answer: { kind: "linkPlayer", playerId: "player-9", saveAsAlias: true },
+    });
+  });
+
+  it("tabs before the picks: ahead of the Possible matches buttons and the search results", async () => {
+    queryResults["players.nearMatches"] = [close];
+    renderTile();
+    const box = screen.getByRole("checkbox", { name: REMEMBER });
+    const pick = screen.getByRole("button", { name: /^Link to Jackson Merrill Jr\./ });
+    expect(box.compareDocumentPosition(pick) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Link to existing…" })));
+    const open = screen.getByRole("checkbox", { name: REMEMBER });
+    const search = screen.getByRole("button", { name: "Pick a player" });
+    expect(open.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("is not shown with the one-name fragment question, whose pick sends no flag", async () => {
+    queryResults["players.nearMatches"] = [];
+    queryResults["players.nameFragmentCheck"] = {
+      isFragment: true,
+      matches: [{ _id: "player-3", name: "Jackson Merrill Sr.", birthYear: 1970 }],
+    };
+    renderTile();
+    expect(screen.queryByRole("checkbox", { name: REMEMBER })).toBeNull();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /Jackson Merrill Sr\./ })));
+    expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+      cardId: CARD,
+      kind: "player",
+      name: "Jackson Merrill",
+      sportId: SPORT,
+      answer: { kind: "linkPlayer", playerId: "player-3" },
+    });
   });
 });
 
