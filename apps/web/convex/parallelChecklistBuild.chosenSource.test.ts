@@ -772,7 +772,7 @@ describe("printingLevelLeaves — Apply to all on a chosen-source set", () => {
   });
 });
 
-describe("Card titles dialog on a chosen-source set (dropName threading)", () => {
+describe("Card titles on a chosen-source set (the same as an insert source with 'Parallel titles skip' on)", () => {
   const LONG = "Kanji Orange Wave Refractor Sapphire Gold XYZW";
   const failing = (t: T, parallelId: Id<"selectorOptions">) =>
     t.withIdentity(ADMIN).query(api.parallelCopyTitles.failingTitles, { parallelId });
@@ -802,55 +802,29 @@ describe("Card titles dialog on a chosen-source set (dropName threading)", () =>
   }
 
   const BOX = "Pulse Premier Kanji Orange Wave Refractor Sapphire Gold XYZW Extra Ex";
-  const TITLE = "Pulse Premier Silver Trout SILVER Halos Angels Rookie Card";
+  const TITLE = "Pulse Premier Silver Trout Red Sox Halos Angels Rookie Card";
 
-  test("failingTitles offers the carried rest without the chosen source's own name", async () => {
+  test("failingTitles offers the source's hand edit with only its description removed", async () => {
     const t = convexTest(schema, modules);
     const s = await seedLong(t, TITLE);
     expect(s.built.titlesToFix).toBe(1);
     const page = await failing(t, s.gold);
     expect(page.cards).toHaveLength(1);
-    expect(page.cards[0].carriedRest).toBe("Trout Halos Angels Rookie Card");
+    // Only the source's description (set + Silver) is taken off; no other word is stripped.
+    expect(page.cards[0].carriedRest).toBe("Trout Red Sox Halos Angels Rookie Card");
   });
 
-  test("the build writes the carried hand edit without the chosen source's name", async () => {
+  test("the build writes the carried hand edit under Gold's own name, not Silver's", async () => {
     const t = convexTest(schema, modules);
-    const s = await seedLong(t, "Pulse Premier Silver Trout SILVER");
+    const s = await seedLong(t, "Pulse Premier Silver Trout");
     expect(s.built.titlesToFix).toBe(0);
     const [copy] = await cardsOn(t, s.gold);
     expect(copy.listingTitle).toBe(`Pulse Premier ${LONG} Trout`);
   });
 
-  test("the same title on a set with a Base keeps the word: nothing is dropped without a chosen source", async () => {
-    const t = convexTest(schema, modules);
-    const s = await seedSet(t, { withBase: true });
-    await t.run((ctx) => ctx.db.patch(s.gold, { value: LONG }));
-    const player = await t.run((ctx) =>
-      ctx.db.insert("players", {
-        name: "Mike Trout",
-        nameNormalized: "mike trout",
-        sportId: s.sport,
-        lastUpdated: SENTINEL,
-      }),
-    );
-    // Copied from the Base; its title is hand-edited and names the word Silver.
-    await addCard(t, s.base!, {
-      cardNumber: "1",
-      cardName: "Mike Trout",
-      playerIds: [player],
-      listingTitle: "Pulse Premier Base Trout Silver Halos Angels Rookie Card",
-    });
-    bscState.cards = [{ cardNumber: "1", cardName: "Mike Trout", platformRef: "bsc-1" }];
-    await t
-      .withIdentity(ADMIN)
-      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: s.gold });
-    const page = await failing(t, s.gold);
-    expect(page.cards[0]?.carriedRest).toBe("Trout Silver Halos Angels Rookie Card");
-  });
-
   test("saving a box: the title the dialog showed (built from carriedRest) is the one the server writes", async () => {
     const t = convexTest(schema, modules);
-    const s = await seedLong(t, "Pulse Premier Silver Trout SILVER");
+    const s = await seedLong(t, "Pulse Premier Silver Trout");
     const [card] = await cardsOn(t, s.gold);
     // The build flagged it for the dialog; stored as such so the save sees it.
     await t.run((ctx) => ctx.db.patch(card._id, { listingTitleTruncated: true }));

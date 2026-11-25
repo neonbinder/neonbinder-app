@@ -2211,15 +2211,11 @@ export const insertParallelCardsPage = internalMutation({
         const { inputs: sourceInputs } = await listingInputsForStoredCard(ctx, source, lookup);
         outcome = assessParallelCopyTitle(
           inputs,
-          carriedTitleRest(
-            {
-              sourceTitle: source.listingTitle,
-              sourceFlagged: storedTitleFails(source),
-              sourceInputs,
-            },
-            // NEO-673 — a chosen source's own name never rides into a sibling.
-            resolved.kind === "chosenParallel" ? sourceRow.value : undefined,
-          ),
+          carriedTitleRest({
+            sourceTitle: source.listingTitle,
+            sourceFlagged: storedTitleFails(source),
+            sourceInputs,
+          }),
         );
       }
       if (outcome.failing) {
