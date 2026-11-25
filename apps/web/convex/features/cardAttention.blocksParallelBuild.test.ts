@@ -8,7 +8,12 @@
  */
 
 import { describe, expect, test } from "vitest";
-import { blocksParallelBuild, deriveCardAttention, isAwaitingTeamLookup } from "./cardAttention";
+import {
+  blocksParallelBuild,
+  deriveCardAttention,
+  isAwaitingTeamLookup,
+  parallelBuildHold,
+} from "./cardAttention";
 
 const row = (over: Record<string, unknown> = {}) => ({
   platformData: {},
@@ -88,11 +93,21 @@ describe("blocksParallelBuild", () => {
     expect(blocksParallelBuild(long)).toBe(true);
   });
 
-  test("a card still awaiting its team lookup does not hold the build", () => {
+  test("a card still awaiting its team lookup holds the build (wait for lookups)", () => {
     const awaiting = row({ platformData: { bsc: { ref: "ref-1" } } });
     expect(isAwaitingTeamLookup(awaiting)).toBe(true);
     expect(deriveCardAttention(awaiting).level).toBe("none");
-    expect(blocksParallelBuild(awaiting)).toBe(false);
+    expect(blocksParallelBuild(awaiting)).toBe(true);
+  });
+
+  test("a card whose lookup finished with a team does not hold the build", () => {
+    const answered = row({
+      platformData: { bsc: { ref: "ref-1" } },
+      teamCheckDoneAt: 5,
+      teamOnCardIds: ["t1"],
+    });
+    expect(isAwaitingTeamLookup(answered)).toBe(false);
+    expect(blocksParallelBuild(answered)).toBe(false);
   });
 
   test("a card the operator confirmed has no team does not hold the build", () => {
@@ -117,5 +132,29 @@ describe("blocksParallelBuild", () => {
 
   test("a tidy card does not hold it", () => {
     expect(blocksParallelBuild(row({ teamNoneConfirmedAt: 1 }))).toBe(false);
+  });
+});
+
+describe("parallelBuildHold", () => {
+  const awaiting = { platformData: { bsc: { ref: "ref-1" } } };
+
+  test("a pink card answers fix", () => {
+    expect(parallelBuildHold(row({ pendingPlayerNames: ["S. Ohtani"] }))).toBe("fix");
+  });
+
+  test("a card only awaiting its lookup answers lookup", () => {
+    expect(parallelBuildHold(row(awaiting))).toBe("lookup");
+  });
+
+  test("a card both pink and awaiting answers fix (pink wins)", () => {
+    const pinkAwaiting = row({ ...awaiting, attributes: ["AU"] });
+    expect(isAwaitingTeamLookup(pinkAwaiting)).toBe(true);
+    expect(deriveCardAttention(pinkAwaiting).level).toBe("fix");
+    expect(parallelBuildHold(pinkAwaiting)).toBe("fix");
+  });
+
+  test("a tidy or only-blue card answers null", () => {
+    expect(parallelBuildHold(row({ teamNoneConfirmedAt: 1 }))).toBeNull();
+    expect(parallelBuildHold(row({ teamNoneConfirmedAt: 1, listingTitleTruncated: true }))).toBeNull();
   });
 });

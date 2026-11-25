@@ -3,7 +3,8 @@
  * box we should hold the parallels back.") — the client's held auto-start. A
  * commit on an INSERT row does not start the parallel build while any live
  * card is pink (`blocksParallelBuild`); it starts the moment none is. A card
- * still awaiting its BSC team lookup is not pink and does not hold.
+ * still awaiting its BSC team lookup is not pink but holds too (Jason, 2026-11-24:
+ * "Yes, wait for lookups") until its lookup answers.
  *
  * Mocked at the module boundary as CardChecklist.test.tsx's NEO-312 auto-run
  * block does: the zero-candidate Sync drives a commit, and
@@ -204,12 +205,49 @@ describe("CardChecklist — the parallel build waits on any pink card (NEO-661)"
     );
   });
 
-  it("a card still awaiting its team lookup does not hold the build", async () => {
+  it("a card still awaiting its team lookup holds the build", async () => {
     state.cards = [awaitingLookup()];
     render(ui());
     await commit();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockGetParallelsForBuild).not.toHaveBeenCalled();
+  });
+
+  it("the held build starts once the lookup answers with a team, without another commit", async () => {
+    state.cards = [awaitingLookup()];
+    const { rerender } = render(ui());
+    await commit();
+    expect(mockGetParallelsForBuild).not.toHaveBeenCalled();
+
+    state.cards = [
+      card({ platformData: { bsc: { ref: "bsc-ref-1" } }, teamCheckDoneAt: 5, teamOnCardIds: ["team-1"] }),
+    ];
+    await act(async () => {
+      rerender(ui());
+    });
     await waitFor(() =>
       expect(mockGetParallelsForBuild).toHaveBeenCalledWith({ sourceId: VARIANT_ID }),
     );
+    expect(mockCommitChecklist).toHaveBeenCalledTimes(1);
+  });
+
+  it("the held build starts once the lookup answers no team (No Team stamp), without another commit", async () => {
+    state.cards = [awaitingLookup()];
+    const { rerender } = render(ui());
+    await commit();
+    expect(mockGetParallelsForBuild).not.toHaveBeenCalled();
+
+    state.cards = [
+      card({ platformData: { bsc: { ref: "bsc-ref-1" } }, teamCheckDoneAt: 5, teamNoneConfirmedAt: 5 }),
+    ];
+    await act(async () => {
+      rerender(ui());
+    });
+    await waitFor(() =>
+      expect(mockGetParallelsForBuild).toHaveBeenCalledWith({ sourceId: VARIANT_ID }),
+    );
+    expect(mockCommitChecklist).toHaveBeenCalledTimes(1);
   });
 });

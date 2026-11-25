@@ -72,6 +72,8 @@ const bscState = vi.hoisted(() => ({
   success: true,
   cards: [] as StubCard[],
   calls: [] as Array<Record<string, string[]>>,
+  /** Runs inside the BSC fetch: after the hold check, before any copy page. */
+  duringFetch: null as null | (() => Promise<void>),
 }));
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adapters/buysportscards")>();
@@ -89,6 +91,7 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
       returns: v.any(),
       handler: async (_ctx, args) => {
         bscState.calls.push(args.facetFilters ?? {});
+        await bscState.duringFetch?.();
         if (!bscState.success) return { success: false, cards: [] };
         return { success: true, cards: bscState.cards };
       },
@@ -127,6 +130,7 @@ beforeEach(() => {
   bscState.success = true;
   bscState.cards = [];
   bscState.calls = [];
+  bscState.duringFetch = null;
   slState.success = true;
   slState.bySlId = {};
   slState.calls = [];
@@ -274,6 +278,19 @@ async function insertCard(
       ...card,
     }),
   );
+}
+
+/**
+ * NEO-661: a source waiting on its team lookup holds the build, so a copy owing
+ * a lookup of its own comes only from a source that loses its team after the
+ * hold check. Arms the BSC fetch (which runs between that check and the copy
+ * pages) to take the team off the given insert card, as that state.
+ */
+function dropTeamDuringFetch(t: T, cardId: Id<"cardChecklist">) {
+  bscState.duringFetch = () =>
+    t.run(async (ctx) => {
+      await ctx.db.patch(cardId, { teamOnCardIds: undefined });
+    });
 }
 
 const cardsOn = (t: T, selectorOptionId: Id<"selectorOptions">) =>
@@ -633,14 +650,15 @@ describe("buildParallelChecklist — the happy path", () => {
     try {
       const { insert } = await seedTree(t);
       const parallelId = await seedParallel(t, insert);
-      // A card whose BSC team lookup has not run yet (not pink: it is awaiting
-      // it), so the build copies it and owes the copy a lookup of its own.
-      await insertCard(t, insert, {
+      // A card with a team when the build checks it, and whose BSC team lookup
+      // is owed (no team, no stamp) by the time the copies are made, so the
+      // build owes the copy a lookup of its own.
+      const owing = await insertCard(t, insert, {
         cardNumber: "1",
         cardName: "Team Card",
-        teamOnCardIds: [],
         platformData: { bsc: { ref: "ins-1", src: "b0" } },
       });
+      dropTeamDuringFetch(t, owing);
       // A card whose lookup has been and gone: its answer travels instead.
       await insertCard(t, insert, {
         cardNumber: "2",
@@ -678,12 +696,12 @@ describe("buildParallelChecklist — the happy path", () => {
     try {
       const { insert } = await seedTree(t);
       const parallelId = await seedParallel(t, insert);
-      await insertCard(t, insert, {
+      const owing = await insertCard(t, insert, {
         cardNumber: "1",
         cardName: "Team Card",
-        teamOnCardIds: [],
         platformData: { bsc: { ref: "ins-1", src: "b0" } },
       });
+      dropTeamDuringFetch(t, owing);
       bscState.cards = [{ cardNumber: "1", cardName: "Team Card", platformRef: "bsc-1" }];
 
       await t

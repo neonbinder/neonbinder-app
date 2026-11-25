@@ -50,7 +50,11 @@ type StubCard = {
   sourceBscSetSlug?: string;
 };
 
-const bscState = vi.hoisted(() => ({ cards: [] as StubCard[] }));
+const bscState = vi.hoisted(() => ({
+  cards: [] as StubCard[],
+  /** Runs inside the build's BSC fetch: after the hold check, before any copy. */
+  duringFetch: null as null | (() => Promise<void>),
+}));
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adapters/buysportscards")>();
   const { action } = await import("./_generated/server");
@@ -65,7 +69,10 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
         sourceFacet: v.optional(v.string()),
       },
       returns: v.any(),
-      handler: async () => ({ success: true, cards: bscState.cards }),
+      handler: async () => {
+        await bscState.duringFetch?.();
+        return { success: true, cards: bscState.cards };
+      },
     }),
   };
 });
@@ -74,8 +81,12 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
 // the build's scheduled enqueue hands the lane lands in `lane` instead
 // (lib/testing/bsc-team-lane.ts), and a test that wants the answer runs it.
 let lane: BscTeamLaneItem[] = [];
+// Insert cards (by number) that lose their team after the build's hold check.
+let awaitingAtCopy: string[] = [];
 beforeEach(() => {
   bscState.cards = [];
+  bscState.duringFetch = null;
+  awaitingAtCopy = [];
   lane = captureBscTeamLane();
   // Only the lane's own BSC call may reach `fetch`; a test that runs the lane
   // stubs the answer.
@@ -152,8 +163,18 @@ async function insertCard(
     players?: Array<[Id<"players">, string]>;
     teams?: Array<Id<"teams">>;
     extra?: Partial<Doc<"cardChecklist">>;
+    /**
+     * NEO-661: a source waiting on its team lookup holds the whole build, so
+     * the only way a copy meets one is a source that loses its team after the
+     * hold check. The card starts with a team (the hold lets it through) and
+     * the BSC fetch, which runs between that check and the copy pages, takes
+     * it off (`build` / `buildRaw`): a BSC ref, no team, no stamp, the state
+     * a card has while its lookup is queued.
+     */
+    awaitingAtCopy?: boolean;
   } = {},
 ) {
+  if (opts.awaitingAtCopy) awaitingAtCopy.push(n);
   return t.run((ctx) =>
     insertTestCard(ctx, {
       selectorOptionId: fx.insert,
@@ -165,7 +186,11 @@ async function insertCard(
             playerLinks: opts.players.map(([playerId, nameOnCard]) => ({ playerId, nameOnCard })),
           }
         : {}),
-      ...(opts.teams ? { teamOnCardIds: opts.teams } : {}),
+      ...(opts.teams
+        ? { teamOnCardIds: opts.teams }
+        : opts.awaitingAtCopy
+          ? { teamOnCardIds: [fx.yankees] }
+          : {}),
       platformData: { bsc: { ref: `ins-${n}`, src: "b0" } },
       sortOrder: Number(n),
       lastUpdated: NOW,
@@ -191,7 +216,22 @@ async function stubParallelListing(t: T, fx: Fx) {
   }));
 }
 
+/** Arms the BSC fetch to take the team off every `awaitingAtCopy` card. */
+function armTeamDrop(t: T, fx: Fx) {
+  bscState.duringFetch = () =>
+    t.run(async (ctx) => {
+      const cards = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", fx.insert))
+        .collect();
+      for (const c of cards) {
+        if (awaitingAtCopy.includes(c.cardNumber)) await ctx.db.patch(c._id, { teamOnCardIds: undefined });
+      }
+    });
+}
+
 async function build(t: T, fx: Fx) {
+  armTeamDrop(t, fx);
   await stubParallelListing(t, fx);
   const result = await t
     .withIdentity(ADMIN)
@@ -204,6 +244,7 @@ async function build(t: T, fx: Fx) {
 
 /** `build` without the "built" assertion, for the refusals. */
 async function buildRaw(t: T, fx: Fx) {
+  armTeamDrop(t, fx);
   await stubParallelListing(t, fx);
   return t
     .withIdentity(ADMIN)
@@ -293,7 +334,7 @@ describe("parallel build — the parallel's No Team (NEO-556)", () => {
   test("a copy whose BSC lookup is outstanding waits, then the lookup's empty answer stamps it", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
-    await insertCard(t, fx, "1");
+    await insertCard(t, fx, "1", { awaitingAtCopy: true });
     await store(t, fx.parallel, { noTeamDefault: NO_TEAM });
     await build(t, fx);
     const one = (await copies(t, fx)).get("1")!;
@@ -329,7 +370,7 @@ describe("parallel build — the parallel's No Team (NEO-556)", () => {
     const fx = await seed(t);
     // The source's lookup is still outstanding (a teamless source that has
     // been answered is pink and would hold the build, NEO-661).
-    await insertCard(t, fx, "1");
+    await insertCard(t, fx, "1", { awaitingAtCopy: true });
     await store(t, fx.insert, { noTeamDefault: NO_TEAM });
     await build(t, fx);
     const one = (await copies(t, fx)).get("1")!;
@@ -348,7 +389,7 @@ describe("parallel build — the parallel's No Team (NEO-556)", () => {
   test("a parallel with a team still fills it, and stamps nothing", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
-    await insertCard(t, fx, "1");
+    await insertCard(t, fx, "1", { awaitingAtCopy: true });
     await store(t, fx.parallel, { teamIds: [fx.dodgers] });
     await build(t, fx);
     const one = (await copies(t, fx)).get("1")!;
@@ -397,7 +438,7 @@ describe("parallel build — the copy's own BSC team lookup (NEO-556)", () => {
     // "1": the insert card's own lookup still queued (a BSC ref, no stamp).
     // (A hand-added teamless card, never linked to BSC, is pink and holds the
     // build, NEO-661, so it has no copy to queue.)
-    await insertCard(t, fx, "1");
+    await insertCard(t, fx, "1", { awaitingAtCopy: true });
     await store(t, fx.parallel, { noTeamDefault: NO_TEAM });
     await build(t, fx);
 
@@ -430,7 +471,7 @@ describe("parallel build — the copy's own BSC team lookup (NEO-556)", () => {
   test("BSC naming a team lands the team as it always has, and stamps nothing", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
-    await insertCard(t, fx, "1");
+    await insertCard(t, fx, "1", { awaitingAtCopy: true });
     await store(t, fx.parallel, { noTeamDefault: NO_TEAM });
     await build(t, fx);
 
@@ -447,7 +488,7 @@ describe("parallel build — the copy's own BSC team lookup (NEO-556)", () => {
   test("an ordinary parallel (no No Team, no set team) owes the lookup, and BSC's team lands on the copy with no stamp", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
-    await insertCard(t, fx, "1");
+    await insertCard(t, fx, "1", { awaitingAtCopy: true });
     await build(t, fx);
 
     const before = (await copies(t, fx)).get("1")!;
@@ -486,7 +527,7 @@ describe("parallel build — the copy's own BSC team lookup (NEO-556)", () => {
     const maxCopy = 2 + MAX_CARD_PLAYERS + MAX_CARD_TEAMS + MAX_CARD_PLAYERS;
     const fits = 50;
     expect(fits * perCopy + maxCopy).toBe(parallelBuild.INSERT_PAGE_WRITE_BUDGET);
-    for (let i = 1; i <= fits + 2; i++) await insertCard(t, fx, String(i));
+    for (let i = 1; i <= fits + 2; i++) await insertCard(t, fx, String(i), { awaitingAtCopy: true });
     await store(t, fx.parallel, { defaultPlayerIds: [fx.skenes], defaultCameoIds: cameos });
 
     const page = parallelBuild.insertParallelCardsPage as unknown as {
@@ -542,10 +583,163 @@ describe("parallel build — the copy's own BSC team lookup (NEO-556)", () => {
     // The parallel's set team fills a teamless copy: that copy has a team.
     const t2 = convexTest(schema, modules);
     const fx2 = await seed(t2);
-    await insertCard(t2, fx2, "1");
+    await insertCard(t2, fx2, "1", { awaitingAtCopy: true });
     await store(t2, fx2.parallel, { teamIds: [fx2.dodgers] });
     await build(t2, fx2);
     expect(lane).toEqual([]);
     expect((await copies(t2, fx2)).get("1")!.teamOnCardIds).toEqual([fx2.dodgers]);
+  });
+});
+
+/**
+ * NEO-661 (Jason, 2026-11-24: "if there is anything that would cause a pink
+ * box we should hold the parallels back", and for a card still waiting on its
+ * team lookup, "Yes, wait for lookups"). The server's half of the hold: the
+ * refusal wording, and nothing copied.
+ */
+describe("parallel build — a source waiting on its team lookup holds the build (NEO-661)", () => {
+  const AU_NO_FORMAT = { attributes: ["AU"] };
+
+  test("a source only waiting on its lookup is refused as looking up teams, and nothing is copied", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    // A BSC ref, no team, no stamp: not pink, but its lookup is still owed.
+    await insertCard(t, fx, "1");
+    await store(t, fx.parallel, { noTeamDefault: NO_TEAM });
+    const result = await buildRaw(t, fx);
+    expect(result.status).toBe("blocked");
+    expect(result.blockedReason).toBe(parallelBuild.BLOCKED_SOURCE_LOOKING_UP_TEAMS);
+    expect(result.copied).toBe(0);
+    expect((await copies(t, fx)).size).toBe(0);
+    expect(lane).toEqual([]);
+  });
+
+  test("one waiting source holds the build even when every other card is tidy", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await insertCard(t, fx, "1", { teams: [fx.yankees], extra: ANSWERED });
+    await insertCard(t, fx, "2");
+    const result = await buildRaw(t, fx);
+    expect(result.blockedReason).toBe(parallelBuild.BLOCKED_SOURCE_LOOKING_UP_TEAMS);
+    expect((await copies(t, fx)).size).toBe(0);
+  });
+
+  test("a pink card and a waiting card together are refused as not tidy: pink wins", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await insertCard(t, fx, "1"); // waiting
+    await insertCard(t, fx, "2", { extra: { teamCheckDoneAt: NOW, teamCheckOutcome: "gaveUp" } }); // pink
+    const result = await buildRaw(t, fx);
+    expect(result.status).toBe("blocked");
+    expect(result.blockedReason).toBe(parallelBuild.BLOCKED_SOURCE_NOT_TIDY);
+    expect((await copies(t, fx)).size).toBe(0);
+  });
+
+  test("one card both pink and waiting is refused as not tidy", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await insertCard(t, fx, "1", { extra: AU_NO_FORMAT });
+    const before = (await copies(t, fx)).size;
+    const result = await buildRaw(t, fx);
+    expect(result.blockedReason).toBe(parallelBuild.BLOCKED_SOURCE_NOT_TIDY);
+    expect((await copies(t, fx)).size).toBe(before);
+  });
+
+  test("once the lookup answers with a team the same source builds", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    const id = await insertCard(t, fx, "1");
+    expect((await buildRaw(t, fx)).blockedReason).toBe(parallelBuild.BLOCKED_SOURCE_LOOKING_UP_TEAMS);
+
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: id,
+      rawTeamName: "Los Angeles Dodgers",
+      teamNames: ["Los Angeles Dodgers"],
+    });
+    await build(t, fx);
+    expect((await copies(t, fx)).get("1")!.teamOnCardIds).toEqual([fx.dodgers]);
+  });
+
+  test("once the lookup answers no team, the source is pink and the refusal changes to not tidy", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    const id = await insertCard(t, fx, "1");
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: id,
+      rawTeamName: "",
+      teamNames: [],
+    });
+    const result = await buildRaw(t, fx);
+    expect(result.blockedReason).toBe(parallelBuild.BLOCKED_SOURCE_NOT_TIDY);
+  });
+});
+
+/**
+ * NEO-661 — stamp-at-birth. The hold check reads the sources once, before the
+ * BSC fetch; the copy pages re-check only number, name and printed names. A
+ * source whose lookup answers "no team" in between is read by the copy page as
+ * it now is, and `noTeamCardVerdict` stamps the copy with the parallel's No
+ * Team. The BSC fetch runs exactly between the two, so a hook there is the
+ * answer arriving mid-build.
+ */
+describe("parallel build — a source's lookup that answers after the hold check (NEO-661)", () => {
+  /**
+   * One card whose source loses its team when the BSC fetch runs, then
+   * `answer` runs: the lookup coming back mid-build. Returns the source's id.
+   */
+  async function answerDuringFetch(
+    t: T,
+    fx: Fx,
+    answer: (sourceId: Id<"cardChecklist">) => Promise<unknown>,
+  ) {
+    const sourceId = await insertCard(t, fx, "1", { teams: [fx.yankees] });
+    await store(t, fx.parallel, { noTeamDefault: NO_TEAM });
+    await stubParallelListing(t, fx);
+    bscState.duringFetch = async () => {
+      await t.run((ctx) => ctx.db.patch(sourceId, { teamOnCardIds: undefined }));
+      await answer(sourceId);
+    };
+    return sourceId;
+  }
+
+  const buildNow = (t: T, fx: Fx) =>
+    t.withIdentity(ADMIN).action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: fx.parallel });
+
+  test("BSC naming no team: the copy is born stamped with the parallel's No Team, and owes no lookup", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    const sourceId = await answerDuringFetch(t, fx, (id) =>
+      t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+        cardChecklistId: id,
+        rawTeamName: "",
+        teamNames: [],
+      }),
+    );
+    const result = await buildNow(t, fx);
+    expect(result.status).toBe("built");
+    await drainScheduled(t);
+
+    const copy = (await copies(t, fx)).get("1")!;
+    expect(copy.teamNoneConfirmedAt).toBeTypeOf("number");
+    expect(copy.teamNoneConfirmedByUserId).toBe(SETTER);
+    expect(copy.teamOnCardIds).toBeUndefined();
+    expect(lane).toEqual([]);
+    // The source's own lookup answer is its own: the build does not stamp it.
+    const source = await t.run((ctx) => ctx.db.get(sourceId));
+    expect(source!.teamCheckOutcome).toBe("answered");
+    expect(source!.teamNoneConfirmedAt).toBeUndefined();
+  });
+
+  test.each([
+    ["a listing's unmatched team", { ...ANSWERED, bscTeamName: "LA Dodgers" }],
+    ["a lookup that gave up", { teamCheckDoneAt: NOW, teamCheckOutcome: "gaveUp" as const }],
+  ])("%s: the copy is not stamped (product invariant 8)", async (_label, answered) => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await answerDuringFetch(t, fx, (id) => t.run((ctx) => ctx.db.patch(id, answered)));
+    const result = await buildNow(t, fx);
+    expect(result.status).toBe("built");
+    const copy = (await copies(t, fx)).get("1")!;
+    expect(copy.teamNoneConfirmedAt).toBeUndefined();
   });
 });
