@@ -326,6 +326,13 @@ export default function TeamFillChips({
   return (
     <div className="grid gap-2" aria-busy={write.busy || undefined}>
       {caseLine && <p className="text-xs text-ink-2">{caseLine}</p>}
+      {/* NEO-661: mounted for the whole life of the part, so the sentence is a
+          change to a live region that is already in the page (the same pattern
+          as the team name rows' "Checking for teams by that name…"). Shown only
+          while the suggestions are loading; the buttons below stay pressable. */}
+      <p role="status" className="text-xs italic text-ink-3 empty:hidden">
+        {ready ? null : "Looking up teams…"}
+      </p>
       {savesTogether && (
         <p id={togetherId} className="sr-only">
           Suggested teams save together.

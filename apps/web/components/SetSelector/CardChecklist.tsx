@@ -1332,7 +1332,7 @@ export default function CardChecklist({
   const tidyOpen = tidy.location.kind !== "closed";
   /** A commit landed: open the walk once the live rows say a card needs a person. */
   const openTidyAfterCommitRef = useRef(false);
-  /** J3, NEO-661: an insert's parallels wait until no card is pink (`blocksParallelBuild`). */
+  /** J3, NEO-661: an insert's parallels wait until no card is pink or awaiting its team lookup (`blocksParallelBuild`). */
   const heldParallelBuildRef = useRef<{
     id: Id<"selectorOptions">;
     value: string;
@@ -2347,8 +2347,9 @@ export default function CardChecklist({
       // notice, stoppable between parallels.
       //
       // NEO-645 (J3), NEO-661: not yet. The parallels copy this checklist's
-      // cards, so they wait until no card is pink (`blocksParallelBuild`, Jason
-      // 2026-11-24: any pink box holds the parallels back). The effect below
+      // cards, so they wait until no card is pink and every team lookup has
+      // answered (`blocksParallelBuild`, Jason 2026-11-24: any pink box holds
+      // the parallels back; "Yes, wait for lookups"). The effect below
       // starts the build (or the operator's "Build from ..." button does, as it
       // always could).
       if (parallelBuild?.role === "insert") {
@@ -2740,6 +2741,8 @@ export default function CardChecklist({
       if (held.id !== variantId) {
         heldParallelBuildRef.current = null;
       } else if (!cards.some((c) => blocksParallelBuild(c))) {
+        // `cards` is the live rows, so this re-runs when the last team lookup
+        // stamps its answer (NEO-661); no timer.
         heldParallelBuildRef.current = null;
         void parallelRun.start({ id: held.id, value: held.value }, convex).then((failure) => {
           if (failure) setSyncMessage(`${held.committedText} ${planFailedText(failure)}`);

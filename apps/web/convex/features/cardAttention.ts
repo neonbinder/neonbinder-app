@@ -568,18 +568,33 @@ function allTidyItems(row: AttentionCardRow, live?: LiveAttention): TidyAttentio
 }
 
 /**
- * NEO-661 (Jason, 2026-11-24: "if there is anything that would cause a pink box
- * we should hold the parallels back.") — does this card keep its parallels from
- * being built? The parallels COPY the card, so any card that shows pink holds
- * the build: exactly `deriveCardAttention(row).level === "fix"`, whatever the
- * pink item is. (NEO-645 J3 had held only unanswered names.) A card still
- * awaiting its BSC team lookup is not pink, so it does not hold; that is
- * `deriveCardAttention`'s own behaviour, unchanged. One pure rule, read by the
- * server's refusal (`parallelChecklistBuild`) and the client's held auto-start
- * (`CardChecklist`), so the two can never disagree.
+ * NEO-661 — why a card keeps its parallels from being built, or `null` when it
+ * does not. The parallels COPY the card, so two things hold the build:
+ *
+ *  - `"fix"`: the card shows pink (Jason, 2026-11-24: "if there is anything
+ *    that would cause a pink box we should hold the parallels back."), exactly
+ *    `deriveCardAttention(row).level === "fix"`, whatever the pink item is.
+ *    (NEO-645 J3 had held only unanswered names.)
+ *  - `"lookup"`: the card is still waiting on its team lookup
+ *    (`isAwaitingTeamLookup`; Jason, 2026-11-24, asked whether a card still
+ *    waiting should also hold the build: "Yes, wait for lookups"). Such a card
+ *    is not pink, so it needs its own answer.
+ *
+ * Pink wins when both hold. One pure rule, read by the server's refusal
+ * (`parallelChecklistBuild`, which words each reason) and the client's held
+ * auto-start (`CardChecklist`), so the two can never disagree.
  */
+export type ParallelBuildHold = "fix" | "lookup";
+
+export function parallelBuildHold(row: AttentionCardRow): ParallelBuildHold | null {
+  if (deriveCardAttention(row).level === "fix") return "fix";
+  if (isAwaitingTeamLookup(row)) return "lookup";
+  return null;
+}
+
+/** NEO-661 — does this card hold its parallels back, for either reason? */
 export function blocksParallelBuild(row: AttentionCardRow): boolean {
-  return deriveCardAttention(row).level === "fix";
+  return parallelBuildHold(row) !== null;
 }
 
 /**
