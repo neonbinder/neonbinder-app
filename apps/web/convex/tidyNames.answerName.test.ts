@@ -418,6 +418,48 @@ describe("answerName — NEO-284 saveAsAlias and NEO-313 addSetSport", () => {
     expect((await t.run((ctx) => ctx.db.get(w.bo)))!.aliases).toEqual(["Bo J."]);
   });
 
+  test("NEO-671: a name that is another player's PRIMARY name in an ADDED sport is not remembered; the link still lands", async () => {
+    const t = newT();
+    const w = await world(t);
+    const { hoops, guard } = await t.run(async (ctx) => {
+      const hoops = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Basketball",
+        platformData: {},
+        children: [],
+        lastUpdated: 1,
+      });
+      const guard = await ctx.db.insert("players", {
+        name: "Deion Sanders",
+        nameNormalized: normalizeEntityName("Deion Sanders"),
+        sportId: hoops,
+        lastUpdated: 1,
+      });
+      // A baseball (the set's sport) player whose own name is the printed one.
+      await addPlayer(ctx, w, "Deion S.");
+      return { hoops, guard };
+    });
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Deion S." }] }),
+    );
+    await t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
+      cardId: open,
+      kind: "player",
+      name: "Deion S.",
+      sportId: hoops,
+      answer: { kind: "linkPlayer", playerId: guard, addSetSport: true, saveAsAlias: true },
+    });
+    const extra = await t.run((ctx) =>
+      ctx.db
+        .query("playerSports")
+        .withIndex("by_player_id", (q) => q.eq("playerId", guard))
+        .collect(),
+    );
+    expect(extra.map((r) => r.sportId)).toEqual([w.sport]);
+    expect((await t.run((ctx) => ctx.db.get(guard)))!.aliases ?? []).toEqual([]);
+    expect((await card(t, open))!.playerIds).toEqual([guard]);
+  });
+
   test("a team that is not in the question's sport is refused", async () => {
     const t = newT();
     const w = await world(t);

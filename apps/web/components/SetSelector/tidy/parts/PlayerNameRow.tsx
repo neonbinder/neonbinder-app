@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { QuestionMarkCircleIcon } from "@heroicons/react/16/solid";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
@@ -376,7 +376,7 @@ function UnansweredPlayerName({
   ]);
 
   // `withAlias`: the pick came from a list of players whose name differs from the
-  // printed one (Possible matches, the fragment panel, Link to existing…). The
+  // printed one (Possible matches, Link to existing…). The
   // exact-name and same-name links never send it: the printed name is already
   // the player's own.
   const link = (playerId: string, withAlias = false) =>
@@ -477,29 +477,44 @@ function UnansweredPlayerName({
   // is described by while that line is on screen.
   const reasonId = useId();
 
+  // NEO-671: the box governs the Possible matches and Link to existing… picks
+  // only. It sits inside each list, ahead of the picks, so it reads (and tabs)
+  // as part of them. Where it can unmount under a focused operator (the matches
+  // re-query to empty), focus parks on the row instead of falling to <body>.
+  const aliasBoxShown = linkOpen ? rowSportId !== undefined : panelMatches.length > 0;
+  const aliasBoxFocused = useRef(false);
+  useEffect(() => {
+    if (aliasBoxShown || !aliasBoxFocused.current) return;
+    aliasBoxFocused.current = false;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    const wrap = wrapRef.current;
+    if (!wrap?.isConnected) return;
+    wrap.tabIndex = -1;
+    wrap.focus({ preventScroll: true });
+  }, [aliasBoxShown, wrapRef]);
   const aliasBox = (
-    <div className="space-y-0.5">
-      <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2">
-        <input
-          type="checkbox"
-          checked={saveAsAlias}
-          aria-disabled={write.busy || undefined}
-          aria-label={`Remember “${name.printed}” as a name for this player`}
-          onChange={(e) => {
-            if (write.busy) return;
-            setSaveAsAlias(e.target.checked);
-          }}
-          className="h-6 w-6 shrink-0 rounded accent-neon-green-text focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
-        />
-        <span>{`Remember “${name.printed}” as a name for this player`}</span>
-      </label>
-      <p className="pl-8 text-xs text-ink-3">
-        Kicks in when you link. Next time this name shows up, it goes straight to that player.
-      </p>
-    </div>
+    <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2">
+      <input
+        type="checkbox"
+        checked={saveAsAlias}
+        aria-disabled={write.busy || undefined}
+        aria-label={`Remember “${name.printed}” as a name for this player`}
+        onFocus={() => {
+          aliasBoxFocused.current = true;
+        }}
+        onBlur={(e) => {
+          if (e.relatedTarget) aliasBoxFocused.current = false;
+        }}
+        onChange={(e) => {
+          if (write.busy) return;
+          setSaveAsAlias(e.target.checked);
+        }}
+        className="h-6 w-6 shrink-0 rounded accent-neon-green-text focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
+      />
+      <span className="min-w-0 wrap-anywhere">{`Remember “${name.printed}” as a name for this player`}</span>
+    </label>
   );
-  const showAliasBox =
-    !linkOpen && (panelMatches.length > 0 || (!pickStep && fragmentStep));
 
   // One filled button per tile (the walk's own rule: the best answer leads,
   // everything else is an outline). In this order, and only on the lead row:
@@ -579,14 +594,16 @@ function UnansweredPlayerName({
           disabled={write.busy}
           onPick={(id) => {
             if (write.busy) return;
-            void link(id, true);
+            void link(id);
           }}
         />
       )}
 
-      {!linkOpen && <NearMatchPanel kind="player" matches={panelMatches} busy={write.busy} onPick={(id) => void link(id, true)} />}
-
-      {showAliasBox && aliasBox}
+      {!linkOpen && (
+        <NearMatchPanel kind="player" matches={panelMatches} busy={write.busy} onPick={(id) => void link(id, true)}>
+          {aliasBox}
+        </NearMatchPanel>
+      )}
 
       {crossSport && (
         <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2">
@@ -607,16 +624,15 @@ function UnansweredPlayerName({
 
       {linkOpen ? (
         rowSportId && (
-          <>
-            <EntityLinkSearch
-              kind="player"
-              sportId={rowSportId}
-              initialQuery={queryName}
-              onSelect={(id) => void link(id, true)}
-              onCancel={closeLink}
-            />
+          <EntityLinkSearch
+            kind="player"
+            sportId={rowSportId}
+            initialQuery={queryName}
+            onSelect={(id) => void link(id, true)}
+            onCancel={closeLink}
+          >
             {aliasBox}
-          </>
+          </EntityLinkSearch>
         )
       ) : (
         <div className="flex flex-wrap items-center gap-2" aria-busy={write.busy || undefined}>

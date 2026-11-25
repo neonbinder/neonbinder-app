@@ -8,10 +8,12 @@
 import type { MutationCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import {
+  additionalSportIds,
   MAX_PLAYER_ALIASES,
   MAX_PLAYER_ALIAS_LENGTH,
   normalizePlayerAliasList,
   normalizePlayerName,
+  sameNamePlayers,
   syncPlayerAliases,
 } from "./players";
 
@@ -21,7 +23,8 @@ import {
  * the loop and losing one alias must not undo the link. A string equal to the
  * player's own name (after normalising), one they already hold, one over
  * `MAX_PLAYER_ALIAS_LENGTH`, a player already at `MAX_PLAYER_ALIASES`, and a
- * string that is another player's PRIMARY name in this sport are each skipped
+ * string that is another player's PRIMARY name in any sport the alias will be
+ * indexed in (home plus the player's added sports) are each skipped
  * (logged by length and id, never the string); the link itself lands.
  *
  * An alias another player holds as an ALIAS is allowed (NEO-254: both Griffeys
@@ -39,6 +42,7 @@ export async function rememberAliasesOnPlayer(
     ...held.map((a) => normalizePlayerName(a)),
   ]);
   const additions: string[] = [];
+  const sportIds = [linked.sportId, ...(await additionalSportIds(ctx, linked._id))];
   for (const name of names) {
     const trimmed = name.trim();
     const key = normalizePlayerName(trimmed);
@@ -56,15 +60,20 @@ export async function rememberAliasesOnPlayer(
       );
       continue;
     }
-    // Another player's primary name in this sport: stored as an alias it would
-    // make the name answer to two people the operator never asked about.
-    const owner = await ctx.db
-      .query("players")
-      .withIndex("by_name_normalized_and_sport_id", (q) =>
-        q.eq("nameNormalized", key).eq("sportId", linked.sportId),
-      )
-      .first();
-    if (owner && owner._id !== linked._id) {
+    // Another player's primary name in any sport the alias will be indexed in
+    // (home plus added sports, read now so a sport `addSetSport` just added
+    // counts): stored as an alias it would make the name answer to two people
+    // the operator never asked about. Primary-name hits only, through either
+    // leg (`players`, or `playerSports`' name leg); another player's ALIAS hit
+    // does not stop it.
+    let owner: Doc<"players"> | undefined;
+    for (const sportId of sportIds) {
+      owner = (await sameNamePlayers(ctx, key, sportId)).find(
+        (p) => p.nameNormalized === key && p._id !== linked._id,
+      );
+      if (owner) break;
+    }
+    if (owner) {
       console.warn(
         `${caller}: a saveAsAlias string is player ${owner._id}'s own name. Linked, not remembered.`,
       );

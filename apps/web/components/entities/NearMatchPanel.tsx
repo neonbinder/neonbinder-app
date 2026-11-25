@@ -129,6 +129,8 @@ export interface NearMatchPanelProps {
    * through `className`.
    */
   busy?: boolean;
+  /** Extra controls rendered inside the panel, between its heading and the picks. */
+  children?: React.ReactNode;
 }
 
 /**
@@ -150,6 +152,7 @@ export function NearMatchPanel({
   pickLabel = defaultPickLabel,
   className = "",
   busy = false,
+  children,
 }: NearMatchPanelProps) {
   // Same-name rows first, then alias hits (exact by confidence, not by name),
   // then close matches; within each group, the order the server ranked them
@@ -225,6 +228,7 @@ export function NearMatchPanel({
           className={`rounded-md border border-neon-blue/40 bg-neon-blue/5 p-3 space-y-2 ${className}`.trim()}
         >
           <p className="text-sm font-medium text-neon-blue-text">Possible matches</p>
+          {children}
           <ul className="space-y-1" aria-label={`Possible ${kind} matches`}>
             {rows.map((row, index) => {
               const { match, viaAlias, sameName, description } = row;

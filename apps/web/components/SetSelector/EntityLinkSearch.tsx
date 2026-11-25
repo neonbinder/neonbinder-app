@@ -141,6 +141,7 @@ export default function EntityLinkSearch({
   initialQuery,
   onSelect,
   onCancel,
+  children,
 }: {
   kind: "player" | "team" | "league";
   /** NEO-96: the sport-level selectorOptions row id, not its display name. */
@@ -161,6 +162,8 @@ export default function EntityLinkSearch({
     name: string,
   ) => void;
   onCancel: () => void;
+  /** Extra controls placed right under the search input, ahead of the results. */
+  children?: React.ReactNode;
 }) {
   const { mode } = useTheme();
   const uid = useId();
@@ -346,6 +349,8 @@ export default function EntityLinkSearch({
         }}
         className="w-full p-1.5 text-sm"
       />
+
+      {children}
 
       {idle && (
         <div className="text-xs text-ink-3 px-2 py-1">Type to search</div>

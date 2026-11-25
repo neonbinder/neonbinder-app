@@ -45,11 +45,17 @@ vi.mock("convex/react", () => ({
 
 const linkSearchProps: Array<Record<string, unknown>> = [];
 vi.mock("../../EntityLinkSearch", () => ({
-  default: (props: { kind: string; onSelect: (id: string, n: string) => void; onCancel: () => void }) => {
+  default: (props: {
+    kind: string;
+    onSelect: (id: string, n: string) => void;
+    onCancel: () => void;
+    children?: React.ReactNode;
+  }) => {
     linkSearchProps.push(props);
-    const { kind, onSelect, onCancel } = props;
+    const { kind, onSelect, onCancel, children } = props;
     return (
     <div>
+      {children}
       <button type="button" onClick={() => onSelect("player-9", "Someone")}>
         {`Pick a ${kind}`}
       </button>
@@ -820,21 +826,33 @@ describe("PlayerTile: remember the printed name as a name for the picked player 
     });
   });
 
-  it("is shown with the one-name fragment panel, and its pick sends the flag", async () => {
+  it("tabs before the picks: ahead of the Possible matches buttons and the search results", async () => {
+    queryResults["players.nearMatches"] = [close];
+    renderTile();
+    const box = screen.getByRole("checkbox", { name: REMEMBER });
+    const pick = screen.getByRole("button", { name: /^Link to Jackson Merrill Jr\./ });
+    expect(box.compareDocumentPosition(pick) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Link to existing…" })));
+    const open = screen.getByRole("checkbox", { name: REMEMBER });
+    const search = screen.getByRole("button", { name: "Pick a player" });
+    expect(open.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("is not shown with the one-name fragment question, whose pick sends no flag", async () => {
     queryResults["players.nearMatches"] = [];
     queryResults["players.nameFragmentCheck"] = {
       isFragment: true,
       matches: [{ _id: "player-3", name: "Jackson Merrill Sr.", birthYear: 1970 }],
     };
     renderTile();
-    expect((screen.getByRole("checkbox", { name: REMEMBER }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByRole("checkbox", { name: REMEMBER })).toBeNull();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /Jackson Merrill Sr\./ })));
     expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
       cardId: CARD,
       kind: "player",
       name: "Jackson Merrill",
       sportId: SPORT,
-      answer: { kind: "linkPlayer", playerId: "player-3", saveAsAlias: true },
+      answer: { kind: "linkPlayer", playerId: "player-3" },
     });
   });
 });
