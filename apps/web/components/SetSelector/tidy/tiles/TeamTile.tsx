@@ -160,20 +160,31 @@ export default function TeamTile({
   const open = nameOpen || noTeam;
   const atCap = teamsOnCard.length >= MAX_CARD_TEAMS;
 
-  const saveTeams = (next: Array<Id<"teams">>) =>
+  const saveTeams = (next: Array<Id<"teams">>, announcement?: string) =>
     write.run(async () => {
       await updateCard({ id: row._id, teamOnCardIds: next, regenerateListing: true });
       setSearchFor(null);
-      answered();
+      answered(announcement);
     }, "Couldn't save that team. Try again.");
 
-  /** Replace one of the card's teams with another (Change, and a career swap). */
-  const swapTeam = (from: Id<"teams">, to: Id<"teams">) =>
-    saveTeams([...new Set(teamsOnCard.map((t) => (t === from ? to : t)))]);
+  /**
+   * Replace one of the card's teams with another (Change, and a career swap).
+   * The swap pill's group is gone once the card's teams update, so the walk is
+   * told in words ("Swapped Padres for Pirates.") for a screen reader.
+   */
+  const swapTeam = (from: Id<"teams">, to: Id<"teams">, announcement?: string) =>
+    saveTeams([...new Set(teamsOnCard.map((t) => (t === from ? to : t)))], announcement);
 
-  const onSelect = (picked: string) => {
+  const onSelect = (picked: string, pickedName?: string) => {
     const id = picked as Id<"teams">;
-    if (searchFor?.kind === "change") return swapTeam(searchFor.teamId, id);
+    if (searchFor?.kind === "change") {
+      const fromName = ctx.teams.find((t) => t.teamId === searchFor.teamId)?.name;
+      return swapTeam(
+        searchFor.teamId,
+        id,
+        fromName && pickedName ? `Swapped ${fromName} for ${pickedName}.` : undefined,
+      );
+    }
     return saveTeams([...new Set([...teamsOnCard, id])]);
   };
 
@@ -224,7 +235,7 @@ export default function TeamTile({
         const gap = gaps.find((g) => g.teamId === team.teamId);
         const stints = ctx.players.find((p) => p.playerId === gap?.playerId)?.stints ?? [];
         const swaps =
-          gap && searchFor === null ? careerSwapOptions({ stints, teamsOnCard, setYear }) : [];
+          gap && searchFor === null ? careerSwapOptions({ stints, setYear }) : [];
         const swapLabelId = `swap-for-${row._id}-${team.teamId}`;
         return (
           <div
@@ -246,7 +257,7 @@ export default function TeamTile({
                 <p id={swapLabelId} className="text-xs text-ink-2">
                   Swap for
                 </p>
-                <ul className="flex flex-wrap gap-1.5" aria-labelledby={swapLabelId}>
+                <ul role="list" className="flex flex-wrap gap-1.5" aria-labelledby={swapLabelId}>
                   {swaps.map((option) => (
                     <li key={option.teamId} className="max-w-full">
                       <TeamChip
@@ -255,7 +266,13 @@ export default function TeamTile({
                         suffix={option.years}
                         accessibleName={`Swap ${team.name} for ${option.teamName} · ${option.years}`}
                         busy={write.busy}
-                        onClick={() => void swapTeam(team.teamId, option.teamId as Id<"teams">)}
+                        onClick={() =>
+                          void swapTeam(
+                            team.teamId,
+                            option.teamId as Id<"teams">,
+                            `Swapped ${team.name} for ${option.teamName}.`,
+                          )
+                        }
                       />
                     </li>
                   ))}
@@ -297,7 +314,7 @@ export default function TeamTile({
             kind="team"
             sportId={sportId}
             contextOptionId={leafId}
-            onSelect={(id) => void onSelect(id)}
+            onSelect={(id, name) => void onSelect(id, name)}
             onCancel={closeSearch}
           />
         </div>

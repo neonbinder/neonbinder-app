@@ -10,25 +10,23 @@ export type CareerSwapOption = { teamId: string; teamName: string; years: string
  *
  * "Covers" is production's window, `stintCoversWindow` (`convex/lib/teamFill`):
  * the set year and the one before it, the same window team-fill reads
- * (`careerTeamVerdict`). An undated stint covers nothing, a team already on the
- * card is not offered, and a team with several covering stints is one option
- * whose years are those stints merged (`stintYearsText`), in career order. With
- * no set year there is nothing to cover, so none.
+ * (`careerTeamVerdict`). An undated stint covers nothing, and a team with
+ * several covering stints is one option whose years are those stints merged
+ * (`stintYearsText`), in career order. A team already on the card is offered like
+ * any other; the swap leaves it once. With no set year there is nothing to
+ * cover, so none.
  */
 export function careerSwapOptions({
   stints,
-  teamsOnCard,
   setYear,
 }: {
   stints: ReadonlyArray<{ teamId: string; teamName: string; fromYear?: number; toYear?: number }>;
-  teamsOnCard: ReadonlyArray<string>;
   setYear: number | undefined;
 }): CareerSwapOption[] {
   if (setYear === undefined) return [];
-  const onCard = new Set(teamsOnCard);
   const byTeam = new Map<string, { teamName: string; covering: Array<{ fromYear: number; toYear?: number }> }>();
   for (const s of stints) {
-    if (s.fromYear === undefined || onCard.has(s.teamId)) continue;
+    if (s.fromYear === undefined) continue;
     const dated = { fromYear: s.fromYear, ...(s.toYear !== undefined ? { toYear: s.toYear } : {}) };
     if (!stintCoversWindow(dated, setYear)) continue;
     const entry = byTeam.get(s.teamId);

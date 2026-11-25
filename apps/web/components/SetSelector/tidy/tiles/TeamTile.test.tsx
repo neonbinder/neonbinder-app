@@ -1325,19 +1325,67 @@ describe("TeamTile", () => {
         expect(screen.queryByRole("button", { name: /^Swap / })).toBeNull();
       });
 
-      it("offers no pill for a team that is already on the card", () => {
+      it("offers a covering team the card already carries, and a click leaves it once", async () => {
+        // No condition of ours drops it (Jason's words only ask for the covering stints): the swap dedupes.
         render2026({
-          row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7", "team-bos"] }),
+          row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7", "team-pit"] }),
           ctx: gapCtx({
             teams: [
-              { teamId: "team-7", name: "San Diego Padres", onCard: true, candidate: false },
-              { teamId: "team-bos", name: "Boston Red Sox", onCard: true, candidate: false },
+              { teamId: "team-7", name: "Pittsburgh Panthers", onCard: true, candidate: false },
+              { teamId: "team-pit", name: "Pittsburgh Pirates", onCard: true, candidate: false },
             ],
           }),
         });
-        const group = screen.getByRole("group", { name: "Team San Diego Padres" });
-        expect(within(group).queryByRole("button", { name: /Swap San Diego Padres for Boston Red Sox/ })).toBeNull();
-        expect(within(group).getByRole("button", { name: /Swap San Diego Padres for Pittsburgh Pirates/ })).toBeTruthy();
+        const group = screen.getByRole("group", { name: "Team Pittsburgh Panthers" });
+        expect(within(group).getByRole("button", { name: /Swap Pittsburgh Panthers for Boston Red Sox/ })).toBeTruthy();
+        await click(swapPill("Pittsburgh Panthers", "Pittsburgh Pirates", "2026–present"));
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledTimes(1);
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+          id: CARD,
+          teamOnCardIds: ["team-pit"],
+          regenerateListing: true,
+        });
+      });
+
+      it("tells the walk in words that the team was swapped, and the pills are gone once the card's teams update", async () => {
+        const onAnswered = vi.fn();
+        const { rerender } = render2026({ onAnswered });
+        await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–present"));
+        expect(onAnswered).toHaveBeenCalledTimes(1);
+        expect(onAnswered).toHaveBeenCalledWith("Swapped San Diego Padres for Boston Red Sox.");
+        // The card now carries Boston and no longer has a career gap.
+        rerender(
+          <WalkMemoryProvider value={memory}>
+            <AnsweredProvider value={onAnswered}>
+              <TeamTile
+                row={card({ playerIds: ["player-1"], teamOnCardIds: ["team-bos"] })}
+                context={gapCtx({
+                  teams: [{ teamId: "team-bos", name: "Boston Red Sox", onCard: true, candidate: false }],
+                })}
+                attention={{ level: "plain", items: [] } as unknown as TidyAttention}
+                leafId={"leaf-1" as never}
+                sportId={SPORT as never}
+                leafCards={[]}
+                setName="Set"
+              />
+            </AnsweredProvider>
+          </WalkMemoryProvider>,
+        );
+        expect(screen.queryByRole("list", { name: "Swap for" })).toBeNull();
+        expect(screen.queryByRole("button", { name: /^Swap / })).toBeNull();
+      });
+
+      it("tells the walk nothing when the save is refused", async () => {
+        const onAnswered = vi.fn();
+        mutation("selectorOptions.updateCard").mockRejectedValueOnce(new Error("Server Error"));
+        render2026({ onAnswered });
+        await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–present"));
+        expect(onAnswered).not.toHaveBeenCalled();
+      });
+
+      it("the swap list is an explicit list (Safari drops list semantics from an unstyled one)", () => {
+        render2026();
+        expect(screen.getByRole("list", { name: "Swap for" }).getAttribute("role")).toBe("list");
       });
 
       it("a team on the card that is not a gap gets no swap list", () => {

@@ -334,7 +334,7 @@ export default function TeamFillChips({
           <p id={`fill-listing-${row._id}`} className="text-xs text-ink-2">
             {marketplaceHeading(bscName, marketplaceChips.length)}
           </p>
-          <ul className="flex flex-wrap gap-1.5" aria-labelledby={`fill-listing-${row._id}`} aria-busy={ready ? undefined : true}>
+          <ul role="list" className="flex flex-wrap gap-1.5" aria-labelledby={`fill-listing-${row._id}`} aria-busy={ready ? undefined : true}>
             {marketplaceChips.map((chip) =>
               renderChip(chip, { suffix: chipSuffix(chip) }),
             )}
@@ -354,7 +354,7 @@ export default function TeamFillChips({
               otherCards: line.source === "otherCards",
             })}
           </p>
-          <ul className="flex flex-wrap gap-1.5" aria-labelledby={`fill-career-${row._id}`} aria-busy={ready ? undefined : true}>
+          <ul role="list" className="flex flex-wrap gap-1.5" aria-labelledby={`fill-career-${row._id}`} aria-busy={ready ? undefined : true}>
             {careerChips.map((chip) =>
               renderChip(chip, { suffix: chipSuffix(chip) }),
             )}
