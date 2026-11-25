@@ -501,6 +501,30 @@ describe("SetSelector — a finished run retires once the selection moves (NEO-4
     expect(ledgers()).toHaveLength(0);
   });
 
+  it("a second run pressed from a row records its own opening selection, not the first run's", async () => {
+    mockConvex.action.mockImplementation(() => Promise.reject(new Error("BSC is down")));
+    // Run 1 starts with the type open, finishes, and retires on the pick of the row.
+    await buildFromSection();
+    await waitFor(() => expect(ledgers()).toHaveLength(1));
+    fireEvent.click(screen.getByText("select-row"));
+    expect(ledgers()).toHaveLength(0);
+    mockConvex.action.mockClear();
+
+    // Run 2 starts from the row (a fresh wait key) and finishes there.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Build 1 parallel from Base/ }));
+    });
+    await waitFor(() => expect(mockConvex.action).toHaveBeenCalled());
+    await waitFor(() => expect(ledgers()).toHaveLength(1));
+    await act(async () => {});
+    // Its ledger survives the run: the first run's recorded selection did not leak in.
+    expect(ledgers()).toHaveLength(1);
+
+    // The next pick of another row retires it.
+    selectType("vt-inserts");
+    expect(ledgers()).toHaveLength(0);
+  });
+
   it("moving to another Parallel-kind type is leaving the run's section, so the ledger retires", async () => {
     mockConvex.action.mockImplementation(() => Promise.reject(new Error("BSC is down")));
     await buildFromSection();

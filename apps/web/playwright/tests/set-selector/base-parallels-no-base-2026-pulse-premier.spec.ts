@@ -105,6 +105,7 @@ test(
     const firstQuestion = firstPick.getByRole("radiogroup", { name: QUESTION });
     await expect(firstQuestion.or(copying)).toBeVisible();
 
+    // Both branches assert the feature: fresh opens on the first-pick question, adopted reopens it via Change.
     const adopted = await copying.isVisible();
     const section = adopted ? chosen : firstPick;
     const picker = section.getByRole("radiogroup", { name: QUESTION });
