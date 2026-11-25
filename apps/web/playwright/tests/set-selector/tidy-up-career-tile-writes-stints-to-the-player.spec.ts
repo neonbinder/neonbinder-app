@@ -3,12 +3,13 @@
 // set's year. On a card whose player is in NeonBinder but whose career has no stint for the card's
 // team by the set's year, the tile is blue "To check": "Add to career" writes that stint at once and
 // the gap is gone; a Team-tile Change to a team the career covers closes the gap with nothing
-// written, and so does a "Swap for" pill (NEO-672: under the gap team, one pill per career team
-// whose stints cover the set's year and the year before, not already on the card); and Save & next with the gap still open takes main's default, adding the stint from the
-// set's year (the line "Save & next adds it to the career." says so), which clears the gap on EVERY
-// card of his with that team, so the walk goes on to the next card that still needs you. There is
-// no "Keep as is" (B23): Skip writes nothing and the card stays blue. Players admin reads the
-// career back.
+// written, and so does a swap pill (NEO-672: under the gap team, a list "Swap <gap team> for" with
+// one pill per career team whose stints cover the set's year and the year before and that is not
+// already on the card, newest first; the gap row says "Or swap the card's team below."); and Save &
+// next with the gap still open takes main's default, adding the stint from the set's year (the line
+// "Save & next adds it to the career." says so), which clears the gap on EVERY card of his with that
+// team, so the walk goes on to the next card that still needs you. There is no "Keep as is" (B23):
+// Skip writes nothing and the card stays blue. Players admin reads the career back.
 //
 // Renamed from checklist-wizard-career-team-commits (NEO-645). NEO-656 (J6) dropped the stored
 // career check and the new player's Wikidata review on the Career tile (B24): the inline "+ New
@@ -28,17 +29,19 @@
 //     his seven cards to him (exact name) and the walk reads each card's team against his career:
 //       #1 P · Seattle Mariners  covered: no gap, no walk card
 //       #2 P · Colorado Rockies  gap -> "Add to career" (writes Colorado Rockies 2024)
-//       #3 P · San Diego Padres  gap -> swap pills Mariners, Rockies; Team-tile Change to the
-//                                Mariners (writes no stint)
+//       #3 P · San Diego Padres  gap -> swap pills Rockies, Mariners (newest first); Team-tile
+//                                Change to the Mariners (writes no stint)
 //       #4 P · Chicago Cubs      gap left open -> Save & next (writes Chicago Cubs 2024)...
 //       #5 P · Chicago Cubs      ...which clears this card too: the walk never shows it
-//       #6 P · San Diego Padres  gap -> swap pills Mariners, Rockies, Cubs; the Cubs pill swaps
-//                                the card's team (writes no stint)
+//       #6 P · San Diego Padres  gap -> swap pills Rockies, Cubs, Mariners (2024 ties keep career
+//                                order); the Cubs pill swaps the card's team (writes no stint)
 //       #7 P · San Diego Padres  gap -> Skip (writes nothing; stays blue, "1 needs you")
 // FRESH-ONLY: P is a global row with a real name, so a second run on the same seed finds him (his
 // admin create demotes to "... anyway"). CI reseeds each pass. Nothing is deleted (R7): the set, its
 // cards and P stand; no catalogue row is written (the catalogue teams are only linked to).
-// The swap pills' years are `stintYearsText` (the covering stints merged): "2020–2024", "2024".
+// The swap pills' years are the Career chips' (`stintYears`): "2020–2024", one season "2024". No
+// card here carries a career team, so the "already on the card, no pill" rule is unit-covered
+// (career-swap.test.tsx), not here.
 import type { Page } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { usePastedChecklist } from "../../support/published-checklist";
@@ -84,7 +87,7 @@ async function openPlayer(page: Page, name: string) {
 test(
   "Tidy Up — the Career tile writes stints to the player: Add to career, a team change or a Swap for pill to a team the career covers closes a gap, Save & next adds the default stint and clears his other cards, and Skip leaves the gap blue",
   { tag: ["@set-selector"] },
-  async ({ page, signIn, env }) => {
+  async ({ page, signIn, env, isMobile }) => {
     const SET = `tcg${env.ATTEMPT_TOKEN}`;
 
     // ── FIXTURE 1: P, with one stint that covers card #1's team ──
@@ -133,14 +136,25 @@ test(
     const addToCareer = gapRow.getByRole("button", { name: "Add to career", exact: true });
     // C8: every open gap says what Save & next will do with it.
     const defaultLine = gapRow.getByText("Save & next adds it to the career.", { exact: true });
+    // NEO-672: a gap the Team tile offers swap pills for points at them.
+    const orSwapLine = gapRow.getByText("Or swap the card's team below.", { exact: true });
     // The career on file is shown beside the question.
     const onFile = gapRow.getByRole("list", { name: `Career on file for ${P}` }).getByRole("listitem");
-    // NEO-672: the Team tile's group for the gap team offers the covering career teams as pills.
+    // NEO-672: the Team tile's group for the gap team offers the covering career teams as pills,
+    // in a list named for the gap team, newest covering stint first.
     const teamTile = tidyTile(page, "Team");
     const gapTeam = teamTile.getByRole("group", { name: `Team ${CHANGED}`, exact: true });
-    const swapPills = gapTeam.getByRole("list", { name: "Swap for", exact: true }).getByRole("button");
+    const swapPills = gapTeam.getByRole("list", { name: `Swap ${CHANGED} for`, exact: true }).getByRole("button");
+    const swapName = (team: string, years: string) => `Swap ${CHANGED} for ${team} · ${years}`;
     const swapPill = (team: string, years: string) =>
-      gapTeam.getByRole("button", { name: `Swap ${CHANGED} for ${team} · ${years}`, exact: true });
+      gapTeam.getByRole("button", { name: swapName(team, years), exact: true });
+    // The pills' names, in order (the visible text has no separator between team and years).
+    const expectSwapPills = async (pills: Array<[team: string, years: string]>, why: string) => {
+      await expect(swapPills, why).toHaveCount(pills.length);
+      for (const [i, [team, years]] of pills.entries()) {
+        await expect(swapPills.nth(i), why).toHaveAccessibleName(swapName(team, years));
+      }
+    };
     // The walk's live region says what a swap did (the sr-only status line beside the footer).
     const swapped = (to: string) =>
       walk.getByRole("status").filter({ hasText: `Swapped ${CHANGED} for ${to}.` });
@@ -173,10 +187,16 @@ test(
     await expect(gapText(CHANGED)).toBeVisible();
     // The Rockies stint just written is on file now (one season: a 2024 set is a past year).
     await expect(onFile).toHaveText([`${COVERED} · 2020–${YEAR}`, `${ADDED} · ${YEAR}`]);
-    // NEO-672: one pill per career team whose stints cover 2023-2024 (the set's year and the one before).
-    await expect(swapPill(COVERED, `2020–${YEAR}`)).toBeVisible();
-    await expect(swapPill(ADDED, YEAR)).toBeVisible();
-    await expect(swapPills, "exactly his two career teams").toHaveCount(2);
+    // NEO-672: one pill per career team whose stints cover 2023-2024 (the set's year and the one
+    // before), the latest start first: the Rockies (2024) lead the Mariners (2020-2024).
+    await expectSwapPills(
+      [
+        [ADDED, YEAR],
+        [COVERED, `2020–${YEAR}`],
+      ],
+      "exactly his two career teams, newest first",
+    );
+    await expect(orSwapLine, "the gap row points at the pills").toBeVisible();
     await gapTeam.getByRole("button", { name: `Edit ${CHANGED}`, exact: true }).click();
     const teamSearchBox = teamTile.getByRole("textbox", { name: "Search existing teams" });
     await expect(teamSearchBox).toBeVisible();
@@ -224,15 +244,32 @@ test(
     await expectCardSettled(page);
     await expect(gapText(CHANGED)).toBeVisible();
 
-    // NEO-672: the Padres gap now offers all three career teams, the Cubs just written among them.
-    await expect(swapPill(COVERED, `2020–${YEAR}`)).toBeVisible();
-    await expect(swapPill(ADDED, YEAR)).toBeVisible();
-    await expect(swapPill(DEFAULTED, YEAR)).toBeVisible();
-    await expect(swapPills, "exactly his three career teams").toHaveCount(3);
+    // NEO-672: the Padres gap now offers all three career teams, the Cubs just written among them;
+    // the two 2024 starts keep career order (Rockies, then Cubs) ahead of the Mariners.
+    await expectSwapPills(
+      [
+        [ADDED, YEAR],
+        [DEFAULTED, YEAR],
+        [COVERED, `2020–${YEAR}`],
+      ],
+      "exactly his three career teams, newest first",
+    );
+    if (isMobile) {
+      // The longest pill wraps inside a phone's width: scrolled to, it is wholly on screen.
+      const longest = swapPill(COVERED, `2020–${YEAR}`);
+      await longest.scrollIntoViewIfNeeded();
+      await expect(longest, "the pill is not clipped at 412px").toBeInViewport({ ratio: 1 });
+    }
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, Team tile offering career swaps for a gap team" });
     // The Cubs pill swaps the card's team: the gap closes, and nothing is written to the player
     // (#7's Career tile below still shows the three stints on file; READ BACK proves it too).
     await swapPill(DEFAULTED, YEAR).click();
+    // The visible half of the confirmation, in the tile for about 6 s (aria-hidden: the walk's
+    // status below is the spoken half), so it is read straight after the click.
+    await expect(
+      teamTile.getByText(`Swapped ${CHANGED} for ${DEFAULTED}.`, { exact: true }),
+      "the swap is shown in the Team tile",
+    ).toBeVisible();
     await expect(teamTile.getByRole("group", { name: `Team ${DEFAULTED}`, exact: true })).toBeVisible();
     await expect(swapped(DEFAULTED), "the pill's swap is announced").toHaveText(`Swapped ${CHANGED} for ${DEFAULTED}.`);
     await expect(gapTeam).toHaveCount(0);
