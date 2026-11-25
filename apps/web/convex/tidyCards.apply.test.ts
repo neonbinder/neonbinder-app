@@ -302,7 +302,7 @@ describe("applyTeamToPlayerCards — the answer goes to the card's line (main's 
     expect((await card(t, pending))!.teamOnCardIds).toBeUndefined();
   });
 
-  test("a teams disagreement between the sources, settled or not, is refused", async () => {
+  test("a teams disagreement between the sources is refused", async () => {
     const t = newT();
     const tw = await teamWorld(t);
     const entry = {
@@ -312,11 +312,8 @@ describe("applyTeamToPlayerCards — the answer goes to the card's line (main's 
         { value: ["Mets"], sources: ["checklist" as const] },
       ],
     };
-    const unsettled = await merrillCard(t, tw, "13", { sourceDisagreements: [entry] });
-    const settled = await merrillCard(t, tw, "14", {
-      sourceDisagreements: [{ ...entry, chosen: { value: ["Mets"], by: "operator" as const } }],
-    });
-    expect(await applyTeam(t, tw, [unsettled, settled])).toEqual({ applied: 0, skipped: 2 });
+    const disputed = await merrillCard(t, tw, "13", { sourceDisagreements: [entry] });
+    expect(await applyTeam(t, tw, [disputed])).toEqual({ applied: 0, skipped: 1 });
   });
 
   test("a card the operator stamped No Team is refused", async () => {

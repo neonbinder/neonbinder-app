@@ -225,8 +225,6 @@ describe("commitCardChecklist: an open checklistConflict", () => {
       expect(seven.sourceDisagreements![0].field).toBe(what);
       const values = seven.sourceDisagreements![0].values.map((v) => v.value.join("|"));
       expect(values.sort()).toEqual(["A", "B"]);
-      // Unsettled: nothing is written for the disagreeing field, and no chosen value.
-      expect(seven.sourceDisagreements![0].chosen).toBeUndefined();
       expect(rows.find((r) => r.cardNumber === "1")!.sourceDisagreements).toBeUndefined();
       await settle(t);
     },

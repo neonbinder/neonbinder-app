@@ -66,7 +66,7 @@ function renderTile(
   const props: TidyTileProps = {
     row,
     context: context as TidyTileProps["context"],
-    attention: attention ?? { level: d && !d.chosen ? "fix" : "none", items: [] },
+    attention: attention ?? { level: d ? "fix" : "none", items: [] },
     leafId: "leaf-1" as never,
     sportId: undefined,
     leafCards: leafCards ?? [row],
@@ -257,11 +257,6 @@ describe("SourcesDisagreeTile", () => {
       expect(screen.getByRole("group", { name: "Sources disagree" }).getAttribute("data-tidy-level")).toBe("plain");
       fireEvent.click(screen.getByRole("button", { name: "Change the player name" }));
       expect(screen.getByRole("button", { name: "Use “Jackson Merril”" })).toBeTruthy();
-    });
-
-    it("a legacy `chosen` on the card is settled: the tile offers nothing (the card keeps only the result)", () => {
-      const { container } = renderTile({ ...UNCHOSEN, chosen: { value: MERRILL, by: "operator" } } as RowDisagreement);
-      expect(container.textContent).toBe("");
     });
 
     it("offers the cards with the same open disagreement, and only those; sends what the sources gave", async () => {

@@ -111,7 +111,9 @@ test(
       `1,${P},${COVERED}\n2,${P},${ADDED}\n3,${P},${CHANGED}\n4,${P},${DEFAULTED}\n5,${P},${DEFAULTED}\n6,${P},${CHANGED}\n`;
     await usePastedChecklist(page, checklist, 6);
     await syncChecklistButton(page).click();
-    const opened = await settleWalkAfterCommit(page, page.getByText(/Saved 6 cards\./).first());
+    // Five career gaps and nothing else: the walk opens once the live career-gap query answers,
+    // after the saved line, so the open is awaited (`opens: true`), never read with the line.
+    const opened = await settleWalkAfterCommit(page, page.getByText(/Saved 6 cards\./).first(), { opens: true });
     expect(opened, "five career gaps, so the walk opened").toBe(true);
     const walk = tidyWalk(page);
     await expect(walk).toHaveAccessibleName(tidyUpName({ year: YEAR, set: SET }));

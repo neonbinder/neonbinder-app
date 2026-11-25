@@ -2858,7 +2858,12 @@ export const processBscTeamEnrichmentQueue = internalAction({
  *  - otherwise `resolveBscCardTeam`'s answer.
  *
  * Paced `BSC_TEAM_ENRICH_DELAY_MS` after its call (the old chain's gap), so
- * the one slot never asks faster than the chain did.
+ * the one slot never asks faster than the chain did, when the call landed in
+ * the `"deployment"` domain: always against real BSC (byte-identical), and an
+ * item with no `queuedBy` on the fake. NEO-644: a call that landed in a fake
+ * namespace (`domain.gateKey !== BSC_GATE_DEPLOYMENT_KEY`) is not paced. The
+ * fake has no rate cap to stay under, and the pause only held the one slot
+ * every shard's cards queue behind (a 32-card fault spec cost ~70 s of it).
  */
 export const runBscTeamCheckItem = internalAction({
   args: {
@@ -2929,7 +2934,9 @@ export const runBscTeamCheckItem = internalAction({
     } catch (error) {
       logError(error);
     }
-    await sleep(BSC_TEAM_ENRICH_DELAY_MS);
+    // NEO-644 — keyed on the domain the call landed in, never on `queuedBy`
+    // alone: on real BSC an item that carries one is still "deployment".
+    if (domain.gateKey === BSC_GATE_DEPLOYMENT_KEY) await sleep(BSC_TEAM_ENRICH_DELAY_MS);
     if (typeof outcome !== "string") return { outcome: "deferred", until: outcome.until };
     return { outcome };
   },

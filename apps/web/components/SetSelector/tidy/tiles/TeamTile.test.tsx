@@ -1182,7 +1182,6 @@ describe("TeamTile", () => {
       row: card({
         playerIds: ["player-1"],
         teamOnCardIds: ["team-7"],
-        tidyChecks: [{ kind: "teamFill", teamIds: ["team-7"], reason: "career" }],
       }),
       items: [] as TidyAttention["items"],
       ctx: context({
@@ -1196,8 +1195,6 @@ describe("TeamTile", () => {
         row: card({
           playerIds: ["player-1"],
           teamOnCardIds: ["team-7"],
-          // An old card may still carry the dead field: the client reads nothing from it.
-          tidyChecks: [{ kind: "teamFill", teamIds: ["team-7"], reason: "career" }],
         }),
         items: [] as TidyAttention["items"],
         ctx: context({
