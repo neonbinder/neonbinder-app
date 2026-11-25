@@ -1050,6 +1050,12 @@ export const getParallelsForBuild = query({
         value: v.string(),
         kind: sourceKindValidator,
         hasCards: v.boolean(),
+        /**
+         * NEO-673 — only for a chosen parallel: where it sits among the
+         * parallels in the type's child order (the list leaves it out, so the
+         * picker slots it back at this index).
+         */
+        position: v.optional(v.number()),
       }),
     ),
     /** Why there is no `source` for a Parallel variant type (no single Base). */
@@ -1134,15 +1140,22 @@ export const getParallelsForBuild = query({
     const position = new Map<string, number>(
       (parent.children ?? []).map((id, i) => [id, i]),
     );
-    const parallels = found
+    const inChildOrder = found
       .slice(0, MAX_PARALLELS_PER_INSERT)
-      // NEO-673 — a chosen source is not among the parallels built from it.
-      .filter((row) => !(sourceKind === "chosenParallel" && row._id === sourceRowId))
       .sort(
         (a, b) =>
           (position.get(a._id) ?? Number.MAX_SAFE_INTEGER) -
           (position.get(b._id) ?? Number.MAX_SAFE_INTEGER),
       );
+    // NEO-673 — a chosen source is not among the parallels built from it, but
+    // the picker lists it where it sits in the child order.
+    const sourcePosition =
+      sourceKind === "chosenParallel"
+        ? inChildOrder.findIndex((row) => row._id === sourceRowId)
+        : -1;
+    const parallels = inChildOrder.filter(
+      (row) => !(sourceKind === "chosenParallel" && row._id === sourceRowId),
+    );
 
     let cardBudget = LIST_BLOCK_CARD_BUDGET;
     let lookupBudget = LIST_BLOCK_LOOKUP_BUDGET;
@@ -1222,6 +1235,7 @@ export const getParallelsForBuild = query({
               value: source.value,
               kind: sourceKind,
               hasCards: sourceHasCards,
+              ...(sourcePosition >= 0 ? { position: sourcePosition } : {}),
             },
           }
         : {}),

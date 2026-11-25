@@ -245,6 +245,8 @@ describe("getParallelsForBuild — the Parallel type of a set with no Base", () 
       value: "Silver",
       kind: "chosenParallel",
       hasCards: true,
+      // Silver is first among Silver, Gold, Blue.
+      position: 0,
     });
     expect(result.sourceBlocked).toBeUndefined();
     expect(result.sourcePickable).toBe(true);
@@ -252,6 +254,33 @@ describe("getParallelsForBuild — the Parallel type of a set with no Base", () 
     expect(ids).not.toContain(silver);
     expect(ids.slice().sort()).toEqual([gold, blue].sort());
     expect(result.parallels).toHaveLength(2);
+  });
+
+  test("the source says where it sits in the type's child order, so the picker can slot it back", async () => {
+    const t = convexTest(schema, modules);
+    const { parallelType, silver, gold, blue } = await seedSet(t);
+    await t.run((ctx) =>
+      ctx.db.patch(parallelType, { parallelSourceId: gold }),
+    );
+    const middle = await listFor(t, parallelType);
+    expect(middle.source?.position).toBe(1);
+    expect(middle.parallels.map((p) => p._id)).toEqual([silver, blue]);
+
+    // Reordered children move it; the list stays in the same order.
+    await t.run((ctx) =>
+      ctx.db.patch(parallelType, { children: [blue, silver, gold] }),
+    );
+    const last = await listFor(t, parallelType);
+    expect(last.source?.position).toBe(2);
+    expect(last.parallels.map((p) => p._id)).toEqual([blue, silver]);
+  });
+
+  test("a real Base carries no position (parity with a set that has a Base)", async () => {
+    const t = convexTest(schema, modules);
+    const { parallelType } = await seedSet(t, { withBase: true });
+    const result = await listFor(t, parallelType);
+    expect(result.source).toBeDefined();
+    expect(result.source).not.toHaveProperty("position");
   });
 
   test.each([

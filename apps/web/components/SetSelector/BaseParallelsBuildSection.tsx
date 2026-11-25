@@ -103,6 +103,7 @@ export const CHANGE_SOURCE_LABEL = "Change";
 export const CHANGE_SOURCE_ARIA = "Change the parallel the others copy from";
 export const CANCEL_CHANGE_LABEL = "Cancel";
 export const CANCEL_CHANGE_ARIA = "Cancel changing the parallel the others copy from";
+export const SAVING_TEXT = "Saving…";
 export const PICK_FAILED_TEXT = "Couldn't save that choice. Try again.";
 
 /** A refusal's own sentence (a ConvexError's data), else the fixed one. */
@@ -317,18 +318,32 @@ export default function BaseParallelsBuildSection({
   const [savingChoice, setSavingChoice] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
   const changeRef = useRef<HTMLButtonElement | null>(null);
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
   const pickerRef = useRef<HTMLDivElement | null>(null);
+  const groupRef = useRef<HTMLDivElement | null>(null);
+  const saveRef = useRef<HTMLButtonElement | null>(null);
   /** Where focus goes after the next commit: the list (opened) or Change (closed). */
   const focusAfterRef = useRef<"list" | "change" | null>(null);
   useEffect(() => {
     const where = focusAfterRef.current;
     if (!where) return;
-    focusAfterRef.current = null;
-    if (where === "change") changeRef.current?.focus();
-    else
-      pickerRef.current
-        ?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')
-        ?.focus();
+    if (where === "list") {
+      focusAfterRef.current = null;
+      // Nothing is checked on open (Jason: "nothing preselected"), so the
+      // first radio is the group's one tab stop.
+      pickerRef.current?.querySelector<HTMLElement>('[role="radio"]')?.focus();
+      return;
+    }
+    // "change": armed by a save that went through. Stay armed until Change
+    // exists to take focus; once the save has settled with no Change drawn
+    // (a run started meanwhile), stop and make sure focus is not on <body>.
+    if (changeRef.current) {
+      focusAfterRef.current = null;
+      changeRef.current.focus();
+    } else if (!savingChoice) {
+      focusAfterRef.current = null;
+      if (document.activeElement === document.body) headingRef.current?.focus();
+    }
   });
   /**
    * The trigger goes `inert` under the confirm, and going inert blurs it, so
@@ -358,11 +373,28 @@ export default function BaseParallelsBuildSection({
   const pickerOpen =
     plan !== undefined &&
     ((!source && plan.sourcePickable === true) || (chosen && changing));
-  const pickOptions =
-    pickerOpen && parallels
-      ? [...(chosen && source ? [{ _id: source.id, value: source.value }] : []), ...parallels]
-      : [];
-  const pickedName = pickOptions.find((o) => o._id === choice)?.value;
+  // Jason: Change "reopens the same list", so the standing pick sits at its
+  // own place in the type's child order (the server leaves it out of
+  // `parallels` and says where it belongs) and nothing is preselected.
+  const pickOptions = (() => {
+    if (!pickerOpen || !parallels) return [];
+    if (!(chosen && source)) return parallels;
+    const at = Math.min(source.position ?? 0, parallels.length);
+    return [
+      ...parallels.slice(0, at),
+      { _id: source.id, value: source.value },
+      ...parallels.slice(at),
+    ];
+  })();
+  // A choice that is no longer in the list (a parallel deleted meanwhile) is
+  // no choice.
+  const picked = pickOptions.find((o) => o._id === choice);
+  const pickedName = picked?.value;
+  const statusText = savingChoice
+    ? SAVING_TEXT
+    : chosen && source && !pickerOpen
+      ? copyingFromText(source.value)
+      : "";
 
   // Why the button cannot run, in the order the operator would fix it.
   const reason: string | null =
@@ -401,7 +433,7 @@ export default function BaseParallelsBuildSection({
 
   const openChange = () => {
     if (!source) return;
-    setChoice(source.id);
+    setChoice("");
     setPickError(null);
     setChanging(true);
     focusAfterRef.current = "list";
@@ -413,21 +445,36 @@ export default function BaseParallelsBuildSection({
     focusAfterRef.current = "change";
   };
   const savePick = () => {
-    if (!choice || savingChoice) return;
+    if (savingChoice) return;
+    if (!picked) {
+      // The held button was pressed with nothing chosen: the group is what
+      // needs the operator, so land there.
+      groupRef.current?.focus();
+      return;
+    }
     setPickError(null);
     setSavingChoice(true);
+    // First pick: the button is about to unmount with the picker, so park
+    // focus on the heading (which stays) before the write. A change keeps the
+    // button until the picker closes, and Change takes focus after.
+    const parked = !changing;
+    if (parked) headingRef.current?.focus();
     // Through the client the section already holds, like the run's own reads.
     convex
       .mutation(api.parallelTypeSource.setParallelTypeSource, {
         parallelTypeId: variantTypeId,
-        sourceId: choice as Id<"selectorOptions">,
+        sourceId: picked._id,
       })
       .then(() => {
+        // The choice stays until the picker unmounts on its own (no flash of
+        // "Copy from…" on a first pick); Change reopens with nothing chosen.
         setChanging(false);
-        setChoice("");
         focusAfterRef.current = "change";
       })
-      .catch((error: unknown) => setPickError(pickFailedText(error)))
+      .catch((error: unknown) => {
+        setPickError(pickFailedText(error));
+        if (parked) saveRef.current?.focus();
+      })
       .finally(() => setSavingChoice(false));
   };
 
@@ -444,28 +491,36 @@ export default function BaseParallelsBuildSection({
     >
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
         <div className="min-w-0 max-w-prose">
-          <h3 id={HEADING_ID} className="text-sm font-semibold text-ink">
+          <h3
+            ref={headingRef}
+            id={HEADING_ID}
+            tabIndex={-1}
+            className="rounded-sm text-sm font-semibold text-ink focus-outline"
+          >
             {sectionHeading(chosen ? undefined : sourceValue)}
           </h3>
-          {chosen && source && !pickerOpen && (
-            <p className="mt-0.5 text-xs text-ink-2 break-words">
-              <span>{copyingFromText(source.value)}</span>
-              {!runner.active && (
-                <>
-                  <span aria-hidden="true"> · </span>
-                  <button
-                    ref={changeRef}
-                    type="button"
-                    aria-label={CHANGE_SOURCE_ARIA}
-                    onClick={openChange}
-                    className="rounded-sm underline text-neon-blue-text hover:no-underline focus-outline"
-                  >
-                    {CHANGE_SOURCE_LABEL}
-                  </button>
-                </>
-              )}
-            </p>
-          )}
+          {/* Always mounted so the save is announced: "Saving…", then
+              "Copying from X". The visible "Copying from X" line IS this
+              region, so there is one copy of the words. */}
+          <p
+            className={`text-xs text-ink-2 break-words ${statusText ? "mt-0.5" : ""}`}
+          >
+            <span role="status">{statusText}</span>
+            {chosen && source && !pickerOpen && !runner.active && (
+              <>
+                <span aria-hidden="true"> · </span>
+                <button
+                  ref={changeRef}
+                  type="button"
+                  aria-label={CHANGE_SOURCE_ARIA}
+                  onClick={openChange}
+                  className="rounded-sm p-2 -m-2 underline text-neon-blue-text hover:no-underline focus-outline"
+                >
+                  {CHANGE_SOURCE_LABEL}
+                </button>
+              </>
+            )}
+          </p>
           {!pickerOpen && tally && tally.total > 0 && (
             <p className="mt-0.5 text-xs text-ink-3">
               {summaryText(tally)}
@@ -543,23 +598,31 @@ export default function BaseParallelsBuildSection({
             }
           }}
         >
-          <ModeRadioGroup
-            label={PICK_SOURCE_QUESTION}
-            // The stand-in on a parallel row points here while there is no
-            // source; once there is one, the group takes a generated id.
-            labelId={source ? undefined : REASON_ID}
-            value={choice}
-            options={pickOptions.map((o) => ({ value: o._id, label: o.value }))}
-            onChange={setChoice}
-          />
+          {parallels ? (
+            <ModeRadioGroup
+              label={PICK_SOURCE_QUESTION}
+              // The stand-in on a parallel row points here while there is no
+              // source; once there is one, the group takes a generated id.
+              labelId={source ? undefined : REASON_ID}
+              value={picked?._id ?? ""}
+              options={pickOptions.map((o) => ({ value: o._id, label: o.value }))}
+              onChange={(next) => {
+                setPickError(null);
+                setChoice(next);
+              }}
+              required
+              groupRef={groupRef}
+            />
+          ) : (
+            <p className="text-xs text-ink-3">{LOADING_TEXT}</p>
+          )}
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <NeonButton
+              ref={saveRef}
               className="max-w-full"
               onClick={savePick}
-              onKeyDown={(event) =>
-                activateOnEnter(event, savePick, !choice || savingChoice)
-              }
-              aria-disabled={!choice || savingChoice || undefined}
+              onKeyDown={(event) => activateOnEnter(event, savePick, savingChoice)}
+              aria-disabled={!picked || savingChoice || undefined}
               aria-busy={savingChoice || undefined}
             >
               <span className="min-w-0 break-words">{copyFromLabel(pickedName)}</span>

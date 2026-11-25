@@ -101,4 +101,29 @@ describe("ModeRadioGroup", () => {
     fireEvent.keyDown(radio("Dark"), { key: "a" });
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it("NEO-673: required marks the group; a groupRef makes it focusable from script only", () => {
+    const ref = { current: null as HTMLDivElement | null };
+    render(
+      <ModeRadioGroup
+        label="Pick"
+        value=""
+        options={[{ value: "a", label: "A" }]}
+        onChange={() => {}}
+        required
+        groupRef={ref}
+      />,
+    );
+    const group = screen.getByRole("radiogroup", { name: "Pick" });
+    expect(group.getAttribute("aria-required")).toBe("true");
+    expect(group.getAttribute("tabindex")).toBe("-1");
+    expect(ref.current).toBe(group);
+  });
+
+  it("without those props the group is neither required nor focusable", () => {
+    render(<Harness />);
+    const group = screen.getByRole("radiogroup", { name: "Theme" });
+    expect(group.getAttribute("aria-required")).toBeNull();
+    expect(group.getAttribute("tabindex")).toBeNull();
+  });
 });

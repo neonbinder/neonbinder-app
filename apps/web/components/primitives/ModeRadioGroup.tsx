@@ -42,6 +42,17 @@ export interface ModeRadioGroupProps<T extends string = string> {
    * `aria-describedby` must point at. Defaults to a generated id.
    */
   labelId?: string;
+  /**
+   * NEO-673 — a pick is owed before the host's button works: the group says so
+   * (`aria-required`).
+   */
+  required?: boolean;
+  /**
+   * The radiogroup element, for a host that moves focus to the group when the
+   * pick is missing. Giving one makes the group focusable from script only
+   * (`tabIndex={-1}`), never part of the tab order.
+   */
+  groupRef?: React.Ref<HTMLDivElement>;
 }
 
 export function ModeRadioGroup<T extends string = string>({
@@ -52,6 +63,8 @@ export function ModeRadioGroup<T extends string = string>({
   className = "",
   describedBy,
   labelId: labelIdProp,
+  required,
+  groupRef,
 }: ModeRadioGroupProps<T>) {
   const baseId = useId();
   const labelId = labelIdProp ?? `${baseId}-label`;
@@ -104,7 +117,15 @@ export function ModeRadioGroup<T extends string = string>({
       <span id={labelId} className="mb-2 block text-sm font-medium text-ink-2">
         {label}
       </span>
-      <div role="radiogroup" aria-labelledby={labelId} aria-describedby={describedBy} className="flex flex-wrap gap-2">
+      <div
+        ref={groupRef}
+        role="radiogroup"
+        aria-labelledby={labelId}
+        aria-describedby={describedBy}
+        aria-required={required || undefined}
+        tabIndex={groupRef ? -1 : undefined}
+        className={`flex flex-wrap gap-2${groupRef ? " rounded-md focus-outline" : ""}`}
+      >
         {options.map((option, index) => {
           const checked = index === checkedIndex && option.value === value;
           // Named by the label alone (the description is its description), so

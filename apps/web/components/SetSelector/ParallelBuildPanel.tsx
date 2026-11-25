@@ -133,6 +133,11 @@ export type ParallelBuildSource = {
    */
   kind: "insert" | "base" | "chosenParallel";
   hasCards: boolean;
+  /**
+   * NEO-673 — a chosen parallel only: its index in the type's child order,
+   * for the picker to slot it back into the list.
+   */
+  position?: number;
 };
 
 export type ParallelBuildPlan = {

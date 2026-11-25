@@ -832,6 +832,178 @@ describe("BaseParallelsBuildSection — picking the parallel the others copy fro
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  describe("focus, announcement and the held button (NEO-673 audit)", () => {
+    const heading = () => screen.getByRole("heading", { level: 3 });
+    const status = () => screen.getByRole("status");
+
+    /** A mutation the test resolves by hand, after the "server" has moved. */
+    function deferred() {
+      let resolve!: (value: null) => void;
+      let reject!: (error: Error) => void;
+      const promise = new Promise<null>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    it("the status line is always mounted, empty until there is something to say", () => {
+      renderSection(pickablePlan());
+      expect(status().textContent).toBe("");
+    });
+
+    it("a first pick parks focus on the heading before the write, then lands on Change", async () => {
+      const write = deferred();
+      mockConvex.mutation.mockReturnValue(write.promise);
+      const { rerender, runner } = renderSection(pickablePlan());
+      fireEvent.click(screen.getByRole("radio", { name: "Silver" }));
+      screen.getByRole("radio", { name: "Silver" }).focus();
+      await act(async () => {
+        fireEvent.click(copyFrom());
+      });
+      // Parked, and the picker still shows the pick (no flash of "Copy from…").
+      expect(document.activeElement).toBe(heading());
+      expect(copyFrom().textContent).toBe("Copy from Silver");
+      expect(status().textContent).toBe("Saving…");
+      // The server moves: the plan now has a chosen source, and the write lands.
+      rerender(
+        <BaseParallelsBuildSection
+          variantTypeId={TYPE_ID}
+          plan={chosenPlan()}
+          runner={runner}
+          showsRun={false}
+        />,
+      );
+      await act(async () => {
+        write.resolve(null);
+      });
+      expect(screen.queryByRole("radiogroup")).toBeNull();
+      expect(document.activeElement).toBe(change());
+      expect(status().textContent).toBe(copyingFromText("Silver"));
+    });
+
+    it("a first pick that fails puts focus back on the button and says so in the alert", async () => {
+      const write = deferred();
+      mockConvex.mutation.mockReturnValue(write.promise);
+      renderSection(pickablePlan());
+      fireEvent.click(screen.getByRole("radio", { name: "Gold" }));
+      await act(async () => {
+        fireEvent.click(copyFrom());
+      });
+      expect(document.activeElement).toBe(heading());
+      await act(async () => {
+        write.reject(new Error("boom"));
+      });
+      expect(document.activeElement).toBe(copyFrom());
+      expect(screen.getByRole("alert").textContent).toBe(PICK_FAILED_TEXT);
+      expect(status().textContent).toBe("");
+    });
+
+    it("a first pick whose Change never draws (a run started) leaves focus on the heading", async () => {
+      const write = deferred();
+      mockConvex.mutation.mockReturnValue(write.promise);
+      const { rerender } = renderSection(pickablePlan());
+      fireEvent.click(screen.getByRole("radio", { name: "Silver" }));
+      await act(async () => {
+        fireEvent.click(copyFrom());
+      });
+      rerender(
+        <BaseParallelsBuildSection
+          variantTypeId={TYPE_ID}
+          plan={chosenPlan()}
+          runner={runnerStub({ active: true })}
+          showsRun={false}
+        />,
+      );
+      await act(async () => {
+        write.resolve(null);
+      });
+      expect(screen.queryByRole("button", { name: CHANGE_SOURCE_ARIA })).toBeNull();
+      expect(document.activeElement).toBe(heading());
+    });
+
+    it("saving a change says Saving…, then Copying from the new pick, and focuses Change", async () => {
+      const write = deferred();
+      mockConvex.mutation.mockReturnValue(write.promise);
+      const { rerender, runner } = renderSection(chosenPlan());
+      fireEvent.click(change());
+      fireEvent.click(screen.getByRole("radio", { name: "Gold" }));
+      await act(async () => {
+        fireEvent.click(copyFrom());
+      });
+      expect(status().textContent).toBe("Saving…");
+      const goldPlan = planOf([silver(), ruby()], {
+        source: { id: gold()._id, value: "Gold", kind: "chosenParallel", hasCards: true },
+      });
+      rerender(
+        <BaseParallelsBuildSection
+          variantTypeId={TYPE_ID}
+          plan={goldPlan}
+          runner={runner}
+          showsRun={false}
+        />,
+      );
+      await act(async () => {
+        write.resolve(null);
+      });
+      expect(status().textContent).toBe("Copying from Gold");
+      expect(document.activeElement).toBe(change());
+    });
+
+    it("the save status and the alert are different regions: a failure is an alert, not a status", async () => {
+      mockConvex.mutation.mockRejectedValue(new Error("boom"));
+      renderSection(pickablePlan());
+      fireEvent.click(screen.getByRole("radio", { name: "Silver" }));
+      await act(async () => {
+        fireEvent.click(copyFrom());
+      });
+      expect(status().textContent).toBe("");
+      expect(screen.getByRole("alert")).toBeTruthy();
+    });
+
+    it("with no list yet, shows the loading text instead of an empty radiogroup", () => {
+      const plan = { source: null, sourcePickable: true } as unknown as ParallelBuildPlan;
+      renderSection(plan);
+      expect(screen.queryByRole("radiogroup")).toBeNull();
+      expect(screen.getByText(LOADING_TEXT)).toBeTruthy();
+    });
+
+    it("the group is required, and pressing the held button moves focus to it", () => {
+      renderSection(pickablePlan());
+      const group = screen.getByRole("radiogroup", { name: PICK_SOURCE_QUESTION });
+      expect(group.getAttribute("aria-required")).toBe("true");
+      fireEvent.click(copyFrom());
+      expect(document.activeElement).toBe(group);
+      expect(mockConvex.mutation).not.toHaveBeenCalled();
+    });
+
+    it("Enter on the held button does the same", () => {
+      renderSection(pickablePlan());
+      copyFrom().focus();
+      fireEvent.keyDown(copyFrom(), { key: "Enter" });
+      expect(document.activeElement).toBe(screen.getByRole("radiogroup"));
+      expect(mockConvex.mutation).not.toHaveBeenCalled();
+    });
+
+    it("choosing again clears the last failure", async () => {
+      mockConvex.mutation.mockRejectedValueOnce(new Error("boom"));
+      renderSection(pickablePlan());
+      fireEvent.click(screen.getByRole("radio", { name: "Silver" }));
+      await act(async () => {
+        fireEvent.click(copyFrom());
+      });
+      expect(screen.getByRole("alert")).toBeTruthy();
+      fireEvent.click(screen.getByRole("radio", { name: "Gold" }));
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("Change is a roomy target: padded out, margin pulled back", () => {
+      renderSection(chosenPlan());
+      expect(change().className).toContain("p-2");
+      expect(change().className).toContain("-m-2");
+    });
+  });
+
   describe("once chosen", () => {
     it("says what it copies from, offers Change, and builds from the pick", () => {
       renderSection(chosenPlan());
@@ -841,15 +1013,42 @@ describe("BaseParallelsBuildSection — picking the parallel the others copy fro
       expect(screen.queryByRole("radiogroup")).toBeNull();
     });
 
-    it("Change reopens the list with Silver first and checked, and focuses it", () => {
+    it("Change reopens the same list with nothing checked, and focuses its first radio", () => {
       renderSection(chosenPlan());
       fireEvent.click(change());
       expect(radios().map((r) => r.textContent)).toEqual(["Silver", "Gold", "Ruby"]);
-      const silverRadio = screen.getByRole("radio", { name: "Silver" });
-      expect(silverRadio.getAttribute("aria-checked")).toBe("true");
-      expect(document.activeElement).toBe(silverRadio);
+      expect(radios().map((r) => r.getAttribute("aria-checked"))).toEqual([
+        "false",
+        "false",
+        "false",
+      ]);
+      expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Silver" }));
       expect(screen.queryByRole("button", { name: /^Build / })).toBeNull();
-      expect(copyFrom().textContent).toBe("Copy from Silver");
+      expect(copyFrom().textContent).toBe("Copy from…");
+      expect(copyFrom().getAttribute("aria-disabled")).toBe("true");
+    });
+
+    it("Change slots the standing pick in at the server's position, not first", () => {
+      const plan = chosenPlan();
+      renderSection({
+        ...plan,
+        source: { ...plan.source!, position: 1 },
+      });
+      fireEvent.click(change());
+      expect(radios().map((r) => r.textContent)).toEqual(["Gold", "Silver", "Ruby"]);
+      // Focus is the first radio (the group's tab stop), whatever is standing.
+      expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Gold" }));
+    });
+
+    it("a position past the end lands last", () => {
+      const plan = chosenPlan();
+      const { unmount } = renderSection({
+        ...plan,
+        source: { ...plan.source!, position: 9 },
+      });
+      fireEvent.click(change());
+      expect(radios().map((r) => r.textContent)).toEqual(["Gold", "Ruby", "Silver"]);
+      unmount();
     });
 
     it("saving a different pick while changing sends that parallel", async () => {
