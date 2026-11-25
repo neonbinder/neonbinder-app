@@ -6,6 +6,7 @@ import NeonButton from "../../../modules/NeonButton";
 import { useAnswered } from "../answered";
 import type { TidyCardContext, TidyRow } from "../tile-types";
 import CareerStintEntry from "./CareerStintEntry";
+import { careerSwapOptions } from "./career-swap";
 import { NO_CAREER_TEXT, careerLineText, noStintText } from "./copy";
 import type { TidyWrite } from "./tidy-write";
 
@@ -54,6 +55,8 @@ export default function CareerGapRow({
   const noCareer = player.stints.length === 0 && !player.stintsMore;
   const suffix = multi ? ` for ${player.name}` : "";
   const disabled = write.busy ? true : undefined;
+  // The Team tile offers swap pills for this gap on the same inputs (`careerSwapOptions`).
+  const offersSwap = careerSwapOptions({ stints: player.stints, teamsOnCard: row.teamOnCardIds ?? [], setYear }).length > 0;
 
   const add = async (stint: { teamId: Id<"teams">; fromYear: number; toYear?: number }): Promise<boolean> => {
     const ok = await write.run(
@@ -91,6 +94,7 @@ export default function CareerGapRow({
       {setYear !== undefined && (
         <p className="text-xs text-ink-2">Save &amp; next adds it to the career.</p>
       )}
+      {offersSwap && <p className="text-xs text-ink-2">Or swap the card&apos;s team below.</p>}
       <div className="flex flex-wrap items-center gap-2">
         {setYear !== undefined && (
           <NeonButton

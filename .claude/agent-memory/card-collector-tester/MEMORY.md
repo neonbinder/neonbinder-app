@@ -25,3 +25,4 @@
 - [Home-sport defaults in mixed sets](home-sport-defaults-in-mixed-sets.md) — A&G: created people inherit set sport; name sport+people in copy; "No Team" casing
 - [Review-walk checklist](review-walk-checklist.md) — stop count, Enter after an answer, near-match on misspelling, self-answering rows, title filler
 - [Auto-commit reason lines](auto-commit-reason-lines.md) — skipped-dialog "why" sentence: count-free, before caveats, no "kept" collisions; is the evidence reachable after?
+- [Career-gap swap pill checks](career-gap-swap-pill-checks.md) — look-alike chips, two-team card collapse, year notation, pill order, title filler churn
