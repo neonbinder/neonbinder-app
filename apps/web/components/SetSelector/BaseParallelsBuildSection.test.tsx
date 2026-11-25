@@ -143,6 +143,8 @@ describe("BaseParallelsBuildSection — copy helpers", () => {
   it("names the source in the heading, with a neutral fallback before it is known", () => {
     expect(sectionHeading("Base")).toBe("Parallels of Base");
     expect(sectionHeading(undefined)).toBe("Parallels of the base set");
+    expect(sectionHeading(undefined, true)).toBe("Parallels of this set");
+    expect(sectionHeading("Base", true)).toBe("Parallels of Base");
   });
 
   it("button label counts parallels, singular for one", () => {
@@ -746,6 +748,21 @@ describe("BaseParallelsBuildSection — picking the parallel the others copy fro
     ]);
   });
 
+  it("on the first pick the heading reads \"Parallels of this set\"", () => {
+    renderSection(pickablePlan());
+    expect(screen.getByRole("heading", { level: 3, name: "Parallels of this set" })).toBeTruthy();
+  });
+
+  it("wraps a long build label instead of clipping it, and keeps the title", () => {
+    renderSection(planOf([gold()]));
+    const el = button();
+    expect(el.className).toContain("max-w-full");
+    expect(el.className).not.toMatch(/(^|\s)shrink-0/);
+    expect(el.querySelector("span")?.className).toContain("break-words");
+    expect(el.querySelector("span")?.className).not.toContain("truncate");
+    expect(el.getAttribute("title")).toBe(el.textContent);
+  });
+
   it("while picking, shows no card counts, no build button and no summary", () => {
     renderSection(pickablePlan());
     expect(screen.queryByText(/\bcards?\b/)).toBeNull();
@@ -1030,8 +1047,8 @@ describe("BaseParallelsBuildSection — picking the parallel the others copy fro
 
     it("Change is a roomy target: padded out, margin pulled back", () => {
       renderSection(chosenPlan());
-      expect(change().className).toContain("p-2");
-      expect(change().className).toContain("-m-2");
+      expect(change().className).toContain("p-3.5");
+      expect(change().className).toContain("-m-3.5");
     });
   });
 

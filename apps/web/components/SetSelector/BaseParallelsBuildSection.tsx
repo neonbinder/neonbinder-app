@@ -71,8 +71,15 @@ const plural = (count: number, one: string, many: string) =>
 /** Before the Base row's name is known. */
 const SOURCE_FALLBACK = "the base set";
 
-export function sectionHeading(sourceValue: string | undefined): string {
-  return `Parallels of ${sourceValue ?? SOURCE_FALLBACK}`;
+/** NEO-673 — a set with no Base asks which parallel the others copy from, so
+ * before the first pick there is no "base set" to name. */
+const FIRST_PICK_FALLBACK = "this set";
+
+export function sectionHeading(
+  sourceValue: string | undefined,
+  firstPick = false,
+): string {
+  return `Parallels of ${sourceValue ?? (firstPick ? FIRST_PICK_FALLBACK : SOURCE_FALLBACK)}`;
 }
 
 /**
@@ -523,7 +530,7 @@ export default function BaseParallelsBuildSection({
           >
             {chosen && source
               ? chosenSectionHeading(source.value)
-              : sectionHeading(sourceValue)}
+              : sectionHeading(sourceValue, !source && plan?.sourcePickable === true)}
           </h3>
           {/* Always mounted so the save is announced: "Saving…", then
               "Copying from X". The visible "Copying from X" line IS this
@@ -540,7 +547,7 @@ export default function BaseParallelsBuildSection({
                   type="button"
                   aria-label={CHANGE_SOURCE_ARIA}
                   onClick={openChange}
-                  className="rounded-sm p-2 -m-2 underline text-neon-blue-text hover:no-underline focus-outline"
+                  className="rounded-sm p-3.5 -m-3.5 underline text-neon-blue-text hover:no-underline focus-outline"
                 >
                   {CHANGE_SOURCE_LABEL}
                 </button>
@@ -574,7 +581,7 @@ export default function BaseParallelsBuildSection({
         {!pickerOpen && (
         <NeonButton
           ref={buttonRef}
-          className={`${fieldClass("build-all")} shrink-0 max-w-[20rem]`}
+          className={`${fieldClass("build-all")} max-w-full sm:shrink-0 sm:max-w-[20rem]`}
           onClick={activate}
           onKeyDown={(event) => activateOnEnter(event, activate, held)}
           // `aria-disabled`, never native `disabled`: the reason below stays
@@ -591,7 +598,7 @@ export default function BaseParallelsBuildSection({
           inert={confirming || undefined}
           title={label}
         >
-          <span className="min-w-0 truncate">{label}</span>
+          <span className="min-w-0 break-words">{label}</span>
         </NeonButton>
         )}
       </div>
