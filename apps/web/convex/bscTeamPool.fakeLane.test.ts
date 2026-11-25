@@ -209,6 +209,28 @@ describe("the fake lane remembers each operator's items by work id", () => {
     ]);
   });
 
+  test("a push-back after the target moved to real BSC writes no row, though the stored item carries queuedBy", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    const [a] = await seedCards(t, 1);
+    await warmAdapter(t);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 429, headers: { "retry-after": "60" } })));
+    const lane = captureBscTeamLane();
+    await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: [a], queuedBy: USER_A });
+    expect((await laneRows(t)).map((r) => r.workId)).toEqual(["work-1"]);
+    expect(lane[0].item.queuedBy).toBe(USER_A);
+
+    // The target moves to real BSC while the item waits.
+    vi.unstubAllEnvs();
+    vi.stubEnv("CONVEX_CLOUD_URL", CLOUD_URL);
+    await runBscTeamLane(t, lane, 1);
+
+    // The item was pushed back (re-enqueued, still carrying queuedBy), but nothing is remembered.
+    expect(lane).toHaveLength(1);
+    expect(lane[0].item.queuedBy).toBe(USER_A);
+    expect(await laneRows(t)).toEqual([]);
+  });
+
   test("on real BSC nothing is written, whatever the caller passed", async () => {
     vi.stubEnv("CONVEX_CLOUD_URL", CLOUD_URL);
     const t = convexTest(schema, modules);

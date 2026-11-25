@@ -35,3 +35,4 @@
 - [Flow rewrite, specs in flight](flow-rewrite-spec-rewrite-in-flight.md) — compat helper hides old-UI specs; grep code lines for old strings; planted break for shared walk helpers
 - [Skip-dialog fixture table](skip-dialog-fixture-table-unrun-branch-and-cancel-asserted-only.md) — unpaused-only branch keeps stale counts; new Cancel only asserted visible; axe for new landing
 - [Teardown hop count ignored](teardown-hop-count-ignored.md) — cleanup hop prints N cleared, spec never checks N; ask N>=1 assert + cap-boundary unit test
+- [Inner guard covered only via outer](inner-guard-covered-only-through-outer-guard.md) — re-applied guard deeper in the chain: existing outer-entry test is vacuous; test the re-entry path
