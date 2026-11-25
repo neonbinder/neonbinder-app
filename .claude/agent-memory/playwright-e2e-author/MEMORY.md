@@ -185,3 +185,4 @@
 - [Left-out pills, plural team](patterns_left_out_pills_and_plural_team_fixture.md) — NEO-665 list locators; regex keeps sr-only ", "; Red/Reds one-token fixture
 - [Post-commit walk waits on career gaps](patterns_post_commit_walk_waits_on_live_career_gaps.md) — NEO-656: no pill at the saved line; settle { opens: true }
 - [Teardown count assert](patterns_teardown_count_assert_and_lane_clear.md) — NEO-644: hop returns N, assert only if passed, annotate; plant
+- [NEO-672 swap pills](patterns_neo672_career_swap_pills.md) — "Swap for" list in the gap team group; name-only asserts; announcement; self-swap plant
