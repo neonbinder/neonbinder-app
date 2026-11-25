@@ -273,6 +273,10 @@ export default function CardFace({
   const bandInk = inkOn(secondary);
   const initialsInk = inkOn(primary);
   const darkPhoto = initialsInk === "#FFFFFF";
+  const signed = face.features.includes("AU");
+  const initialsShadow = darkPhoto
+    ? "0 0.04em 0 rgba(0,0,0,0.45)"
+    : "0 0.04em 0 rgba(255,255,255,0.4)";
   const stamp = serial ?? run;
   const isOneOfOne = face.printRun === 1;
   const finish = face.finish.kind;
@@ -349,23 +353,43 @@ export default function CardFace({
               </span>
             </div>
 
-            {/* The "photo": big initials in the team's ink. */}
-            <span
-              className="absolute inset-0 flex items-center justify-center font-bold"
-              style={{
-                fontSize: cq(34),
-                letterSpacing: "-0.04em",
-                color: initialsInk,
-                opacity: 0.92,
-                textShadow: darkPhoto
-                  ? "0 0.04em 0 rgba(0,0,0,0.45)"
-                  : "0 0.04em 0 rgba(255,255,255,0.4)",
-              }}
-            >
-              {face.initials}
-            </span>
+            {/* The "photo": big initials in the team's ink. An autograph card signs
+                its name beneath them, in one column so the two never overlap. */}
+            {signed ? (
+              <div
+                className="absolute inset-0 flex flex-col items-center justify-center"
+                style={{ gap: cq(9), padding: `0 ${cq(5)} ${cq(8)}` }}
+              >
+                <span
+                  className="font-bold"
+                  style={{
+                    fontSize: cq(30),
+                    lineHeight: 1,
+                    letterSpacing: "-0.04em",
+                    color: initialsInk,
+                    opacity: 0.92,
+                    textShadow: initialsShadow,
+                  }}
+                >
+                  {face.initials}
+                </span>
+                <Signature dark={darkPhoto} name={face.playerName.trim()} />
+              </div>
+            ) : (
+              <span
+                className="absolute inset-0 flex items-center justify-center font-bold"
+                style={{
+                  fontSize: cq(34),
+                  letterSpacing: "-0.04em",
+                  color: initialsInk,
+                  opacity: 0.92,
+                  textShadow: initialsShadow,
+                }}
+              >
+                {face.initials}
+              </span>
+            )}
 
-            {face.features.includes("AU") && <Signature dark={darkPhoto} />}
             {face.features.includes("Relic") && <RelicSwatch primary={primary} secondary={secondary} />}
 
             <div
@@ -483,22 +507,51 @@ function Tag({ tone, children }: { tone: "rc" | "plain" | "own"; children: React
   );
 }
 
-/** A paint-pen autograph across the photo: silver on dark, blue on light. */
-function Signature({ dark }: { dark: boolean }) {
+const SIGNATURE_FONT = '"Mrs Saint Delafield", "Brush Script MT", cursive';
+
+/** The signed name's size by its length, so a long name still fits one line. */
+export function signatureSize(name: string): number {
+  if (name.length > 18) return 13;
+  if (name.length > 12) return 16;
+  return 20;
+}
+
+/**
+ * The autograph, signed under the initials: the player's name in a script
+ * face, silver on dark and blue on light. With no name to sign it falls back
+ * to a paint-pen squiggle, still in the column below the initials.
+ */
+function Signature({ dark, name }: { dark: boolean; name: string }) {
+  const ink = dark ? "#E5E7EB" : "#1D3FBF";
+  if (!name) {
+    return (
+      <svg style={{ width: "76%" }} viewBox="0 0 100 30" fill="none">
+        <path
+          d="M4 22 C 12 4, 18 4, 20 18 S 30 26, 34 12 S 44 2, 46 16 C 48 26, 58 22, 62 10 S 74 6, 76 18 S 90 24, 96 8"
+          stroke={ink}
+          strokeWidth="2.4"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
   return (
-    <svg
-      className="absolute"
-      style={{ left: "12%", right: "12%", bottom: "24%", width: "76%" }}
-      viewBox="0 0 100 30"
-      fill="none"
+    <span
+      style={{
+        fontFamily: SIGNATURE_FONT,
+        fontSize: cq(signatureSize(name)),
+        lineHeight: 1,
+        color: ink,
+        transform: "rotate(-4deg)",
+        whiteSpace: "nowrap",
+        maxWidth: "100%",
+        textShadow: dark
+          ? "0 0 0.6cqw rgba(0,0,0,0.9), 0 0 1.6cqw rgba(0,0,0,0.7)"
+          : "0 0 0.6cqw rgba(255,255,255,0.95), 0 0 1.6cqw rgba(255,255,255,0.8)",
+      }}
     >
-      <path
-        d="M4 22 C 12 4, 18 4, 20 18 S 30 26, 34 12 S 44 2, 46 16 C 48 26, 58 22, 62 10 S 74 6, 76 18 S 90 24, 96 8"
-        stroke={dark ? "#E5E7EB" : "#1D3FBF"}
-        strokeWidth="2.4"
-        strokeLinecap="round"
-      />
-    </svg>
+      {name}
+    </span>
   );
 }
 
