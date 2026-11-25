@@ -525,6 +525,63 @@ describe("SetSelector — a finished run retires once the selection moves (NEO-4
     expect(ledgers()).toHaveLength(0);
   });
 
+  it("pressed with a row open, going up to the type mid-run and finishing there keeps the ledger until the next pick", async () => {
+    let finish!: (v: unknown) => void;
+    mockConvex.action.mockImplementation(
+      () => new Promise((resolve) => (finish = resolve)),
+    );
+    render(<SetSelector />, { wrapper: DrilledToASet });
+    selectType("vt-parallel");
+    fireEvent.click(screen.getByText("select-row"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Build 1 parallel from Base/ }));
+    });
+    await waitFor(() => expect(mockConvex.action).toHaveBeenCalled());
+
+    // Up to the type, mid-run (re-picking the open type clears nothing below
+    // it, so go away and back): the run is still going and is shown there.
+    selectType("vt-inserts");
+    selectType("vt-parallel");
+    await waitFor(() => expect(ledgers()).toHaveLength(1));
+
+    // It finishes at the type, where it started: kept, as on main.
+    await act(async () => {
+      finish({ status: "blocked", blockedReason: "x", deletedCount: 0 });
+    });
+    await act(async () => {});
+    expect(ledgers()).toHaveLength(1);
+
+    // The next pick of any other row retires it.
+    fireEvent.click(screen.getByText("select-row"));
+    expect(ledgers()).toHaveLength(0);
+  });
+
+  it("pressed from the type, a pick made while the plan loads is not the press: the run retires at its finish, as on main", async () => {
+    let planReady!: () => void;
+    mockConvex.query.mockImplementation(
+      () => new Promise((resolve) => (planReady = () => resolve(state.plan))),
+    );
+    mockConvex.action.mockImplementation(() => Promise.reject(new Error("BSC is down")));
+    render(<SetSelector />, { wrapper: DrilledToASet });
+    selectType("vt-parallel");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Build 1 parallel from Base/ }));
+    });
+    await waitFor(() => expect(mockConvex.query).toHaveBeenCalledWith(
+      "getParallelsForBuild",
+      { sourceId: "vt-parallel" },
+    ));
+
+    // The operator picks a row while the plan is still loading.
+    fireEvent.click(screen.getByText("select-row"));
+    await act(async () => {
+      planReady();
+    });
+    await waitFor(() => expect(mockConvex.action).toHaveBeenCalled());
+    await act(async () => {});
+    expect(ledgers()).toHaveLength(0);
+  });
+
   it("moving to another Parallel-kind type is leaving the run's section, so the ledger retires", async () => {
     mockConvex.action.mockImplementation(() => Promise.reject(new Error("BSC is down")));
     await buildFromSection();

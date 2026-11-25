@@ -1071,41 +1071,68 @@ export default function SetSelector() {
   const [retiredRun, setRetiredRun] = useState<ParallelRun | null>(null);
   const hostedRun = hostedParallelRun.run;
   /**
-   * NEO-673 — the selection that was open when the run was started, recorded
-   * the render the run first shows up (keyed by the run's own wait key, which
-   * is minted once per run). A run pressed from the type itself starts with
-   * the type open, as before; one pressed while a row of the type is open
-   * starts with that row open, so the ledger is not retired at the end of its
-   * own run, only on the next pick of any other row.
+   * NEO-673 (Jason, approved fix) — pressing Build with a row of the type open
+   * must not make the ledger vanish the moment the run finishes. Main's rule
+   * (retire once the selection leaves `startedFrom`) stays, with the one case
+   * added: a run is also kept on the selection it was PRESSED from, and on
+   * either, until the next pick. `pressedAt` is the deepest selection at the
+   * press, captured before the plan query (a pick made during the query is
+   * not the press). `finishedOn` is the selection at the first render the run
+   * is no longer going. Retired when it finished on neither `startedFrom` nor
+   * `pressedAt`, or once the selection moves off the one it finished on.
    */
-  const [openedWith, setOpenedWith] = useState<{
+  const deepestSelectedIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    deepestSelectedIdRef.current = deepestSelectedId;
+  }, [deepestSelectedId]);
+  const [pressedAt, setPressedAt] = useState<{ id: string | null } | null>(null);
+  const hostedStart = hostedParallelRun.start;
+  const startFromPress = useCallback<ParallelBuildRunner["start"]>(
+    (from, client) => {
+      setPressedAt({ id: deepestSelectedIdRef.current });
+      return hostedStart(from, client);
+    },
+    [hostedStart],
+  );
+  const [runTrack, setRunTrack] = useState<{
     runKey: string;
-    selectionId: string | null;
+    pressedAt: string | null;
+    finishedOn: { id: string | null } | null;
   } | null>(null);
   const hostedRunKey = hostedRun ? (hostedRun.waitKey ?? hostedRun.startedFrom) : null;
-  if (hostedRunKey && openedWith?.runKey !== hostedRunKey) {
-    setOpenedWith({ runKey: hostedRunKey, selectionId: deepestSelectedId });
+  if (hostedRunKey && runTrack?.runKey !== hostedRunKey) {
+    setRunTrack({
+      runKey: hostedRunKey,
+      pressedAt: pressedAt?.id ?? null,
+      finishedOn: null,
+    });
   }
-  const runOpenedWith =
-    openedWith && openedWith.runKey === hostedRunKey
-      ? openedWith.selectionId
-      : deepestSelectedId;
-  if (
-    hostedRun &&
-    hostedRun !== retiredRun &&
+  const track = runTrack && runTrack.runKey === hostedRunKey ? runTrack : null;
+  const runEnded =
+    !!hostedRun &&
     hostedRun.phase !== "running" &&
     hostedRun.phase !== "stopping" &&
-    hostedRun.phase !== "left" &&
-    deepestSelectedId !== runOpenedWith
+    hostedRun.phase !== "left";
+  if (runEnded && track && !track.finishedOn) {
+    setRunTrack({ ...track, finishedOn: { id: deepestSelectedId } });
+  }
+  const finishedOnId = track?.finishedOn ? track.finishedOn.id : deepestSelectedId;
+  if (
+    hostedRun &&
+    track &&
+    hostedRun !== retiredRun &&
+    runEnded &&
+    ((finishedOnId !== hostedRun.startedFrom && finishedOnId !== track.pressedAt) ||
+      deepestSelectedId !== finishedOnId)
   ) {
     setRetiredRun(hostedRun);
   }
   const parallelRun: ParallelBuildRunner = useMemo(
     () =>
       hostedRun && hostedRun === retiredRun
-        ? { ...hostedParallelRun, run: null }
-        : hostedParallelRun,
-    [hostedParallelRun, hostedRun, retiredRun],
+        ? { ...hostedParallelRun, run: null, start: startFromPress }
+        : { ...hostedParallelRun, start: startFromPress },
+    [hostedParallelRun, hostedRun, retiredRun, startFromPress],
   );
 
   /**
