@@ -231,10 +231,14 @@ test(
     await field.press("Enter");
     // THE REFUSAL (Jason-approved sentence).
     await expect(refusal(page, /only live under an Insert type/)).toBeVisible();
-    // NEO-667: the field stands in the title's place while it is open, so the
-    // heading is back only once it closes (asserted after the Escape below).
+    // NEO-667: the field stands in the title's place while it is open, holding
+    // the refused name. The heading steps aside visually but stays mounted
+    // `sr-only` for a screen reader, and Playwright counts that 1x1 px box as
+    // visible, so the heading still reading the STORED name is the proof the
+    // refusal changed nothing (it reads it again once the field closes, below).
     await expect(field).toBeVisible();
-    await expect(panelFor(page, "Inserts")).toHaveCount(0);
+    await expect(field).toHaveValue("Promos");
+    await expect(panelFor(page, "Inserts")).toBeVisible();
     await expectAccessible(page, { label: "Rename refused while sub-variants exist" });
 
     // NEO-569: the panel will not shut over an open name field. A press on "Hide
@@ -339,8 +343,12 @@ test(
     // DRAFT copy, see the header. The one-Base rule runs before the sibling
     // clash in renameSelectorOption, so this is the sentence, not the same-word one.
     await expect(refusal(page, /already has a Base/)).toBeVisible();
-    // The title stands: the field holds the place of the heading until it closes (NEO-667).
+    // The title stands: the field holds the place of the heading until it
+    // closes (NEO-667; the heading stays mounted `sr-only` meanwhile, which
+    // Playwright counts as visible, so the field's going is the proof).
+    await expect(second).toBeVisible();
     await second.press("Escape");
+    await expect(second).toHaveCount(0);
     await expect(panelFor(page, SECOND_TYPE)).toBeVisible();
 
     // ── CLAIM 6 (NEO-496, NQ2): A PARALLEL WITH NO MARKETPLACE ID IS BUILT FROM BASE ──
