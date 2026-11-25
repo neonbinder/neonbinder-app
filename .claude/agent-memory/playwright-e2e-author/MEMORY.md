@@ -180,3 +180,4 @@
 - [Fresh-only on a no-reset deployment](patterns_iterate_fresh_only_on_a_no_reset_deployment.md) — e2e-run setup resets user 0; swap names to iterate; partial team name for the list
 - [NEO-657 two-player prefill](patterns_neo657_two_player_prefill_and_blue_city_walk.md) — "/" cells, CO names, plant; Pro Set walk all blue
 - [Post-commit walk waits on career gaps](patterns_post_commit_walk_waits_on_live_career_gaps.md) — NEO-656: no pill at the saved line; settle { opens: true }
+- [Teardown count assert](patterns_teardown_count_assert_and_lane_clear.md) — NEO-644: hop returns N, assert only if passed, annotate; plant

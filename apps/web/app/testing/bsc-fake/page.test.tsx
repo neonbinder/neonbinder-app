@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   clearFaults: vi.fn(),
   clearGate: vi.fn(),
   pollNow: vi.fn(),
+  cancelLane: vi.fn(),
 }));
 
 vi.mock("@/convex/_generated/api", () => ({
@@ -30,6 +31,7 @@ vi.mock("@/convex/_generated/api", () => ({
       clearMyBscFaults: "testing:clearMyBscFaults",
       clearBscCallGate: "testing:clearBscCallGate",
       pollMySalesNow: "testing:pollMySalesNow",
+      cancelMyBscTeamChecks: "testing:cancelMyBscTeamChecks",
     },
   },
 }));
@@ -47,6 +49,10 @@ vi.mock("convex/react", () => ({
       "testing:clearMyBscFaults": mocks.clearFaults,
       "testing:clearBscCallGate": mocks.clearGate,
       "testing:pollMySalesNow": mocks.pollNow,
+    })[ref],
+  useMutation: (ref: string) =>
+    ({
+      "testing:cancelMyBscTeamChecks": mocks.cancelLane,
     })[ref],
 }));
 
@@ -76,6 +82,7 @@ const noAction = () => {
   expect(mocks.clearFaults).not.toHaveBeenCalled();
   expect(mocks.clearGate).not.toHaveBeenCalled();
   expect(mocks.pollNow).not.toHaveBeenCalled();
+  expect(mocks.cancelLane).not.toHaveBeenCalled();
 };
 
 describe("TestingBscFakePage", () => {
@@ -87,6 +94,7 @@ describe("TestingBscFakePage", () => {
     mocks.clearFaults = vi.fn(async () => ({}));
     mocks.clearGate = vi.fn(async () => ({}));
     mocks.pollNow = vi.fn(async () => ({ ordersRead: 2, ordersStored: 1, linesApplied: 3 }));
+    mocks.cancelLane = vi.fn(async () => ({ cancelled: 28 }));
     vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "true");
   });
 
@@ -128,6 +136,30 @@ describe("TestingBscFakePage", () => {
       expect(mocks.clearGate).toHaveBeenCalledTimes(gate);
       expect(mocks.setFaults).not.toHaveBeenCalled();
       expect(mocks.addOrder).not.toHaveBeenCalled();
+      expect(mocks.cancelLane).not.toHaveBeenCalled();
+    });
+
+    it("?clear=lane (NEO-644) cancels the caller's queued team lookups and nothing else", async () => {
+      renderPage("?clear=lane");
+      const line = await statusText();
+      expect(line).toBe("[testing-bsc-fake] Cleared: lane, 28 queued team lookups.");
+      expect(DONE.test(line)).toBe(true);
+      expect(FAILED.test(line)).toBe(false);
+      expect(mocks.cancelLane).toHaveBeenCalledWith({});
+      expect(mocks.clearFaults).not.toHaveBeenCalled();
+      expect(mocks.clearGate).not.toHaveBeenCalled();
+      expect(mocks.setFaults).not.toHaveBeenCalled();
+    });
+
+    it("a refused ?clear=lane stays on the page as a FAILED 'Error:' line", async () => {
+      mocks.cancelLane = vi.fn(async () => {
+        throw new Error("Not authenticated");
+      });
+      renderPage("?clear=lane");
+      const line = await statusText();
+      expect(line).toBe("[testing-bsc-fake] Error: Not authenticated");
+      expect(FAILED.test(line)).toBe(true);
+      expect(DONE.test(line)).toBe(false);
     });
   });
 
@@ -191,10 +223,10 @@ describe("TestingBscFakePage", () => {
       noAction();
     });
 
-    it.each(["", "everything", "ALL", "faults,gate"])("?clear=%j is refused", async (value) => {
+    it.each(["", "everything", "ALL", "faults,gate", "LANE", "lane,all"])("?clear=%j is refused", async (value) => {
       renderPage(`?clear=${value}`);
       const line = await statusText();
-      expect(line).toBe("[testing-bsc-fake] ?clear= wants faults, gate or all.");
+      expect(line).toBe("[testing-bsc-fake] ?clear= wants faults, gate, all or lane.");
       expect(FAILED.test(line)).toBe(true);
       expect(DONE.test(line)).toBe(false);
       noAction();

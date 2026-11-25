@@ -153,3 +153,4 @@
 - [Generation counter reset ABA](patterns_generation_counter_reset_aba.md) — reset writing a CAS generation back to 0 re-admits in-flight results at the reused gen
 - [Agent memory index overwrite](patterns_agent_memory_index_overwrite.md) — a Written (not appended) MEMORY.md wipes the index; check diff --stat on .claude/
 - [Action scan inside mutation](patterns_action_scan_inside_mutation.md) — action-paged scan in a mutation shares one txn read limit; cheap check first
+- [Neo644 fake-only skip + lane bookkeeping](patterns_neo644_fake_only_skip_and_lane_bookkeeping.md) — skip real safeguards on runtime domain, not stored queuedBy
