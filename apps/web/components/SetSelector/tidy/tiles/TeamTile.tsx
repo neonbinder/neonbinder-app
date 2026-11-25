@@ -241,7 +241,7 @@ export default function TeamTile({
         const gap = gaps.find((g) => g.teamId === team.teamId);
         const stints = ctx.players.find((p) => p.playerId === gap?.playerId)?.stints ?? [];
         const swaps =
-          gap && searchFor === null ? careerSwapOptions({ stints, setYear }) : [];
+          gap && searchFor === null ? careerSwapOptions({ stints, teamsOnCard, setYear }) : [];
         const swapLabelId = `swap-for-${row._id}-${team.teamId}`;
         return (
           <div

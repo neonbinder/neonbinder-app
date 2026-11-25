@@ -1368,8 +1368,7 @@ describe("TeamTile", () => {
         expect(screen.queryByRole("button", { name: /^Swap / })).toBeNull();
       });
 
-      it("offers a covering team the card already carries, and a click leaves it once", async () => {
-        // No condition of ours drops it (Jason's words only ask for the covering stints): the swap dedupes.
+      it("does not offer a covering team the card already carries (Jason: only career teams not already on the card get a pill)", () => {
         render2026({
           row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7", "team-pit"] }),
           ctx: gapCtx({
@@ -1381,13 +1380,23 @@ describe("TeamTile", () => {
         });
         const group = screen.getByRole("group", { name: "Team Pittsburgh Panthers" });
         expect(within(group).getByRole("button", { name: /Swap Pittsburgh Panthers for Boston Red Sox/ })).toBeTruthy();
-        await click(swapPill("Pittsburgh Panthers", "Pittsburgh Pirates", "2026–"));
-        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledTimes(1);
-        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
-          id: CARD,
-          teamOnCardIds: ["team-pit"],
-          regenerateListing: true,
+        expect(screen.queryByRole("button", { name: /Swap Pittsburgh Panthers for Pittsburgh Pirates/ })).toBeNull();
+      });
+
+      it("offers no Swap list at all when the only covering team is already on the card", () => {
+        render2026({
+          row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7", "team-pit"] }),
+          ctx: gapCtx({
+            players: [merrill([{ teamId: "team-pit", teamName: "Pittsburgh Pirates", fromYear: 2026 }])],
+            teams: [
+              { teamId: "team-7", name: "Pittsburgh Panthers", onCard: true, candidate: false },
+              { teamId: "team-pit", name: "Pittsburgh Pirates", onCard: true, candidate: false },
+            ],
+          }),
         });
+        expect(screen.queryByRole("list", { name: /^Swap .* for$/ })).toBeNull();
+        expect(screen.queryByText(/^Swap .* for$/)).toBeNull();
+        expect(screen.queryByRole("button", { name: /^Swap / })).toBeNull();
       });
 
       it("tells the walk in words that the team was swapped, and the pills are gone once the card's teams update", async () => {

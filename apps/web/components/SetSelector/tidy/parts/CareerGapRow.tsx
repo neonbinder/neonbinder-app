@@ -56,7 +56,7 @@ export default function CareerGapRow({
   const suffix = multi ? ` for ${player.name}` : "";
   const disabled = write.busy ? true : undefined;
   // The Team tile offers swap pills for this gap on the same inputs (`careerSwapOptions`).
-  const offersSwap = careerSwapOptions({ stints: player.stints, setYear }).length > 0;
+  const offersSwap = careerSwapOptions({ stints: player.stints, teamsOnCard: row.teamOnCardIds ?? [], setYear }).length > 0;
 
   const add = async (stint: { teamId: Id<"teams">; fromYear: number; toYear?: number }): Promise<boolean> => {
     const ok = await write.run(

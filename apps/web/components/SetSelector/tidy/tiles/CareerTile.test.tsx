@@ -270,6 +270,11 @@ describe("CareerTile", () => {
         expect(screen.queryByText(/Or swap the card/)).toBeNull();
       });
 
+      it("says nothing of it when the only covering team is already on the card (no pill is offered)", () => {
+        renderTile([gapItem], context(), undefined, card({ teamOnCardIds: ["team-pad", "t-old"] }));
+        expect(screen.queryByText(/Or swap the card/)).toBeNull();
+      });
+
       it("says nothing of it for a player with no career", () => {
         renderTile([gapItem], context({ players: [player({ stints: [] })] }));
         expect(screen.queryByText(/Or swap the card/)).toBeNull();
