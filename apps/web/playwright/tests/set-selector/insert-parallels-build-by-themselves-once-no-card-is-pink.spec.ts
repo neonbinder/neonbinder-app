@@ -15,8 +15,8 @@
 //      returns to the insert's checklist.
 //
 // THE LOOKUP HOLD is not shown here: a hand-made set has no marketplace id, so no card ever waits
-// on a BSC team lookup. Showing it needs a real insert fetched with a card's lookup held open
-// (`bscFake` hang on the team lookup), a fresh-only sole writer of a real set with parallels;
+// on a BSC team lookup. `bowman-insert-grouping-builds-parallels` shows it on a real insert (one
+// card's lookup answered 429 by the fake, so it waits; the build starts once it no longer does);
 // the server side of it is unit-tested (`parallelBuildHold`).
 //
 // FIXTURE (SET-REGISTRY.md "Custom sets", the `hps`/`hpt` prefixes; R7a): a per-attempt sport
@@ -104,10 +104,11 @@ test(
     await expect(pinkTile(page, "Player")).toHaveCount(1);
     await expect(pinkTile(page, "Team")).toHaveCount(1);
 
-    // ── STEP 2: held. The commit landed (positive) and no build has started (R2) ──
+    // ── STEP 2: held. The commit landed (positive) and, after the axe passes' seconds, no build
+    // has started (R2; read straight after the save it would prove little) ──
     await expect(saved).toBeVisible();
-    await expect(runLine, "a pink card holds the insert's parallels").toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk on an insert whose parallels are held" });
+    await expect(runLine, "a pink card holds the insert's parallels").toHaveCount(0);
 
     // ── STEP 3: the name answered; the team is still pink, so still held ──
     await createPlayerOnOpenRow(page);
