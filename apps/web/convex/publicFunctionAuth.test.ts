@@ -3972,6 +3972,62 @@ describe("NEO-535: the parallel Card titles functions are admin-gated", () => {
 });
 
 /**
+ * NEO-673 — `parallelTypeSource.setParallelTypeSource` writes the pick that a
+ * set with no Base builds its parallels from. Operator tooling: `requireAdmin`
+ * first, before either row is read. Behaviour is pinned in
+ * `parallelChecklistBuild.chosenSource.test.ts`.
+ */
+describe("NEO-673: setParallelTypeSource is admin-gated", () => {
+  test("requireAdmin runs before any row is read", () => {
+    const src = readFileSync(join(__dirname, "parallelTypeSource.ts"), "utf8");
+    expect(src).toContain("export const setParallelTypeSource = mutation({");
+    const body = src.slice(src.indexOf("export const setParallelTypeSource ="));
+    const guard = body.indexOf("await requireAdmin(ctx)");
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(body.indexOf("ctx.db.get("));
+  });
+
+  test("an anonymous call and a signed-in non-admin are refused, writing nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { typeId, insertId } = await t.run(async (ctx) => {
+      const setName = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Pulse Premier",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const typeId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Parallel",
+        parentId: setName,
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const insertId = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Silver",
+        parentId: typeId,
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      return { typeId, insertId };
+    });
+    const args = { parallelTypeId: typeId, sourceId: insertId };
+    await expect(t.mutation(api.parallelTypeSource.setParallelTypeSource, args)).rejects.toThrow(
+      /not authenticated/i,
+    );
+    await expect(
+      t.withIdentity(SIGNED_IN).mutation(api.parallelTypeSource.setParallelTypeSource, args),
+    ).rejects.toThrow(/admin access required/i);
+    const row = await t.run((ctx) => ctx.db.get(typeId));
+    expect(row?.parallelSourceId).toBeUndefined();
+  });
+});
+
+/**
  * NEO-552 — the fake BuySportsCards test controls (`testing.setMyBscFaults`,
  * `testing.addMyBscOrder`, and their teardowns `testing.clearMyBscFaults`,
  * `testing.clearBscCallGate`) and `testing.resetMyTestState`, now an action so

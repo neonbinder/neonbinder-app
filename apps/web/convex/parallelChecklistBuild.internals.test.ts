@@ -250,7 +250,7 @@ describe("insertParallelCardsPage — the concurrency guard", () => {
 describe("deleteParallelCardsPage — the per-page block guard", () => {
   test("a page with a scanned card refuses to delete anything on it, including its fine siblings", async () => {
     const t = convexTest(schema, modules);
-    const { parallel } = await seedTree(t);
+    const { insert, parallel } = await seedTree(t);
     const fine = await insertCard(t, parallel, { cardNumber: "1", cardName: "Fine" });
     const scanned = await insertCard(t, parallel, {
       cardNumber: "2",
@@ -259,7 +259,7 @@ describe("deleteParallelCardsPage — the per-page block guard", () => {
     });
 
     const page = await t.run((ctx) =>
-      ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, { parallelId: parallel }),
+      ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, { parallelId: parallel, sourceId: insert }),
     );
     expect(page.deleted).toBe(0);
     expect(page.blockedReason).toBe(BLOCKED_SCANS);
@@ -269,11 +269,11 @@ describe("deleteParallelCardsPage — the per-page block guard", () => {
 
   test("a card scanned in between two calls blocks only the page it appears on, after the first page already deleted cleanly", async () => {
     const t = convexTest(schema, modules);
-    const { parallel } = await seedTree(t);
+    const { insert, parallel } = await seedTree(t);
     const untouched = await insertCard(t, parallel, { cardNumber: "1", cardName: "Fine" });
 
     const firstPage = await t.run((ctx) =>
-      ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, { parallelId: parallel }),
+      ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, { parallelId: parallel, sourceId: insert }),
     );
     expect(firstPage.deleted).toBe(1);
     expect(firstPage.blockedReason).toBeUndefined();
@@ -288,7 +288,7 @@ describe("deleteParallelCardsPage — the per-page block guard", () => {
     });
 
     const secondPage = await t.run((ctx) =>
-      ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, { parallelId: parallel }),
+      ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, { parallelId: parallel, sourceId: insert }),
     );
     expect(secondPage.deleted).toBe(0);
     expect(secondPage.blockedReason).toBe(BLOCKED_SCANS);

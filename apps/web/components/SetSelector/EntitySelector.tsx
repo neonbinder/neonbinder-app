@@ -97,6 +97,14 @@ type EntitySelectorProps = {
    * fills (Sub-Variants) says something true instead.
    */
   emptyText?: string;
+  /**
+   * NEO-673 — a short marker beside a row's name ("source"), drawn in the
+   * linkage pill's style as "(source)", set off from the name by a space so
+   * the row's accessible name reads "Silver (source)". Part of the row's
+   * accessible name, as the SL / BSC pills are. Pass ONE stable reference, as
+   * for `getDisplayName`.
+   */
+  getTag?: (item: SelectorItem) => string | undefined;
 };
 
 function getPlatformData(item: SelectorItem): {
@@ -275,6 +283,7 @@ function EntitySelector({
   pinnedEntries,
   leadRow,
   emptyText: emptyTextProp,
+  getTag,
 }: EntitySelectorProps) {
   const items = useQuery(query, queryArgs);
   const syncFailed = useContext(ColumnSyncFailedContext);
@@ -851,6 +860,7 @@ function EntitySelector({
                 const isHighlighted = highlighted === item._id;
                 const pick = () => select(item._id);
                 const twinSuffix = suffixOf(item);
+                const tag = pinned ? undefined : getTag?.(item);
                 return (
                   <button
                     key={item._id}
@@ -910,6 +920,12 @@ function EntitySelector({
                         <>
                           {" "}
                           <span className={`${TWIN_SUFFIX} ${SUFFIX_ON_FIRST_LINE}`}>{twinSuffix}</span>
+                        </>
+                      )}
+                      {tag && (
+                        <>
+                          {" "}
+                          <span className={MARKETPLACE_PILL}>({tag})</span>
                         </>
                       )}
                       {showPills && pd?.sportlots && (

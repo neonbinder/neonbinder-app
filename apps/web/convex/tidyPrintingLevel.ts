@@ -11,7 +11,10 @@
  *
  *   - an insert row: its `parallel`-level children;
  *   - the Base variant type: the `insert`-level rows of every Parallel-kind
- *     sibling variant type (the base parallels), and their `parallel` children.
+ *     sibling variant type (the base parallels), and their `parallel` children;
+ *   - NEO-673: a chosen source parallel (the insert a Parallel type with no
+ *     Base copies from): its own `parallel` children, then the type's other
+ *     `insert`-level rows and their `parallel` children.
  *
  * Nothing is stored; the leaf set is read once, when the operator clicks.
  */
@@ -22,6 +25,7 @@ import {
   MAX_PARALLELS_PER_INSERT,
   MAX_VARIANT_TYPES_PER_SET,
   resolveBuildSource,
+  sourceOfParallelType,
 } from "./parallelChecklistBuild";
 import { variantTypeKind } from "./variantRole";
 
@@ -68,6 +72,21 @@ export async function printingLevelLeaves(
   const ids: Array<Id<"selectorOptions">> = [root._id];
   if (root.level === "insert") {
     for (const parallel of await childrenOf(ctx, "parallel", root._id)) ids.push(parallel._id);
+    // NEO-673 — the insert the others copy from: so are its siblings.
+    const type = root.parentId ? await ctx.db.get(root.parentId) : null;
+    if (type && type.level === "variantType" && variantTypeKind(type) === "parallel") {
+      const found = await sourceOfParallelType(ctx, type);
+      if ("source" in found && found.kind === "chosenParallel" && found.source._id === root._id) {
+        for (const insert of await childrenOf(ctx, "insert", type._id)) {
+          if (insert._id === root._id) continue;
+          ids.push(insert._id);
+          for (const parallel of await childrenOf(ctx, "parallel", insert._id)) {
+            ids.push(parallel._id);
+          }
+          if (ids.length >= MAX_PRINTING_LEAVES) break;
+        }
+      }
+    }
   } else if (root.level === "variantType" && variantTypeKind(root) === "base" && root.parentId) {
     const setNameId = root.parentId;
     const siblings = await ctx.db

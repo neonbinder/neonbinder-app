@@ -197,6 +197,7 @@ import type * as observability from "../observability.js";
 import type * as parallelChecklistBuild from "../parallelChecklistBuild.js";
 import type * as parallelCopyTitles from "../parallelCopyTitles.js";
 import type * as parallelGroupingPlan from "../parallelGroupingPlan.js";
+import type * as parallelTypeSource from "../parallelTypeSource.js";
 import type * as photoEditRows from "../photoEditRows.js";
 import type * as photoEdits from "../photoEdits.js";
 import type * as pickList from "../pickList.js";
@@ -459,6 +460,7 @@ declare const fullApi: ApiFromModules<{
   parallelChecklistBuild: typeof parallelChecklistBuild;
   parallelCopyTitles: typeof parallelCopyTitles;
   parallelGroupingPlan: typeof parallelGroupingPlan;
+  parallelTypeSource: typeof parallelTypeSource;
   photoEditRows: typeof photoEditRows;
   photoEdits: typeof photoEdits;
   pickList: typeof pickList;

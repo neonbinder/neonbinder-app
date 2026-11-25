@@ -510,6 +510,9 @@ const PARALLEL_GONE =
   "That parallel is gone — it may have just been deleted.";
 const NO_INSERT_ABOVE =
   "This parallel doesn't sit under an insert, so there's no checklist to copy.";
+/** NEO-673 — the chosen source parallel is not itself built from anything. */
+export const NOT_BUILT_IS_THE_SOURCE =
+  "This parallel is the one the others copy from, so it saves its own checklist.";
 
 // ---------------------------------------------------------------------------
 // Chains and the side plan
@@ -556,8 +559,17 @@ function prefixOf(chain: readonly ChainRow[]): string | undefined {
 // The source a parallel is built from (NEO-321)
 // ---------------------------------------------------------------------------
 
-/** What kind of row a parallel is copied from. */
-export type BuildSourceKind = "insert" | "base";
+/**
+ * What kind of row a parallel is copied from. NEO-673: `"chosenParallel"` is a
+ * base parallel the operator picked as the source for a set with no Base.
+ */
+export type BuildSourceKind = "insert" | "base" | "chosenParallel";
+
+const sourceKindValidator = v.union(
+  v.literal("insert"),
+  v.literal("base"),
+  v.literal("chosenParallel"),
+);
 
 /**
  * Variant-type rows read under one set when looking for its Base. A set has a
@@ -595,11 +607,21 @@ export function pickBaseVariantType<R extends { value?: string }>(
   return { base: bases[0] };
 }
 
-/** The Base of the set a Parallel variant type sits in. */
-async function baseOfParallelType(
+/**
+ * The row a Parallel variant type's base parallels are copied from: the
+ * set's Base, else (NEO-673, only when the set has zero Bases) the insert the
+ * operator picked (`parallelSourceId`), re-verified here on every read: the
+ * row exists, is an insert and sits directly under this type. Anything else
+ * reads as no pick. More than one Base, or too many variant types, stay
+ * blocked as before.
+ */
+export async function sourceOfParallelType(
   ctx: { db: QueryCtx["db"] },
   parallelType: Doc<"selectorOptions">,
-): Promise<{ base: Doc<"selectorOptions"> } | { blockedReason: string }> {
+): Promise<
+  | { source: Doc<"selectorOptions">; kind: "base" | "chosenParallel" }
+  | { blockedReason: string }
+> {
   const setNameId = parallelType.parentId;
   if (!setNameId) return { blockedReason: BLOCKED_NO_BASE };
   const siblings = await ctx.db
@@ -611,7 +633,19 @@ async function baseOfParallelType(
   if (siblings.length > MAX_VARIANT_TYPES_PER_SET) {
     return { blockedReason: BLOCKED_TOO_MANY_VARIANT_TYPES };
   }
-  return pickBaseVariantType(siblings);
+  const found = pickBaseVariantType(siblings);
+  if ("base" in found) return { source: found.base, kind: "base" };
+  if (found.blockedReason === BLOCKED_NO_BASE && parallelType.parallelSourceId) {
+    const picked = await ctx.db.get(parallelType.parallelSourceId);
+    if (
+      picked &&
+      picked.level === "insert" &&
+      picked.parentId === parallelType._id
+    ) {
+      return { source: picked, kind: "chosenParallel" };
+    }
+  }
+  return found;
 }
 
 /**
@@ -621,7 +655,9 @@ async function baseOfParallelType(
  *   - a `parallel`-level row → its parent insert (NEO-312);
  *   - an `insert`-level row whose parent variant type is of kind `"parallel"` →
  *     the exactly-one sibling variant type titled "Base"; none, or more
- *     than one, is `blocked`;
+ *     than one, is `blocked`. NEO-673: with none, the insert the operator
+ *     picked (`parallelSourceId`) is the source (`"chosenParallel"`), and
+ *     that insert itself is `notBuildable`;
  *   - anything else → `notBuildable` (`NOT_A_PARALLEL`).
  *
  * The list query, the build's context read and every insert page call this
@@ -645,11 +681,15 @@ export async function resolveBuildSource(
       parent.level === "variantType" &&
       variantTypeKind(parent) === "parallel"
     ) {
-      const found = await baseOfParallelType(ctx, parent);
+      const found = await sourceOfParallelType(ctx, parent);
       if ("blockedReason" in found) {
         return { status: "blocked", kind: "base", blockedReason: found.blockedReason };
       }
-      return { status: "ok", kind: "base", source: found.base, parent };
+      // NEO-673 — the chosen source is not built from anything.
+      if (found.kind === "chosenParallel" && found.source._id === target._id) {
+        return { status: "notBuildable", message: NOT_BUILT_IS_THE_SOURCE };
+      }
+      return { status: "ok", kind: found.kind, source: found.source, parent };
     }
   }
   return { status: "notBuildable", message: NOT_A_PARALLEL };
@@ -1008,12 +1048,24 @@ export const getParallelsForBuild = query({
       v.object({
         id: v.id("selectorOptions"),
         value: v.string(),
-        kind: v.union(v.literal("insert"), v.literal("base")),
+        kind: sourceKindValidator,
         hasCards: v.boolean(),
+        /**
+         * NEO-673 — only for a chosen parallel: where it sits among the
+         * parallels in the type's child order (the list leaves it out, so the
+         * picker slots it back at this index).
+         */
+        position: v.optional(v.number()),
       }),
     ),
     /** Why there is no `source` for a Parallel variant type (no single Base). */
     sourceBlocked: v.optional(v.string()),
+    /**
+     * NEO-673 — the operator may pick (or change) the parallel the others
+     * copy from: the set has zero Bases and the type holds base parallels.
+     * Always false for an insert and for a set that has a Base.
+     */
+    sourcePickable: v.boolean(),
     parallels: v.array(
       v.object({
         _id: v.id("selectorOptions"),
@@ -1032,7 +1084,9 @@ export const getParallelsForBuild = query({
     await requireAdmin(ctx);
     const parentId = args.sourceId ?? args.insertId;
     const parent = parentId ? await ctx.db.get(parentId) : null;
-    if (!parentId || !parent) return { parallels: [], truncated: false };
+    if (!parentId || !parent) {
+      return { parallels: [], truncated: false, sourcePickable: false };
+    }
 
     // Which children are the parallels, and which row they are built from —
     // by level and kind only (the same rules as `resolveBuildSource`).
@@ -1040,6 +1094,8 @@ export const getParallelsForBuild = query({
     let source: Doc<"selectorOptions"> | undefined;
     let sourceKind: BuildSourceKind;
     let sourceBlocked: string | undefined;
+    // NEO-673 — the set has zero Bases (the pick may be made or changed).
+    let noBase = false;
     if (parent.level === "insert") {
       childLevel = "parallel";
       source = parent;
@@ -1050,11 +1106,17 @@ export const getParallelsForBuild = query({
     ) {
       childLevel = "insert";
       sourceKind = "base";
-      const found = await baseOfParallelType(ctx, parent);
-      if ("blockedReason" in found) sourceBlocked = found.blockedReason;
-      else source = found.base;
+      const found = await sourceOfParallelType(ctx, parent);
+      if ("blockedReason" in found) {
+        sourceBlocked = found.blockedReason;
+        noBase = found.blockedReason === BLOCKED_NO_BASE;
+      } else {
+        source = found.source;
+        sourceKind = found.kind;
+        noBase = found.kind === "chosenParallel";
+      }
     } else {
-      return { parallels: [], truncated: false };
+      return { parallels: [], truncated: false, sourcePickable: false };
     }
     const sourceRowId = source?._id;
     const sourceHasCards = sourceRowId
@@ -1078,13 +1140,22 @@ export const getParallelsForBuild = query({
     const position = new Map<string, number>(
       (parent.children ?? []).map((id, i) => [id, i]),
     );
-    const parallels = found
+    const inChildOrder = found
       .slice(0, MAX_PARALLELS_PER_INSERT)
       .sort(
         (a, b) =>
           (position.get(a._id) ?? Number.MAX_SAFE_INTEGER) -
           (position.get(b._id) ?? Number.MAX_SAFE_INTEGER),
       );
+    // NEO-673 — a chosen source is not among the parallels built from it, but
+    // the picker lists it where it sits in the child order.
+    const sourcePosition =
+      sourceKind === "chosenParallel"
+        ? inChildOrder.findIndex((row) => row._id === sourceRowId)
+        : -1;
+    const parallels = inChildOrder.filter(
+      (row) => !(sourceKind === "chosenParallel" && row._id === sourceRowId),
+    );
 
     let cardBudget = LIST_BLOCK_CARD_BUDGET;
     let lookupBudget = LIST_BLOCK_LOOKUP_BUDGET;
@@ -1164,10 +1235,12 @@ export const getParallelsForBuild = query({
               value: source.value,
               kind: sourceKind,
               hasCards: sourceHasCards,
+              ...(sourcePosition >= 0 ? { position: sourcePosition } : {}),
             },
           }
         : {}),
       ...(sourceBlocked ? { sourceBlocked } : {}),
+      sourcePickable: noBase && found.length > 0,
       parallels: out,
       truncated,
     };
@@ -1192,8 +1265,6 @@ const sideCardListsValidator = v.object({
   bsc: v.array(v.string()),
   sportlots: v.array(v.string()),
 });
-
-const sourceKindValidator = v.union(v.literal("insert"), v.literal("base"));
 
 /**
  * What one build needs to know before it asks anything: where the target is
@@ -1554,7 +1625,14 @@ export const clearParallelReviewPage = internalMutation({
  * card delete, `removeCardRow`, exactly as `deleteCard` does it.
  */
 export const deleteParallelCardsPage = internalMutation({
-  args: { parallelId: v.id("selectorOptions") },
+  args: {
+    parallelId: v.id("selectorOptions"),
+    /**
+     * The source the action planned the build from. Optional so a call made
+     * across a deploy still validates; absent is refused like a moved source.
+     */
+    sourceId: v.optional(v.id("selectorOptions")),
+  },
   returns: v.object({
     deleted: v.number(),
     done: v.boolean(),
@@ -1566,6 +1644,31 @@ export const deleteParallelCardsPage = internalMutation({
   }),
   handler: async (ctx, args) => {
     const empty = { bsc: [] as string[], sportlots: [] as string[] };
+    // NEO-673 (security audit) — the same source check `insertParallelCardsPage`
+    // makes, BEFORE any read or delete: an admin repointing the type's pick to
+    // this parallel mid-build makes its cards the set's only source, and they
+    // must not be wiped. A parallel that no longer resolves to the source the
+    // action planned from stops here, with nothing deleted.
+    const parallel = await ctx.db.get(args.parallelId);
+    const resolved = parallel ? await resolveBuildSource(ctx, parallel) : undefined;
+    if (
+      !resolved ||
+      resolved.status !== "ok" ||
+      args.sourceId === undefined ||
+      resolved.source._id !== args.sourceId
+    ) {
+      console.warn(
+        JSON.stringify({ msg: "parallel_delete_page_refused", parallelId: args.parallelId }),
+      );
+      return {
+        deleted: 0,
+        done: true,
+        // Nothing was removed by THIS page; the action turns it into
+        // BLOCKED_CHANGED_MID_BUILD when an earlier page did remove cards.
+        blockedReason: BLOCKED_CHANGED_NOTHING_CLEARED,
+        refs: empty,
+      };
+    }
     if (await reviewStagedOn(ctx, args.parallelId)) {
       return { deleted: 0, done: true, blockedReason: BLOCKED_REVIEW_OPEN, refs: empty };
     }
@@ -2879,7 +2982,7 @@ export const buildParallelChecklist = action({
     for (;;) {
       const page = await ctx.runMutation(
         internal.parallelChecklistBuild.deleteParallelCardsPage,
-        { parallelId: args.parallelId },
+        { parallelId: args.parallelId, sourceId: plan.sourceId },
       );
       if (page.blockedReason) {
         // Security 3 — a block after the first page is a PARTIAL WIPE, and is

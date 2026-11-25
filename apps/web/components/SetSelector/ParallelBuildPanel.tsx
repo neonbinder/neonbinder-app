@@ -126,9 +126,18 @@ export type ParallelPlanEntry = {
 export type ParallelBuildSource = {
   id: Id<"selectorOptions">;
   value: string;
-  /** An insert's own checklist, or the Base checklist for the base set's parallels. */
-  kind: "insert" | "base";
+  /**
+   * An insert's own checklist, the Base checklist for the base set's
+   * parallels, or (NEO-673, a set with no Base) the parallel the operator
+   * picked for the others to copy from.
+   */
+  kind: "insert" | "base" | "chosenParallel";
   hasCards: boolean;
+  /**
+   * NEO-673 — a chosen parallel only: its index in the type's child order,
+   * for the picker to slot it back into the list.
+   */
+  position?: number;
 };
 
 export type ParallelBuildPlan = {
@@ -142,6 +151,11 @@ export type ParallelBuildPlan = {
   source?: ParallelBuildSource | null;
   /** Why there is no `source` (a Parallel variant type with no single Base). */
   sourceBlocked?: string;
+  /**
+   * NEO-673 — no source, no Base in the set, and parallels to choose from:
+   * the panel asks which one the others copy from.
+   */
+  sourcePickable?: boolean;
 };
 
 type SideCounts = { bsc: number; sportlots: number };
