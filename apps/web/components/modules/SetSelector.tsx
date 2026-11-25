@@ -1070,18 +1070,33 @@ export default function SetSelector() {
    */
   const [retiredRun, setRetiredRun] = useState<ParallelRun | null>(null);
   const hostedRun = hostedParallelRun.run;
+  /**
+   * NEO-673 — the selection that was open when the run was started, recorded
+   * the render the run first shows up (keyed by the run's own wait key, which
+   * is minted once per run). A run pressed from the type itself starts with
+   * the type open, as before; one pressed while a row of the type is open
+   * starts with that row open, so the ledger is not retired at the end of its
+   * own run, only on the next pick of any other row.
+   */
+  const [openedWith, setOpenedWith] = useState<{
+    runKey: string;
+    selectionId: string | null;
+  } | null>(null);
+  const hostedRunKey = hostedRun ? (hostedRun.waitKey ?? hostedRun.startedFrom) : null;
+  if (hostedRunKey && openedWith?.runKey !== hostedRunKey) {
+    setOpenedWith({ runKey: hostedRunKey, selectionId: deepestSelectedId });
+  }
+  const runOpenedWith =
+    openedWith && openedWith.runKey === hostedRunKey
+      ? openedWith.selectionId
+      : deepestSelectedId;
   if (
     hostedRun &&
     hostedRun !== retiredRun &&
     hostedRun.phase !== "running" &&
     hostedRun.phase !== "stopping" &&
     hostedRun.phase !== "left" &&
-    deepestSelectedId !== hostedRun.startedFrom &&
-    // The base-parallels section stays on screen while one of its type's rows
-    // is open (`baseSectionShowsRun`), and it hosts the run's ledger there:
-    // a selection still inside the type is not "leaving the row it started
-    // from", so the finished ledger stays.
-    !(isParallelTypeSelected && selectedVariantTypeId === hostedRun.startedFrom)
+    deepestSelectedId !== runOpenedWith
   ) {
     setRetiredRun(hostedRun);
   }

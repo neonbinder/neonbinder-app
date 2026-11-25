@@ -466,26 +466,23 @@ describe("SetSelector — a finished run retires once the selection moves (NEO-4
     await waitFor(() => expect(mockConvex.action).toHaveBeenCalled());
   }
 
-  it("keeps a finished run's ledger while a row under its type is open, then hides it once the selection leaves the type", async () => {
+  it("hides a finished run's ledger on the next pick, and keeps it hidden back on its row", async () => {
     mockConvex.action.mockImplementation(() => Promise.reject(new Error("BSC is down")));
     await buildFromSection();
     // Finished on its own row: the ledger says so.
     await waitFor(() => expect(ledgers()).toHaveLength(1));
 
-    // The section stays open over one of the type's rows and hosts the ledger
-    // there: opening a row is not leaving the run's section.
     fireEvent.click(screen.getByText("select-row"));
     expect(checklistProps().variantId).toBe("row-gold-wave");
-    expect(ledgers()).toHaveLength(1);
+    expect(ledgers()).toHaveLength(0);
 
     selectType("vt-inserts");
-    expect(ledgers()).toHaveLength(0);
     selectType("vt-parallel");
     expect(sectionHeading()).toBeTruthy();
     expect(ledgers()).toHaveLength(0);
   });
 
-  it("a build pressed while a row is open keeps its ledger after it finishes", async () => {
+  it("a build pressed while a row is open keeps its ledger after it finishes, until the next pick", async () => {
     mockConvex.action.mockImplementation(() => Promise.reject(new Error("BSC is down")));
     render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel");
@@ -498,6 +495,10 @@ describe("SetSelector — a finished run retires once the selection moves (NEO-4
     // Settled (not running) and still on screen.
     await act(async () => {});
     expect(ledgers()).toHaveLength(1);
+
+    // The next pick of any other row retires it.
+    selectType("vt-inserts");
+    expect(ledgers()).toHaveLength(0);
   });
 
   it("moving to another Parallel-kind type is leaving the run's section, so the ledger retires", async () => {
