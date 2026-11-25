@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckIcon } from "@heroicons/react/16/solid";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
@@ -14,6 +13,7 @@ import { useInlinePart } from "../inline-stack";
 import type { TidyCardContext, TidyRow } from "../tile-types";
 import { careerHeading, chipYearsText, marketplaceHeading, outcomeHeading, playedHere } from "./copy";
 import InlineNewTeam from "./InlineNewTeam";
+import TeamChipButton from "./TeamChip";
 import { buildTeamLine, type PlayerEvidence, type TeamHold } from "./team-line";
 import type { TidyWrite } from "./tidy-write";
 
@@ -285,37 +285,19 @@ export default function TeamFillChips({
     const accessibleName = `${chip.label}${on ? ", suggested" : ""}${opts.suffix ? ` · ${opts.suffix}` : ""}`;
     return (
       <li key={chip.teamId as string} className="max-w-full">
-        <button
-          type="button"
-          aria-label={accessibleName}
-          aria-disabled={write.busy || undefined}
-          aria-describedby={on && savesTogether ? togetherId : undefined}
+        <TeamChipButton
+          label={chip.label}
+          on={on}
+          suffix={opts.suffix}
+          accessibleName={accessibleName}
+          busy={write.busy}
+          describedBy={on && savesTogether ? togetherId : undefined}
           onClick={() => {
-            if (write.busy) return;
             // A preselected chip stands for the whole pre-fill; any other is one team.
             const teams = on ? preselect : [chip.teamId];
             void save(teams, teams.map(chipLabelOf));
           }}
-          className={`hit-area-24 inline-flex max-w-full flex-col items-start gap-0 border px-2 py-0.5 text-left text-xs focus-outline ${
-            opts.suffix ? "rounded-2xl" : "rounded-full"
-          } ${
-            on
-              ? "border-neon-green-text bg-neon-green/20 text-neon-green-text"
-              : "border-control bg-raised text-ink-2 hover:border-neon-blue-text hover:text-neon-blue-text"
-          }`}
-        >
-          <span className="inline-flex items-center gap-1">
-            {/* The preselected mark that is not a colour (SC 1.4.1); the accessible name says "suggested" to a reader. */}
-            {on && <CheckIcon aria-hidden="true" className="h-3 w-3 shrink-0" />}
-            <span>{chip.label}</span>
-          </span>
-          {/* NEO-645: the years (every player's, merged) get their own line, so a
-              long list wraps inside the chip at 320px and is never clipped. The
-              dot is in the accessible name ("Team · Player 1967–1983"). */}
-          {opts.suffix && (
-            <span className="block max-w-full text-ink-2 wrap-anywhere">{opts.suffix}</span>
-          )}
-        </button>
+        />
       </li>
     );
   };

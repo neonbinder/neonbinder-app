@@ -9,11 +9,14 @@ import NeonButton from "../../../modules/NeonButton";
 import EntityLinkSearch from "../../EntityLinkSearch";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
+import { careerSwapOptions } from "../parts/career-swap";
 import EditLine from "../parts/EditLine";
 import NameApplyToAll from "../parts/NameApplyToAll";
+import TeamChip from "../parts/TeamChip";
 import TeamFillChips from "../parts/TeamFillChips";
 import TeamNameRow, { RuledOutTeamRow } from "../parts/TeamNameRow";
 import { useTidyWrite } from "../parts/tidy-write";
+import { useSetYear } from "../parts/use-set-year";
 import TidyTile, { ApplyToAllButton } from "../TidyTile";
 import type { TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
 import { useWalkMemory } from "../walk-memory";
@@ -46,6 +49,11 @@ const NO_CONTEXT_YET = {
  *  - nothing to ask: the card's team with Edit at the end of its line, and
  *    "+ Another team". A team on a card is the card's team, whoever wrote it
  *    (NEO-656): a linked team has no name of its own, so Change is the Edit here.
+ *
+ * A gap team offers the career's covering stints as swaps (NEO-672): under a
+ * team the Career tile says the player's career lacks (`careerGap`), one pill per
+ * career team the set's year covers; a click swaps the card's team for it, the
+ * same write as Change. Nothing is written to the player.
  *
  * Waits (`level="waiting"`) while a TEAMS disagreement is unsettled: the
  * spelling decides which name this tile asks about.
@@ -97,6 +105,8 @@ export default function TeamTile({
     });
   };
   useInlinePart(searchFor !== null, closeSearch, searchScopeRef);
+  const gaps = attention.items.flatMap((i) => (i.kind === "careerGap" ? [i] : []));
+  const setYear = useSetYear(leafId, gaps.length > 0);
 
   if (attention.items.some((i) => i.kind === "sourcesDisagree" && i.field === "teams")) {
     return <TidyTile heading="Team" level="waiting" waitingText="Waiting on the spelling above" />;
@@ -157,12 +167,13 @@ export default function TeamTile({
       answered();
     }, "Couldn't save that team. Try again.");
 
+  /** Replace one of the card's teams with another (Change, and a career swap). */
+  const swapTeam = (from: Id<"teams">, to: Id<"teams">) =>
+    saveTeams([...new Set(teamsOnCard.map((t) => (t === from ? to : t)))]);
+
   const onSelect = (picked: string) => {
     const id = picked as Id<"teams">;
-    if (searchFor?.kind === "change") {
-      const next = teamsOnCard.map((t) => (t === searchFor.teamId ? id : t));
-      return saveTeams([...new Set(next)]);
-    }
+    if (searchFor?.kind === "change") return swapTeam(searchFor.teamId, id);
     return saveTeams([...new Set([...teamsOnCard, id])]);
   };
 
@@ -209,23 +220,51 @@ export default function TeamTile({
         />
       ))}
 
-      {unrowed.map((team) => (
-        <div
-          key={team.teamId}
-          role="group"
-          aria-label={`Team ${team.name}`}
-          className="grid gap-1.5"
-        >
-          <EditLine
-            editLabel={`Edit ${team.name}`}
-            busy={write.busy}
-            onEdit={(opener) => openSearch({ kind: "change", teamId: team.teamId }, opener)}
-            textClass="text-sm font-medium text-ink"
+      {unrowed.map((team) => {
+        const gap = gaps.find((g) => g.teamId === team.teamId);
+        const stints = ctx.players.find((p) => p.playerId === gap?.playerId)?.stints ?? [];
+        const swaps =
+          gap && searchFor === null ? careerSwapOptions({ stints, teamsOnCard, setYear }) : [];
+        const swapLabelId = `swap-for-${row._id}-${team.teamId}`;
+        return (
+          <div
+            key={team.teamId}
+            role="group"
+            aria-label={`Team ${team.name}`}
+            className="grid gap-1.5"
           >
-            {team.name}
-          </EditLine>
-        </div>
-      ))}
+            <EditLine
+              editLabel={`Edit ${team.name}`}
+              busy={write.busy}
+              onEdit={(opener) => openSearch({ kind: "change", teamId: team.teamId }, opener)}
+              textClass="text-sm font-medium text-ink"
+            >
+              {team.name}
+            </EditLine>
+            {swaps.length > 0 && (
+              <div className="grid gap-1">
+                <p id={swapLabelId} className="text-xs text-ink-2">
+                  Swap for
+                </p>
+                <ul className="flex flex-wrap gap-1.5" aria-labelledby={swapLabelId}>
+                  {swaps.map((option) => (
+                    <li key={option.teamId} className="max-w-full">
+                      <TeamChip
+                        label={option.teamName}
+                        on={false}
+                        suffix={option.years}
+                        accessibleName={`Swap ${team.name} for ${option.teamName} · ${option.years}`}
+                        busy={write.busy}
+                        onClick={() => void swapTeam(team.teamId, option.teamId as Id<"teams">)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        );
+      })}
 
       {linkedHere.map((a) => (
         <NameApplyToAll
