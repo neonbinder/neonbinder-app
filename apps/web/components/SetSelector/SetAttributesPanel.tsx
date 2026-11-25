@@ -956,12 +956,18 @@ export default function SetAttributesPanel({
                 taps. Now the name breaks wherever it has to. */}
             {/* NEO-667: while the name is being edited the text area stands in
                 the title's place (it holds the name, full width), so the
-                heading steps aside and comes back when the editor closes. */}
-            {!renameHeld && (
-              <h3 className="min-w-0 wrap-anywhere text-sm font-semibold text-ink">
-                {headerTitle}
-              </h3>
-            )}
+                heading steps aside (`sr-only`, still mounted so the panel
+                keeps its heading for a screen reader) and comes back when the
+                editor closes. */}
+            <h3
+              className={
+                renameHeld
+                  ? "sr-only"
+                  : "min-w-0 wrap-anywhere text-sm font-semibold text-ink"
+              }
+            >
+              {headerTitle}
+            </h3>
             {expanded && (
               <>
               {/* NEO-239: every level renames, variantType included.

@@ -89,6 +89,48 @@ describe("RenameEntityControl", () => {
     expect(notPrevented).toBe(false);
   });
 
+  it("an Enter that confirms an IME composition does not save", () => {
+    renderControl();
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    const input = screen.getByLabelText("Edit name for Baseball");
+    fireEvent.change(input, { target: { value: "Football" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    expect(mockRename).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Edit name for Baseball")).toBe(input);
+  });
+
+  it("a soft keyboard's insertLineBreak beforeinput saves instead of adding a newline", async () => {
+    renderControl();
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    const input = screen.getByLabelText("Edit name for Baseball") as HTMLTextAreaElement;
+    expect(input.getAttribute("enterkeyhint")).toBe("done");
+    fireEvent.change(input, { target: { value: "Football" } });
+    const ev = new Event("beforeinput", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "inputType", { value: "insertLineBreak" });
+    const notPrevented = input.dispatchEvent(ev);
+    expect(notPrevented).toBe(false);
+    await waitFor(() => expect(mockRename).toHaveBeenCalledWith({ id: ID, value: "Football" }));
+  });
+
+  it("other beforeinput types are left alone", () => {
+    renderControl();
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    const input = screen.getByLabelText("Edit name for Baseball");
+    const ev = new Event("beforeinput", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "inputType", { value: "insertText" });
+    expect(input.dispatchEvent(ev)).toBe(true);
+    expect(mockRename).not.toHaveBeenCalled();
+  });
+
+  it("sizes itself to its content as a fallback for field-sizing", () => {
+    renderControl();
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    const input = screen.getByLabelText("Edit name for Baseball") as HTMLTextAreaElement;
+    Object.defineProperty(input, "scrollHeight", { configurable: true, value: 96 });
+    fireEvent.input(input);
+    expect(input.style.height).toBe("96px");
+  });
+
   it("commits on Enter with the trimmed value", async () => {
     renderControl();
     fireEvent.click(screen.getByLabelText("Rename Baseball"));

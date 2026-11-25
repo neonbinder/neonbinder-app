@@ -184,6 +184,19 @@ export default function RenameEntityControl({
     wasEditingRef.current = editing;
   }, [editing]);
 
+  // Auto-grow fallback (NEO-667): `[field-sizing:content]` is not in every
+  // browser, and the field is `overflow-hidden` (no scrollbar, rows={1}), so
+  // without this a long name would clip on one line. Size to the content.
+  const grow = () => {
+    const field = inputRef.current;
+    if (!field) return;
+    field.style.height = "auto";
+    field.style.height = `${field.scrollHeight}px`;
+  };
+  useEffect(() => {
+    if (editing) grow();
+  }, [editing]);
+
   const commit = async () => {
     // Read the live DOM value (uncontrolled input) — see the NEO-36 note above.
     // A textarea keeps a pasted newline where the old single-line input stripped
@@ -211,6 +224,27 @@ export default function RenameEntityControl({
       setSaving(false);
     }
   };
+
+  // Android soft keyboards send Enter as a `beforeinput` of type
+  // `insertLineBreak` rather than a keydown Enter. React's `onBeforeInput` is
+  // built on keypress/textInput and carries no `inputType`, so this listens for
+  // the native event. Read through a ref so the listener always sees the latest
+  // `commit` (its `saving` guard) without re-binding.
+  const commitRef = useRef(commit);
+  useEffect(() => {
+    commitRef.current = commit;
+  });
+  useEffect(() => {
+    const field = inputRef.current;
+    if (!editing || !field) return;
+    const onBeforeInput = (e: Event) => {
+      if ((e as InputEvent).inputType !== "insertLineBreak") return;
+      e.preventDefault();
+      void commitRef.current();
+    };
+    field.addEventListener("beforeinput", onBeforeInput);
+    return () => field.removeEventListener("beforeinput", onBeforeInput);
+  }, [editing]);
 
   // Closing unmounts the field; it remounts holding the current name, so there
   // is nothing to reset.
@@ -273,6 +307,8 @@ export default function RenameEntityControl({
           // OPEN in this error state on purpose: closing it would hide the
           // reason and drop what they typed.
           onChange={() => error && setError(null)}
+          onInput={grow}
+          enterKeyHint="done"
           // One line tall to start, then as tall as the name needs
           // (`field-sizing`, as CardTitlesStep's boxes do); `wrap-anywhere`
           // breaks a long unbroken token rather than clipping or widening the
@@ -282,7 +318,8 @@ export default function RenameEntityControl({
             // Stop the row's own handlers from seeing these — the row is a
             // sibling button and Enter would otherwise also select it.
             e.stopPropagation();
-            if (e.key === "Enter") {
+            // An Enter that confirms an IME composition is not a save.
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
               // A name is one line: Enter saves rather than adding a newline.
               e.preventDefault();
               void commit();

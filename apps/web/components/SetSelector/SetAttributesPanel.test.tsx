@@ -5442,9 +5442,11 @@ describe("SetAttributesPanel — held open by a rename or a delete (NEO-569)", (
       expect(field.tagName).toBe("TEXTAREA");
       expect(field.value).toBe("2024 Topps Chrome");
       expect(document.activeElement).toBe(field);
-      expect(screen.queryByRole("heading", TITLE)).toBeNull();
+      // The heading stays mounted for a screen reader, but is visually hidden.
+      expect(screen.getByRole("heading", TITLE).className).toContain("sr-only");
 
       fireEvent.keyDown(field, { key: "Escape" });
+      expect(screen.getByRole("heading", TITLE).className).not.toContain("sr-only");
 
       expect(screen.getByRole("heading", TITLE)).toBeTruthy();
       expect(screen.queryByLabelText("Edit name for 2024 Topps Chrome")).toBeNull();
@@ -5477,7 +5479,7 @@ describe("SetAttributesPanel — held open by a rename or a delete (NEO-569)", (
 
       await screen.findByText(/already called/);
       expect(screen.getByLabelText("Edit name for 2024 Topps Chrome")).toBe(field);
-      expect(screen.queryByRole("heading", TITLE)).toBeNull();
+      expect(screen.getByRole("heading", TITLE).className).toContain("sr-only");
     });
   });
 
