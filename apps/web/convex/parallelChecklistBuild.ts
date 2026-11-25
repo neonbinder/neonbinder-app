@@ -360,7 +360,7 @@ export const BLOCKED_SOURCE_NOT_TIDY =
  * every lookup has answered. Pink wins when both hold (`BLOCKED_SOURCE_NOT_TIDY`).
  */
 export const BLOCKED_SOURCE_LOOKING_UP_TEAMS =
-  "the checklist it's built from is still looking up teams for its cards — build again once they're in";
+  "the checklist it's built from is still looking up teams for its cards — build again once they're in, or set those cards' teams yourself";
 export const BLOCKED_TOO_MANY_CARDS =
   "the checklist it's built from is bigger than one build can copy (more than 5,000 cards, or too much card data)";
 export const BLOCKED_PARALLEL_TOO_MANY_CARDS =
