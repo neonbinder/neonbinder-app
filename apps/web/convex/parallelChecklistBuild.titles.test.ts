@@ -181,6 +181,10 @@ async function addCard(
     insertTestCard(ctx, {
       selectorOptionId,
       platformData: {},
+      // NEO-661: a teamless source card is pink and holds the build. "No Team"
+      // is the default here because a team's name would join the title and
+      // move these tests' length-tuned outcomes.
+      teamNoneConfirmedAt: SENTINEL,
       sortOrder: Number.parseInt(card.cardNumber, 10) || 0,
       lastUpdated: SENTINEL,
       features: { ...SET_FACTS, cardType: "Insert" },

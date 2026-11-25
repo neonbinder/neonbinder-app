@@ -19,8 +19,8 @@ For a spec whose old wizard loop pressed "Skip <name> — not a person" / "not a
   to go before reading Player rows, or the card reads empty and gets skipped pink.
 - A per-card loop keyed on the card number (`tidyCardIdentity` line 0) can put the old wizard's
   per-step asserts on the card they belong to (e.g. #1 asks for a team after its high school is
-  ruled out). Record skips with their pink tiles and assert J3 (no Player/Sources disagree pink)
-  after the end screen.
+  ruled out). Record skips with their pink tiles and, before a parallel build, assert no card was
+  skipped at all after the end screen (NEO-661: any pink holds the build, not only names).
 - A read-only data check after a fresh-only green: `npx convex data tidyNames|cardChecklist
   --limit 8000 --format jsonl` (limit must stay at or under the server cap) proves which branch ran.
 

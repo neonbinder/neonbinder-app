@@ -29,8 +29,11 @@ import {
   blockedIdsUnreachable,
   blockedSidePaused,
 } from "./parallelChecklistBuild";
-import { insertTestCard } from "../lib/testing/card-row";
+import { insertTestCard, testCardSport } from "../lib/testing/card-row";
+import type { MutationCtx } from "./_generated/server";
+
 import { teamRowFields } from "./lib/teamRow";
+import { LISTING_TITLE_MAX } from "./features/listingLimits";
 import { captureBscTeamLane } from "../lib/testing/bsc-team-lane";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
@@ -69,6 +72,8 @@ const bscState = vi.hoisted(() => ({
   success: true,
   cards: [] as StubCard[],
   calls: [] as Array<Record<string, string[]>>,
+  /** Runs inside the BSC fetch: after the hold check, before any copy page. */
+  duringFetch: null as null | (() => Promise<void>),
 }));
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adapters/buysportscards")>();
@@ -86,6 +91,7 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
       returns: v.any(),
       handler: async (_ctx, args) => {
         bscState.calls.push(args.facetFilters ?? {});
+        await bscState.duringFetch?.();
         if (!bscState.success) return { success: false, cards: [] };
         return { success: true, cards: bscState.cards };
       },
@@ -124,6 +130,7 @@ beforeEach(() => {
   bscState.success = true;
   bscState.cards = [];
   bscState.calls = [];
+  bscState.duringFetch = null;
   slState.success = true;
   slState.bySlId = {};
   slState.calls = [];
@@ -233,6 +240,29 @@ async function insertPlayer(t: T, sportId: Id<"selectorOptions">, name: string) 
   );
 }
 
+/**
+ * NEO-661: a source card with no team shows pink, and any pink card holds the
+ * parallel build. A fixture card therefore carries this neutral team unless it
+ * names its own (or passes `teamOnCardIds: []` to be the teamless case). Not
+ * `teamNoneConfirmedAt`: it is copied to the parallel's copy and would switch
+ * off the Set Team fill those tests are about.
+ */
+async function neutralTeam(
+  ctx: Pick<MutationCtx, "db">,
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<Id<"teams">> {
+  const sportId = await testCardSport(ctx, selectorOptionId);
+  const existing = (await ctx.db.query("teams").collect()).find(
+    (team) => team.sportId === sportId && team.name === "Neutrals",
+  );
+  if (existing) return existing._id;
+  return ctx.db.insert("teams", {
+    ...teamRowFields({ location: "Neutral", name: "Neutrals" }),
+    sportId,
+    lastUpdated: SENTINEL,
+  });
+}
+
 async function insertCard(
   t: T,
   insertId: Id<"selectorOptions">,
@@ -242,11 +272,25 @@ async function insertCard(
     insertTestCard(ctx, {
       selectorOptionId: insertId,
       platformData: {},
+      teamOnCardIds: [await neutralTeam(ctx, insertId)],
       sortOrder: 0,
       lastUpdated: SENTINEL,
       ...card,
     }),
   );
+}
+
+/**
+ * NEO-661: a source waiting on its team lookup holds the build, so a copy owing
+ * a lookup of its own comes only from a source that loses its team after the
+ * hold check. Arms the BSC fetch (which runs between that check and the copy
+ * pages) to take the team off the given insert card, as that state.
+ */
+function dropTeamDuringFetch(t: T, cardId: Id<"cardChecklist">) {
+  bscState.duringFetch = () =>
+    t.run(async (ctx) => {
+      await ctx.db.patch(cardId, { teamOnCardIds: undefined });
+    });
 }
 
 const cardsOn = (t: T, selectorOptionId: Id<"selectorOptions">) =>
@@ -584,7 +628,6 @@ describe("buildParallelChecklist — the happy path", () => {
     await insertCard(t, insert, {
       cardNumber: "1",
       cardName: "Team Card",
-      teamOnCardIds: [],
       imageUrls: { front: "gs://bucket/front.jpg" },
     });
     bscState.cards = [
@@ -607,8 +650,15 @@ describe("buildParallelChecklist — the happy path", () => {
     try {
       const { insert } = await seedTree(t);
       const parallelId = await seedParallel(t, insert);
-      // A hand-added card: no lookup ever ran.
-      await insertCard(t, insert, { cardNumber: "1", cardName: "Team Card" });
+      // A card with a team when the build checks it, and whose BSC team lookup
+      // is owed (no team, no stamp) by the time the copies are made, so the
+      // build owes the copy a lookup of its own.
+      const owing = await insertCard(t, insert, {
+        cardNumber: "1",
+        cardName: "Team Card",
+        platformData: { bsc: { ref: "ins-1", src: "b0" } },
+      });
+      dropTeamDuringFetch(t, owing);
       // A card whose lookup has been and gone: its answer travels instead.
       await insertCard(t, insert, {
         cardNumber: "2",
@@ -646,7 +696,12 @@ describe("buildParallelChecklist — the happy path", () => {
     try {
       const { insert } = await seedTree(t);
       const parallelId = await seedParallel(t, insert);
-      await insertCard(t, insert, { cardNumber: "1", cardName: "Team Card" });
+      const owing = await insertCard(t, insert, {
+        cardNumber: "1",
+        cardName: "Team Card",
+        platformData: { bsc: { ref: "ins-1", src: "b0" } },
+      });
+      dropTeamDuringFetch(t, owing);
       bscState.cards = [{ cardNumber: "1", cardName: "Team Card", platformRef: "bsc-1" }];
 
       await t
@@ -858,7 +913,8 @@ describe("buildParallelChecklist — earlierLinksMissing / stillListedNotRelinke
     const { insert } = await seedTree(t);
     const parallelId = await seedParallel(t, insert);
     // A team card (a team and no players); the team is LINKED, so the source is
-    // tidy and the build runs (a pending team name would be refused, NEO-645 J3).
+    // tidy and the build runs (a pending team name, or no team at all, is pink
+    // and would be refused: NEO-645 J3, NEO-661).
     const yankees = await t.run(async (ctx) => {
       const sportId = (await ctx.db.get(insert))!.parentId as Id<"selectorOptions">;
       return ctx.db.insert("teams", {
@@ -950,6 +1006,9 @@ describe("buildParallelChecklist — capped result lists (MAX_LISTED_CARDS)", ()
           cardNumber: `unmatched-${i}`,
           cardName: `Unmatched ${i}`,
           platformData: {},
+          // "No Team" rather than a team: a card with a team and no player is
+          // a team card, which the matcher pairs differently.
+          teamNoneConfirmedAt: SENTINEL,
           sortOrder: i + 1,
           lastUpdated: SENTINEL,
         });
@@ -1163,11 +1222,17 @@ describe("buildParallelChecklist — blocks write nothing", () => {
     expect(slState.calls).toHaveLength(0);
   });
 
-  // NEO-645 (J3, Q4): the parallel copies its source, so the source must be tidy.
-  // The refusal comes before anything is deleted or fetched.
+  // NEO-645 (J3, Q4), widened by NEO-661 (Jason, 2026-11-24: "if there is
+  // anything that would cause a pink box we should hold the parallels back."):
+  // the parallel copies its source, so the source must show no pink card, whatever
+  // the pink item is. The refusal comes before anything is deleted or fetched.
   test.each([
     ["a player name still waiting", { pendingPlayerNames: ["S. Ohtani"] }],
     ["a team name still waiting", { pendingTeamNames: ["Yankees"] }],
+    ["no team (and no lookup waiting)", { teamOnCardIds: [] }],
+    ["an autograph with no format", { attributes: ["AU"] }],
+    ["a title over the limit", { listingTitle: "T".repeat(LISTING_TITLE_MAX + 1) }],
+    ["no name", { cardName: "Card #1" }],
     [
       "sources that disagree and nobody has chosen",
       {

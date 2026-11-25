@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckIcon } from "@heroicons/react/16/solid";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
@@ -206,6 +206,13 @@ export default function TeamFillChips({
     [line.suggestion],
   );
   const ready = !line.loading && bscSettled;
+  // The "Looking up teams…" sentence goes in a tick after the status node
+  // mounts, so a reader sees a change to a live region that is already in the page.
+  const [announce, setAnnounce] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setAnnounce(true), 0);
+    return () => clearTimeout(t);
+  }, []);
 
   // The pre-fill shows as the chosen chips; a click saves the team it names.
   const chosenSet = useMemo(
@@ -326,6 +333,14 @@ export default function TeamFillChips({
   return (
     <div className="grid gap-2" aria-busy={write.busy || undefined}>
       {caseLine && <p className="text-xs text-ink-2">{caseLine}</p>}
+      {/* NEO-661: the status node is in the page empty on the first commit and
+          the sentence is put in a tick later (this part mounts with the
+          loading already under way, so text rendered with the node is often
+          skipped by a reader). Shown only while the suggestions are loading;
+          the buttons below stay pressable. */}
+      <p role="status" className="text-xs italic text-ink-3 empty:hidden">
+        {announce && !ready ? "Looking up teams…" : null}
+      </p>
       {savesTogether && (
         <p id={togetherId} className="sr-only">
           Suggested teams save together.
@@ -337,7 +352,7 @@ export default function TeamFillChips({
           <p id={`fill-listing-${row._id}`} className="text-xs text-ink-2">
             {marketplaceHeading(bscName, marketplaceChips.length)}
           </p>
-          <ul className="flex flex-wrap gap-1.5" aria-labelledby={`fill-listing-${row._id}`}>
+          <ul className="flex flex-wrap gap-1.5" aria-labelledby={`fill-listing-${row._id}`} aria-busy={ready ? undefined : true}>
             {marketplaceChips.map((chip) =>
               renderChip(chip, { suffix: chipSuffix(chip) }),
             )}
@@ -357,7 +372,7 @@ export default function TeamFillChips({
               otherCards: line.source === "otherCards",
             })}
           </p>
-          <ul className="flex flex-wrap gap-1.5" aria-labelledby={`fill-career-${row._id}`}>
+          <ul className="flex flex-wrap gap-1.5" aria-labelledby={`fill-career-${row._id}`} aria-busy={ready ? undefined : true}>
             {careerChips.map((chip) =>
               renderChip(chip, { suffix: chipSuffix(chip) }),
             )}

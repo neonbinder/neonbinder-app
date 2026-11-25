@@ -1,6 +1,6 @@
 ---
 name: patterns-leaf-vivid-real-unlicensed-set
-description: NEO-556 - finding a real set through the year-wide Sets sync, the Proof variant type, how held cards and parallel copies behave under No Team
+description: NEO-556/NEO-661 - finding a real set through the year-wide Sets sync, the Proof variant type, teamless Base cards refusing the parallels build, the slow mark run, copies carrying the stamp
 metadata:
   type: patterns
 ---
@@ -25,3 +25,11 @@ metadata:
 - A checklist row is virtualised (about ten rows in the DOM): reach a card with the searchbox "Search cards", never by scrolling.
 
 Parallel copies owe their own card-listing lookup (NEO-556 fix): after "Build N parallels from Base" the copies join the one-slot team lane, and each copy's own BSC card id is a fresh `marketplace/card/<id>/card-listing` read. On the fake an unrecorded one 501s on both attempts and the lane retries only after 60 s, so a "No Team" assertion on the copies cannot be green until the recorder has captured those reads (`reportMisses` lists them). Once recorded, a replay is instant and the lane settles each copy in a couple of seconds. Check the misses list before blaming the product.
+
+**Since NEO-661** the spec's two hand-made teamless Base cards (no BSC ref, so never "awaiting lookup") are pink and
+refuse every parallel: press "Build N parallels from Base", then "Stop after this one" at once (46 fast refusals outlast
+7 s), and assert the first parallel's ledger `listitem` (scoped to region "Parallels of Base"; the sr-only live line
+repeats the text) plus heading "Base parallels — stopped after 0 of N". Then the set panel's "Mark 2 teamless cards No
+Team" offer: the run walks ~92 checklists (35 at 7 s), so assert "Base — marked 2 cards No Team" in the running ledger
+(region named by a regex over the running/finished headings) and press "Stop marking cards" (or-branch on Dismiss).
+The rebuilt copies carry the source's No Team stamp at once; the queued-lane branch is gone (unit-covered).

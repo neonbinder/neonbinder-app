@@ -61,7 +61,13 @@ import {
   type ChecklistFacts,
 } from "../support/published-checklist";
 import type { FlowEnv } from "../support/env";
-import { finishTidyWalk, settleWalkAfterCommit, tidyWalk, walkAnsweringEverything } from "../support/tidy-walk";
+import {
+  finishTidyWalk,
+  openTidyWalk,
+  settleWalkAfterCommit,
+  tidyWalk,
+  walkAnsweringEverything,
+} from "../support/tidy-walk";
 import type { Locator, Page } from "@playwright/test";
 
 const SL_PAUSE_NOTICE = "SportLots is on pause: nothing from SportLots was asked for or changed.";
@@ -178,14 +184,15 @@ async function fetchChecklist(
  * the product offers, else create; a same-name pick step links its top
  * candidate, never mints one more same-name player; a no-team card keeps its
  * pre-filled chips, the old wizard's default), then close it on its end screen.
+ * `answers` widens what it answers (the Base's: `answerEveryPink`).
  * The seed is a data-loading track; it proves none of the tiles.
  *
  * `file` names the captured checklist: it is BSC's own answers, so it cannot
  * disagree with BSC, and a card with a "Sources disagree" tile means the
  * capture is stale (re-capture it, SET-REGISTRY.md).
  */
-async function walkTidyUp(page: Page, file: string) {
-  const tally = await walkAnsweringEverything(page);
+async function walkTidyUp(page: Page, file: string, answers: Parameters<typeof walkAnsweringEverything>[1] = {}) {
+  const tally = await walkAnsweringEverything(page, answers);
   expect(
     tally.disagreements,
     `the seed's ${file} disagrees with BSC on ${tally.disagreements} cards (Sources disagree): the capture is stale`,
@@ -194,6 +201,25 @@ async function walkTidyUp(page: Page, file: string) {
   // The walk's counts, on the report (no console output in a spec).
   test.info().annotations.push({ type: `tidy walk, ${file}`, description: JSON.stringify(tally) });
   return tally;
+}
+
+/**
+ * NEO-661 (Jason, 2026-11-24: "if there is anything that would cause a pink box
+ * we should hold the parallels back"): Gold Wave Refractors is built from Base,
+ * so the seed answers every pink on Base the way `tidyForTheParallelBuild` does:
+ * a teamless card keeps its pre-filled chips, else "No team on this card"; an
+ * over-limit title is cut to fit at a word boundary.
+ */
+const answerEveryPink = { noTeam: "prefilledElseNoTeamOnCard", title: "cut" } as const;
+
+/** The checklist's background-lookup line ("Still looking up teams for N cards."). */
+function stillLookingUpTeams(page: Page): Locator {
+  return page.getByRole("status").filter({ hasText: /^Still looking up teams for [0-9]+ cards?\./ });
+}
+
+/** The "N need you, M to fix" pill: a card on the checklist is still pink. */
+function pinkCardsPill(page: Page): Locator {
+  return page.getByRole("button", { name: /^[0-9]+ needs? you, [0-9]+ to fix$/ });
 }
 
 /**
@@ -381,17 +407,24 @@ test(
     // First run: answer every new player and team the checklist names (D7). The walk
     // opens by itself when a card needs a person ("Tidy up 2024 Topps Chrome").
     if (await settleWalkAfterCommit(page, savedBase)) {
-      const base = await walkTidyUp(page, "2024-topps-chrome-base.csv");
-      // Gold Wave Refractors is built from Base below, and a build refuses a source with a card
-      // whose player or team NAME, or a sources disagreement, is still pink (NEO-645 J3,
-      // `blocksParallelBuild`). A pink over-long title or a card with no team does not block it,
-      // and the seed leaves those as the old wizard did (its titles step kept every title).
-      expect(
-        (base.skippedFor.Player ?? 0) + (base.skippedFor["Sources disagree"] ?? 0),
-        `Base cards left with a name or a disagreement to fix: ${JSON.stringify(base.skippedFor)}`,
-      ).toBe(0);
+      const base = await walkTidyUp(page, "2024-topps-chrome-base.csv", answerEveryPink);
+      // Gold Wave Refractors is built from Base below, and a build refuses a source with ANY pink
+      // card (NEO-661, `blocksParallelBuild`): a name, a disagreement, no team, an autograph
+      // format, an over-limit title, no card name. A skipped card is still pink.
+      expect(base.skipped, `Base cards left pink: ${JSON.stringify(base.skippedFor)}`).toBe(0);
     }
     await expect(page.getByText(/^#[0-9]/).first()).toBeVisible();
+    // #300 is the one Base card the captured checklist leaves out, so its team comes from its own
+    // BSC lookup. A card still waiting on it is not pink (the walk saved it), but the answer can
+    // make it pink (a team name not on file, or none), and that would hold the build. The line and
+    // the pill read the same live rows, so once the line is gone the pill is settled.
+    await expect(stillLookingUpTeams(page), "a Base card is still waiting on its BSC team lookup").toHaveCount(0);
+    if (await pinkCardsPill(page).isVisible()) {
+      await openTidyWalk(page);
+      const again = await walkTidyUp(page, "2024-topps-chrome-base.csv (after the lookups)", answerEveryPink);
+      expect(again.skipped, `Base cards left pink: ${JSON.stringify(again.skippedFor)}`).toBe(0);
+    }
+    await expect(pinkCardsPill(page), "no Base card is pink, so Gold Wave Refractors can be built").toHaveCount(0);
 
     // ── Insert: reconcile, Future Stars checklist ──────────────────────────
     await drillToSet(page, env);
@@ -438,9 +471,13 @@ test(
     await expect(buildFromBase).toBeVisible({ timeout: 30_000 });
     await expect(syncChecklistButton(page)).toBeHidden();
     await buildFromBase.click();
-    await expect(
-      page.getByText(/^Gold Wave Refractors — Built 300 cards(, [^.]+)?\./),
-    ).toBeVisible({ timeout: 120_000 });
+    const built = page.getByText(/^Gold Wave Refractors — Built 300 cards(, [^.]+)?\./);
+    // A refusal ("Gold Wave Refractors — Blocked — …", e.g. a Base card still pink, NEO-661) is
+    // the build's other end: wake on it and fail by its words, not at the ceiling.
+    const blocked = page.getByRole("alert").filter({ hasText: /^Gold Wave Refractors — Blocked — / });
+    await expect(built.or(blocked).first()).toBeVisible({ timeout: 120_000 });
+    await expect(blocked, "Build from Base was refused").toHaveCount(0);
+    await expect(built).toBeVisible();
     await expect(page.getByRole("dialog", { name: /^Match Cards/ })).toBeHidden();
     await expect(tidyWalk(page)).toBeHidden();
     await expect(page.getByText(/^#[0-9]/).first()).toBeVisible({ timeout: 15_000 });

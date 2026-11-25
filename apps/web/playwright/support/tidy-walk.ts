@@ -44,8 +44,9 @@
  * the end of this file), which waits on the marketplace by the BSC rule.
  */
 import { expect, type Locator, type Page } from "@playwright/test";
+import { LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
 import type { FlowEnv } from "./env";
-import { expectAccessible } from "./fixtures";
+import { expectAccessible, test } from "./fixtures";
 import { expectAfterMarketplace, expectStepWithSportLots } from "./marketplace-wait";
 import { CHECKLISTS, settleChecklistFetch, usePublishersChecklist, type ChecklistName } from "./published-checklist";
 import {
@@ -753,16 +754,27 @@ export async function createTeamOnOpenRow(page: Page): Promise<string> {
  *    team". Each answer reaches every card in the scope that prints the name.
  *  - a card with no team (`noTeam`): `"prefilled"` (default) saves the chips the
  *    product pre-selected (a click on a team chip saves it; the preselected chip
- *    is named "<team>, suggested[ · <why>]", `suggestedTeamChip`) and leaves a card with none pink; `"noTeamOnCard"` answers "No team on
- *    this card".
+ *    is named "<team>, suggested[ · <why>]", `suggestedTeamChip`) and leaves a
+ *    card with none pink; `"noTeamOnCard"` answers "No team on this card";
+ *    `"prefilledElseNoTeamOnCard"` clicks a suggested chip when there is one,
+ *    else answers "No team on this card", so no card is left pink (NEO-661: any
+ *    pink card holds a parallel build). Every choice waits for the tile's
+ *    "Looking up teams…" to go first (7 s), so no answer beats a suggestion.
  *
  * Contract: ENTRY a settled card. EXIT no printed team name is waiting. The
  * tile can stay pink only for a no-team card the `"prefilled"` rule left alone
- * (the caller skips it). Returns how many answers were written.
+ * (the caller skips it). Returns how many answers were written; `onNoTeam` is
+ * told each time "No team on this card" was the answer.
  */
+export type NoTeamAnswer = "prefilled" | "noTeamOnCard" | "prefilledElseNoTeamOnCard";
+
 export async function answerPinkTeamTiles(
   page: Page,
-  { noTeam = "prefilled", maxRows = 8 }: { noTeam?: "prefilled" | "noTeamOnCard"; maxRows?: number } = {},
+  {
+    noTeam = "prefilled",
+    maxRows = 8,
+    onNoTeam,
+  }: { noTeam?: NoTeamAnswer; maxRows?: number; onNoTeam?: () => void } = {},
 ): Promise<number> {
   const tile = tidyTile(page, "Team");
   if ((await pinkTile(page, "Team").count()) === 0) return 0;
@@ -802,10 +814,22 @@ export async function answerPinkTeamTiles(
     const preselected = tile.getByRole("button", { name: ANY_SUGGESTED_CHIP, disabled: false });
     const none = tile.getByRole("button", { name: "No team on this card", exact: true, disabled: false });
     await expect(none, "the Team tile is pink with no name row left, so it is asking for a team").toBeVisible();
+    // NEO-661: the chips preselect nothing while the tile's suggestions load, and it says so
+    // ("Looking up teams…", a role=status mounted with the chips, so the line is read in the same
+    // render as `none` above). Wait it out before choosing, or "No team on this card" could beat a
+    // suggestion that was on its way. By text: the tile can hold more than one status.
+    await expect(
+      tile.getByText("Looking up teams…", { exact: true }),
+      "the Team tile is still looking up teams to suggest",
+    ).toHaveCount(0);
     if (noTeam === "noTeamOnCard") {
       await none.click();
+      onNoTeam?.();
     } else if ((await preselected.count()) > 0) {
       await preselected.first().click();
+    } else if (noTeam === "prefilledElseNoTeamOnCard") {
+      await none.click();
+      onNoTeam?.();
     } else {
       return answered;
     }
@@ -833,6 +857,33 @@ export async function answerPinkAutographTile(
   return true;
 }
 
+/**
+ * NEO-661 on the walk: a pink "Listing title" tile (over the 80-character limit)
+ * opens its title box by itself ("Card title for #<n>", TitleTile). Cut the
+ * stored title at the last word boundary that fits, save it ("Save title"),
+ * and prove it landed: the tile is no longer pink and shows the saved words.
+ * Returns the saved title, or `undefined` when the tile was not pink.
+ *
+ * Contract: ENTRY a settled card, every other tile already answered (a later
+ * answer can rebuild the title). EXIT the Listing title tile is not pink.
+ */
+export async function answerPinkTitleTile(page: Page): Promise<string | undefined> {
+  if ((await pinkTile(page, "Listing title").count()) === 0) return undefined;
+  const tile = tidyTile(page, "Listing title");
+  const box = tile.getByRole("textbox", { name: /^Card title for #/ });
+  await expect(box, "an over-limit title opens ready to edit").toBeVisible();
+  const over = (await box.inputValue()).replace(/\s+/g, " ").trim();
+  expect(over.length, `the pink title is over ${LISTING_TITLE_MAX} characters: "${over}"`).toBeGreaterThan(LISTING_TITLE_MAX);
+  const head = over.slice(0, LISTING_TITLE_MAX + 1);
+  const space = head.lastIndexOf(" ");
+  const cut = (space > 0 ? head.slice(0, space) : over.slice(0, LISTING_TITLE_MAX)).trim();
+  await box.fill(cut);
+  await tile.getByRole("button", { name: "Save title", exact: true, disabled: false }).click();
+  await expect(pinkTile(page, "Listing title"), "the cut title saved and fits").toHaveCount(0);
+  await expect(tile.getByText(cut, { exact: true }), "the tile shows the saved title").toBeVisible();
+  return cut;
+}
+
 export interface WalkTally {
   /** Cards shown. */
   cards: number;
@@ -844,6 +895,10 @@ export interface WalkTally {
   players: number;
   /** Team answers written (rows linked or created, no-team cards answered). */
   teams: number;
+  /** Of `teams`, the cards answered "No team on this card" (`noTeam`'s fallback or `"noTeamOnCard"`). */
+  noTeamOnCard: number;
+  /** Over-limit titles cut to fit and saved (`title: "cut"`). */
+  titlesCut: number;
   /** Cards that opened with a pink "Sources disagree" tile (never answered here; such a card is skipped). */
   disagreements: number;
   /**
@@ -856,15 +911,17 @@ export interface WalkTally {
 }
 
 /** The tiles that can be pink, in the walk's order. */
-const PINKABLE: readonly TidyTileName[] = ["Sources disagree", "Player", "Team", "Autograph", "Listing title"];
+const PINKABLE: readonly TidyTileName[] = ["Sources disagree", "Player", "Card name", "Team", "Autograph", "Listing title"];
 
 /**
  * Walk the open walk to its end screen, answering on each card what a seed or
  * a spec that does not care about the card would: every pink Player row
  * (`answerPinkPlayerTiles`), every pink Team part (`answerPinkTeamTiles`, with
  * `noTeam`), a pink Autograph tile (`autograph`, "On-card auto" by default; the
- * old wizard's required answer). Then Save & next when nothing is pink, else
- * Skip (a sources disagreement, an over-long title: not this helper's to
+ * old wizard's required answer), and, with `title: "cut"`, an over-limit title
+ * (`answerPinkTitleTile`, last, since a team answer rebuilds the title). Then
+ * Save & next when nothing is pink, else Skip (a sources disagreement, a card
+ * with no name, and by default an over-long title: not this helper's to
  * decide). Does NOT press Done: the caller asserts the end screen first, then
  * `finishTidyWalk`.
  *
@@ -890,15 +947,28 @@ export async function walkAnsweringEverything(
     maxCards = 400,
     noTeam = "prefilled",
     autograph = "On-card auto",
+    title = "leave",
     career = "skip",
   }: {
     maxCards?: number;
-    noTeam?: "prefilled" | "noTeamOnCard";
+    noTeam?: NoTeamAnswer;
     autograph?: "On-card auto" | "Sticker auto" | "leave";
+    title?: "cut" | "leave";
     career?: "skip" | "add";
   } = {},
 ): Promise<WalkTally> {
-  const tally: WalkTally = { cards: 0, saved: 0, skipped: 0, players: 0, teams: 0, disagreements: 0, careerSkipped: 0, skippedFor: {} };
+  const tally: WalkTally = {
+    cards: 0,
+    saved: 0,
+    skipped: 0,
+    players: 0,
+    teams: 0,
+    noTeamOnCard: 0,
+    titlesCut: 0,
+    disagreements: 0,
+    careerSkipped: 0,
+    skippedFor: {},
+  };
   await expectTidyWalkOpen(page);
   for (let i = 0; i < maxCards; i++) {
     if (await endScreen(page).isVisible()) break;
@@ -906,8 +976,9 @@ export async function walkAnsweringEverything(
     tally.cards++;
     if ((await pinkTile(page, "Sources disagree").count()) > 0) tally.disagreements++;
     tally.players += await answerPinkPlayerTiles(page);
-    tally.teams += await answerPinkTeamTiles(page, { noTeam });
+    tally.teams += await answerPinkTeamTiles(page, { noTeam, onNoTeam: () => tally.noTeamOnCard++ });
     if (autograph !== "leave") await answerPinkAutographTile(page, autograph);
+    if (title === "cut" && (await answerPinkTitleTile(page)) !== undefined) tally.titlesCut++;
     // Settled into one state: the status line says what is still pink, or Save & next is usable.
     const save = tidyFooterButton(page, "saveAndNext", { usable: true });
     await expect(save.or(mustFixLine(page)).first()).toBeVisible();
@@ -931,23 +1002,30 @@ export async function walkAnsweringEverything(
 }
 
 /**
- * NEO-645 (J3): an insert's parallels (or a Base's) are built only once no card
- * of the checklist they copy has a pink name item: sources that disagree, a
- * player name or a team name still waiting. A spec whose subject is the build
- * walks the open walk the way the old wizard's save did (`walkAnsweringEverything`:
- * it fails by name on a player or team name it could not answer), proves that
- * no card it skipped still disagrees with itself (a skipped teamless card,
- * autograph or title does not hold a build), and closes the walk with Done.
+ * NEO-661 (Jason, 2026-11-24: "if there is anything that would cause a pink box
+ * we should hold the parallels back"): an insert's parallels (or a Base's) are
+ * built only once no card of the checklist they copy is pink, whatever the
+ * pink item (`blocksParallelBuild`). A spec whose subject is the build walks
+ * the open walk answering every pink it can (`walkAnsweringEverything`, by
+ * default with `noTeam: "prefilledElseNoTeamOnCard"` and `title: "cut"`: it
+ * fails by name on a player or team name it could not answer), proves it
+ * skipped no card (a skipped card is still pink, so it holds the build; the
+ * message names the tiles), and closes the walk with Done.
  *
- * Contract: ENTRY the walk is open. EXIT the walk is gone, and nothing on the
- * checklist holds its parallels back. Returns the tally.
+ * Contract: ENTRY the walk is open. EXIT the walk is gone, and no card the walk
+ * showed holds its parallels back. Returns the tally.
  */
 export async function tidyForTheParallelBuild(
   page: Page,
   options: Parameters<typeof walkAnsweringEverything>[1] = {},
 ): Promise<WalkTally> {
-  const tally = await walkAnsweringEverything(page, options);
-  expect(tally.skippedFor["Sources disagree"] ?? 0, "cards skipped with sources that disagree hold the parallel build (J3)").toBe(0);
+  const tally = await walkAnsweringEverything(page, { noTeam: "prefilledElseNoTeamOnCard", title: "cut", ...options });
+  expect(
+    tally.skipped,
+    `cards skipped still pink hold the parallel build (NEO-661), by tile: ${JSON.stringify(tally.skippedFor)}`,
+  ).toBe(0);
+  // The walk's counts, on the report (no console output in a spec).
+  test.info().annotations.push({ type: "tidy walk before a parallel build", description: JSON.stringify(tally) });
   await finishTidyWalk(page);
   return tally;
 }

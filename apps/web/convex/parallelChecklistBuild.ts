@@ -135,7 +135,7 @@ import {
   stampNoTeam,
   teamDefaultOf,
 } from "./lib/selectorTeams";
-import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, blocksParallelBuild } from "./features/cardAttention";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, parallelBuildHold } from "./features/cardAttention";
 import { preferCardNumber } from "../lib/cards/card-number";
 import { checklistRowFactsForCards, type ChecklistRowFacts } from "./lib/variantPrintRun";
 import {
@@ -212,10 +212,13 @@ const LOOKUP_SCHEDULE_WRITES = 1;
  *
  * A source whose lookup has been and gone passes that answer on (its stamp,
  * outcome and hint travel with the copy) and is not asked again. One whose
- * lookup never ran (a hand-added card) or has not run YET (still queued when
- * the build runs) would otherwise leave the copy waiting forever: nothing
- * else queues a copy. Once the lane answers, `applyBscTeamResolution` writes
- * the team, or stamps the parallel's "No Team" when BSC names none.
+ * lookup has not run YET would otherwise leave the copy waiting forever:
+ * nothing else queues a copy. NEO-661: a source still waiting on its lookup
+ * now holds the build back (`BLOCKED_SOURCE_LOOKING_UP_TEAMS`), and a
+ * hand-added teamless source (no lookup will ever run) is refused as pink, so
+ * a source reaches this only when its lookup is queued after the check above,
+ * mid-build. Once the lane answers, `applyBscTeamResolution` writes the team,
+ * or stamps the parallel's "No Team" when BSC names none.
  */
 export function bscTeamLookupOwed(copy: {
   hasBscRef: boolean;
@@ -342,13 +345,22 @@ export const BLOCKED_IDS_UNREACHABLE =
 // from the Base, not an insert.
 // NEO-321 (audit N1) — the two size sentences now cover the byte cap too.
 /**
- * NEO-645 (J3, Q4) — the checklist a parallel is built from still has cards that
- * need fixing (a name waiting to be linked, a missing autograph format, a team to
- * choose). A parallel copies its source, so it is built once the source is
- * tidy. Checked here, before anything is deleted or fetched.
+ * NEO-645 (J3, Q4), widened by NEO-661 (Jason, 2026-11-24) — the checklist a
+ * parallel is built from still has a card that shows pink (any pink item: a name
+ * waiting to be linked, a missing autograph format, a team to choose, a title
+ * over the limit). A parallel copies its source, so it is built once no card is
+ * pink. Checked here, before anything is deleted or fetched.
  */
 export const BLOCKED_SOURCE_NOT_TIDY =
   "the checklist it's built from still has cards that need fixing — tidy those up first";
+/**
+ * NEO-661 (Jason, 2026-11-24: "Yes, wait for lookups") — no card of the
+ * checklist is pink, but at least one is still waiting on its team lookup
+ * (`isAwaitingTeamLookup`). A parallel copies its source, so it is built once
+ * every lookup has answered. Pink wins when both hold (`BLOCKED_SOURCE_NOT_TIDY`).
+ */
+export const BLOCKED_SOURCE_LOOKING_UP_TEAMS =
+  "the checklist it's built from is still looking up teams for its cards — build again once they're in, or set those cards' teams yourself";
 export const BLOCKED_TOO_MANY_CARDS =
   "the checklist it's built from is bigger than one build can copy (more than 5,000 cards, or too much card data)";
 export const BLOCKED_PARALLEL_TOO_MANY_CARDS =
@@ -1389,22 +1401,29 @@ export const loadInsertCardsForLink = internalQuery({
   },
   returns: v.object({
     cards: v.array(
-      v.object({ ...linkableCardValidator.fields, pink: v.optional(v.literal(true)) }),
+      v.object({
+        ...linkableCardValidator.fields,
+        pink: v.optional(v.literal(true)),
+        awaitingLookup: v.optional(v.literal(true)),
+      }),
     ),
     ...cardPageFields,
   }),
   handler: async (ctx, args) => {
     const { page, bytesRead } = await cardPage(ctx, args.sourceId, args.cursor);
     return {
-      cards: page.page.map((row) => ({
-        ...linkableOf(row),
-        // NEO-645 (J3) — from the row alone, no extra read.
-        ...(blocksParallelBuild(row) ? { pink: true as const } : {}),
-        ...(row.variationOfCardId
-          ? { variationOfCardId: row.variationOfCardId }
-          : {}),
-        sortOrder: row.sortOrder,
-      })),
+      cards: page.page.map((row) => {
+        // NEO-645 (J3), NEO-661 — the card's hold (`parallelBuildHold`), from
+        // the row alone, no extra read: pink, or waiting on its team lookup.
+        const hold = parallelBuildHold(row);
+        return {
+          ...linkableOf(row),
+          ...(hold === "fix" ? { pink: true as const } : {}),
+          ...(hold === "lookup" ? { awaitingLookup: true as const } : {}),
+          ...(row.variationOfCardId ? { variationOfCardId: row.variationOfCardId } : {}),
+          sortOrder: row.sortOrder,
+        };
+      }),
       isDone: page.isDone,
       continueCursor: page.continueCursor,
       bytesRead,
@@ -1960,6 +1979,11 @@ export const insertParallelCardsPage = internalMutation({
           ? { ...parallelDefaults, playerId: null, player: null }
           : parallelDefaults,
       );
+      // NEO-661: a source card still waiting on its team lookup, or pink, holds
+      // the whole build back before this point, so the Set Team / No Team
+      // defaults below now reach a copy only through a lookup that answers
+      // mid-build (`bscTeamLookupOwed`, `applyBscTeamResolution`), not from a
+      // source that was waiting when the build started.
       // The Set Team gap, fill-empty only: never over a card's own team or a
       // team name waiting for review (`defaultTeamOnCardIds`), never on a
       // card an operator ruled teamless, and never where a listing named a
@@ -2434,9 +2458,13 @@ export const buildParallelChecklist = action({
       }),
     );
     if (insertCards.overLimit) return blocked(BLOCKED_TOO_MANY_CARDS);
-    // NEO-645 (J3, Q4) — the server's half of "build the parallels once the base
-    // is complete" (the client gate is the other half).
+    // NEO-645 (J3, Q4), NEO-661 — the server's half of "hold the parallels back
+    // while any card is pink or still waiting on its team lookup" (the client
+    // gate is the other half). Pink wins when both hold.
     if (insertCards.cards.some((c) => c.pink === true)) return blocked(BLOCKED_SOURCE_NOT_TIDY);
+    if (insertCards.cards.some((c) => c.awaitingLookup === true)) {
+      return blocked(BLOCKED_SOURCE_LOOKING_UP_TEAMS);
+    }
 
     // ── 3. fetch every side before anything is touched ──────────────────────
     // NEO-321 follow-up — every side ends in exactly one log line,

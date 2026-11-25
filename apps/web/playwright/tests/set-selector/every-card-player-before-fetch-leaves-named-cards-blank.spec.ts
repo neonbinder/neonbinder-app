@@ -26,9 +26,11 @@
 //   player" ("1975 World Champions" and "Former Teammates" among them, each
 //   answer reaching every card that prints it), Pete Rose himself never; a
 //   team name nobody knows (#1's high school) is "Not a team", which leaves
-//   #1 asking for a team under its own Pete Rose, and #1 is skipped. No
-//   ruled-out card asks for a team. Done closes the walk with no name or
-//   disagreement left pink (J3: the parallel build below needs that).
+//   #1 asking for a team under its own Pete Rose, and #1 is answered "No team
+//   on this card". No ruled-out card asks for a team. No card is skipped:
+//   Done closes the walk with nothing left pink (NEO-661, Jason 2026-11-24:
+//   "if there is anything that would cause a pink box we should hold the
+//   parallels back", and the parallel build below needs that).
 //   Already committed (a rerun on the same seed): the stored values are read
 //   back as they are. Both branches end on the same asserts.
 // - #10's and #18's drawers: no player, Johnny Bench under "Also on this
@@ -143,8 +145,17 @@ const PARALLEL = "Printing Plates Black";
 
 /** The card whose team name nobody knows (its high school): ruled out, it asks for a team. */
 const HIGH_SCHOOL = "1";
-/** The tiles a card can be skipped with; J3 holds the parallel build on the first three. */
-const BLOCKING: readonly TidyTileName[] = ["Sources disagree", "Player", "Team"];
+/** Every tile that can be left pink: a skipped card is reported with the ones it still had. */
+const TILES: readonly TidyTileName[] = [
+  "Sources disagree",
+  "Player",
+  "Card name",
+  "Career",
+  "Team",
+  "Autograph",
+  "Listing title",
+  "More about this card",
+];
 /** A runaway guard: the walk shows at most the checklist's 75 cards. */
 const MAX_CARDS = 80;
 
@@ -187,6 +198,7 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
 
   const ruledOut: string[] = [];
   const linkedByHand: string[] = [];
+  const noTeamOn: string[] = [];
   const skipped: { number: string; pink: TidyTileName[] }[] = [];
   const ownRow = tidyTile(page, "Player").getByRole("group", { name: `Player ${PLAYER}`, exact: true });
   for (let i = 0; i < MAX_CARDS; i++) {
@@ -223,7 +235,10 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
       expect(teams, "#1's high school was asked about and ruled out").toHaveLength(1);
       await expect(ownRow.getByRole("button", { name: `Edit ${PLAYER}`, exact: true })).toBeVisible();
       await expect(pinkTile(page, "Team")).toHaveCount(1);
-      await expect(tidyTile(page, "Team").getByRole("button", { name: "No team on this card", exact: true })).toBeVisible();
+      // NEO-661: a pink Team tile holds the parallel build, so #1 is answered, never skipped.
+      await tidyTile(page, "Team").getByRole("button", { name: "No team on this card", exact: true, disabled: false }).click();
+      await expect(pinkTile(page, "Team"), "#1's No Team answer landed").toHaveCount(0);
+      noTeamOn.push(number);
     }
     const ruledOutCard = RULED_OUT.find((c) => c.number === number);
     if (ruledOutCard !== undefined) {
@@ -246,23 +261,20 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
       continue;
     }
     const pink: TidyTileName[] = [];
-    for (const name of BLOCKING) if ((await pinkTile(page, name).count()) > 0) pink.push(name);
+    for (const name of TILES) if ((await pinkTile(page, name).count()) > 0) pink.push(name);
     skipped.push({ number, pink });
     await skipCard(page);
   }
   await expect(tidyFooterButton(page, "done"), `the walk did not end within ${MAX_CARDS} cards`).toBeVisible();
 
-  // Each caption was ruled out on a card that prints it; #1 is the one card left asking for a team.
+  // Each caption was ruled out on a card that prints it; #1 asked for a team and was answered No Team.
   for (const { printed } of RULED_OUT) {
     expect(ruledOut, `"${printed}" was ruled out on the walk`).toContain(printed);
   }
   expect(ruledOut, "Pete Rose is never ruled out").not.toContain(PLAYER);
-  expect(skipped.find((c) => c.number === HIGH_SCHOOL)?.pink, "#1 was skipped asking for its team").toEqual(["Team"]);
-  // J3: no card was left with a name or a disagreement pink (a teamless card's Team tile has no
-  // name row left, so it never holds the build).
-  for (const { number, pink } of skipped) {
-    expect(pink.filter((t) => t !== "Team"), `#${number} was skipped with a name or disagreement pink`).toEqual([]);
-  }
+  expect(noTeamOn, "#1 asked for its team and was answered No team on this card").toEqual([HIGH_SCHOOL]);
+  // NEO-661: any pink card holds the parallel build, so no card is skipped.
+  expect(skipped, "no card was skipped with a pink tile").toEqual([]);
   if (linkedByHand.length > 0) {
     test.info().annotations.push({ type: "pete-rose-linked-on-the-walk", description: linkedByHand.map((n) => `#${n}`).join(", ") });
   }
@@ -350,6 +362,8 @@ test(
     await expect(empty.or(cards)).toBeVisible();
     if (await empty.isVisible()) {
       await page.getByRole("button", { name: "Build from Base", exact: true }).click();
+      // NEO-661: built only because the walk left no Base card pink (#1 included); a pink card
+      // refuses this with "<parallel> — Blocked — …", and this line never shows.
       // Our own writes, one copy per Base card the plate's BSC list also has
       // (BSC lists 60 plates, 43 of them Base numbers): the standard budget.
       await expect(page.getByText(new RegExp(`^${escapeRe(PARALLEL)} — Built [1-9][0-9]* cards`))).toBeVisible();

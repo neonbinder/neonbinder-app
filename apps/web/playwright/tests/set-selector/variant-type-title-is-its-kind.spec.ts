@@ -24,7 +24,8 @@
 //   6. NEO-496 (NQ2): with a card on that Base, the "Parallel" type's
 //      Parallels of Base section lists the parallel row, which has no
 //      marketplace id, as one to build (never skipped for want of a link), and
-//      a run copies Base's card onto it with no marketplace badge.
+//      a run copies Base's card onto it with no marketplace badge. (That card is
+//      born No Team: any pink card on Base holds the build, NEO-661.)
 //
 // R2 - WHY HAND-MADE TYPES: before NEO-334 the kind was a flag that only a sync
 // conferred, so a type an operator typed in had no kind at all and every claim
@@ -310,8 +311,19 @@ test(
     await expect(panel.getByRole("button", { name: "Delete Base", exact: true })).toHaveCount(0);
     await edit.click();
     await expect(baseTag).toBeVisible();
-    // Claim 6's source: one hand-made card on the Base.
-    await addCardViaForm(page, { cardNumber: CARD_NUMBER, playerName: CARD_NAME });
+    // Claim 6's source: one hand-made card on the Base, born No Team. A teamless card is pink, and
+    // NEO-661 (Jason, 2026-11-24: "if there is anything that would cause a pink box we should hold
+    // the parallels back") refuses a build from a Base with any pink card.
+    const noTeamToggle = (pressed: boolean) =>
+      page.getByRole("button", { name: "No Team for the new card", exact: true, pressed });
+    await addCardViaForm(page, {
+      cardNumber: CARD_NUMBER,
+      playerName: CARD_NAME,
+      beforeSubmit: async () => {
+        await noTeamToggle(false).click();
+        await expect(noTeamToggle(true)).toBeVisible();
+      },
+    });
 
     // ── CLAIM 5b: A SECOND TYPE RENAMED "Base" IS REFUSED ──
     await addCustomEntry(page, "Variant Types", SECOND_TYPE, { confirm: "required" });

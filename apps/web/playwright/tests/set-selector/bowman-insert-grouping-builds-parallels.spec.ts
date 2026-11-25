@@ -45,7 +45,34 @@
 //   player card's as before (re-checked offline with `assessListingTitle`, the
 //   player's name passed as the card name: same titles, 29 failing on
 //   CARRY_PARALLEL before BA-3's carry, none on BLACK).
+//
+// NEO-661, the third claim: a card still waiting on its BSC team lookup holds the insert's
+// parallels back (Jason, 2026-11-24, asked whether such a card should: "Yes, wait for lookups").
+// The uploaded checklist leaves LOOKUP_CARD's team cell BLANK (a blank cell makes no claim, so
+// the fetch asks BSC for that one card's team, GUIDE "Checklist first"), and the fake answers that
+// card-listing read 429 with a long Retry-After (`bscFake`, the 429 spec's rule): the cooldown ends
+// the lookup and the card waits on the background lane ("Still looking up teams for 1 card.").
+// The walk answers every pink; the card is not pink (a card owed its lookup never is), so after
+// the walk nothing is pink and only the lookup holds the build: no "Building parallels of Anime"
+// line while the status line shows. The fault is then cleared (the build's own BSC reads need the
+// gate shut) and the operator settles the card ("No Team for this card" in its drawer), so no card
+// awaits a lookup and the build starts with no click.
+//   WHY THE OPERATOR AND NOT THE LANE ends the wait: Anime is uploaded whole as a publisher's
+// checklist, so no spec asks BSC for an Anime card's team and none of those card-listing answers
+// is known to be recorded; an unrecorded read 501s, is retried after 60 s and 5 min, then handed
+// to the operator, and the lane waits out the Retry-After first in any case. The client's hold re-reads the live rows (`blocksParallelBuild`), so it releases the
+// same way whichever write ends the wait; the lane's own write is the 429 spec's and the unit
+// tests' (`bscTeamPool`, `parallelBuildHold`). The Retry-After (600 s, the gate's ceiling) outlasts
+// the walk, so the lane never gets a turn before the release; afterwards its turn finds the card
+// stamped and makes no call.
+//   LOOKUP_CARD is #98 (CeeDee Lamb), a football player the Baseball catalogue does not hold: the
+// walk adds him as a new player with no career, and no other card of his is in the set, so no fill
+// rule writes a team at the save or in the walk (a filled team ends the wait; every BA- player is
+// a catalogue player whose one team in the window the save fills, measured on this seed). Its only
+// copy is Anime Kanji's, whose titles fit with or without a team, so the NEO-535 arithmetic below
+// is untouched.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
   columnHeading,
@@ -109,6 +136,14 @@ const CARRY_PARALLEL = "Anime Red Refractors Hologram Foils Anniversary Prism";
 const HAND_EDIT = "2026 Bowman Anime Murakami #BA-3";
 /** What BA-3's copy on CARRY_PARALLEL reads: the edit, re-headed with that parallel's description. */
 const CARRIED_TITLE = `${descriptionOf(CARRY_PARALLEL)} Murakami #BA-3`;
+// NEO-661 ── the card whose team lookup holds the build (header, third claim).
+/** Anime's card whose checklist team cell is left blank, so BSC is asked for it (and answers 429). */
+const LOOKUP_CARD = "98";
+/** Its player as printed: the drawer's search handle. */
+const LOOKUP_PLAYER = "CeeDee Lamb";
+/** The gate's Retry-After ceiling (`RETRY_AFTER_MAX_MS`): the lane gets no turn before the release. */
+const LOOKUP_RETRY_AFTER_S = 600;
+
 /** Rename the option the attributes panel is showing, by its pencil. */
 async function renameSelected(page: Page, from: string, to: string): Promise<void> {
   // NEO-569: the pencil sits in the open panel only, and a parallel starts it
@@ -123,10 +158,25 @@ async function renameSelected(page: Page, from: string, to: string): Promise<voi
   await expect(page.getByRole("heading", { name: new RegExp(`^Attributes for ${escapeRe(to)} \\(Parallel\\)$`) })).toBeVisible();
 }
 
+/** Set once the Anime fetch is pressed: from then on LOOKUP_CARD's lookup may sit on the BSC team lane. */
+const run = { synced: false };
+
+// NEO-644: pass or fail, the lookup this spec leaves waiting (LOOKUP_CARD, 429'd) comes off the BSC
+// team lane. The lane is one slot per deployment, so it would otherwise run after the spec ends, in
+// front of every other shard's per-card team lookups. Only this test user's items are cancelled; one
+// already running finishes. The count is recorded, not asserted: marking the card No Team may already
+// have ended its lookup, so zero is a valid teardown here.
+test.afterEach(async ({ bscFake }, testInfo) => {
+  if (!run.synced) return;
+  run.synced = false;
+  const cleared = await bscFake.clearTeamLane();
+  testInfo.annotations.push({ type: "bsc-team-lane-cleared", description: String(cleared) });
+});
+
 test(
   "2026 Bowman inserts — BSC's inserts become NB sets, Group Parallels nests Anime Kanji under Anime, and saving Anime builds Kanji's cards (NEO-293…312)",
   { tag: ["@set-selector", "@parallel-grouping"] },
-  async ({ page, signIn, env }) => {
+  async ({ page, signIn, env, bscFake }) => {
     const reconcile = page.getByRole("dialog", { name: "Reconcile Inserts" });
     const grouping = page.getByRole("dialog").filter({ hasText: /Drag inserts under a parent/ });
     const insert = columnOption(page, "Variant Types", "Insert");
@@ -273,7 +323,14 @@ test(
     // asks BSC for the cards' list and for no card's team (NEO-489: the number column is trusted as
     // printed, so the `TBD` card pairs by its number like the rest, 36 of 36). Six of the cards are
     // football players; the file carries their teams as BSC named them.
-    const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanAnime2026);
+    // NEO-661: LOOKUP_CARD's team cell is left blank, so its team is asked of BSC (header, third claim).
+    const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanAnime2026, { teamCells: { [LOOKUP_CARD]: "" } });
+    // ...and BSC answers that one read 429 (the cooldown ends the lookup; the card waits on the lane).
+    // A few times over, so a second ask is refused too; the 429 opens only this worker's gate (NEO-628).
+    await bscFake.setFaults([
+      bscFault.tooManyRequests(BSC_PATH.cardListing, { retryAfterS: LOOKUP_RETRY_AFTER_S, times: 5, ttlS: 900 }),
+    ]);
+    run.synced = true;
     await syncChecklistButton(page).click();
 
     // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources. NEO-640: the file is
@@ -292,6 +349,34 @@ test(
       // as new, the same-name pick's top candidate), and the build starts on its own.
       await tidyForTheParallelBuild(page);
     }
+
+    // ── NEO-661: nothing is pink, but LOOKUP_CARD still waits on its team lookup, so nothing is built ──
+    const lookupLine = page.getByRole("status").filter({ hasText: /^Still looking up teams for 1 card\./ });
+    const buildLine = page.getByText(/Building parallels of Anime — |Anime parallels — /);
+    await expect(
+      lookupLine,
+      `${LOOKUP_CARD} no longer waits on its lookup: a rule filled its team, or the lane answered it`,
+    ).toBeVisible();
+    await expect(buildLine, "a card still waiting on its team lookup holds the parallels").toHaveCount(0);
+    await expectAccessible(page, { label: "Anime saved, parallels held while a team lookup runs" });
+    // Still held after the axe passes' seconds (the build starts the moment the live rows clear).
+    await expect(lookupLine).toBeVisible();
+    await expect(buildLine, "a card still waiting on its team lookup holds the parallels").toHaveCount(0);
+
+    // The release: the fault and this worker's gate cleared (the build reads BSC per parallel), then
+    // the operator settles the card in its drawer. No card waits any more: the build starts by itself.
+    await bscFake.clear();
+    const searchCards = page.getByRole("searchbox", { name: "Search cards" });
+    await searchCards.fill(LOOKUP_PLAYER);
+    await editCardButton(page, LOOKUP_CARD).click();
+    const drawerCardName = page.getByRole("textbox", { name: "Card name", exact: true });
+    await expect(drawerCardName).toBeVisible();
+    await page.getByRole("button", { name: "No Team for this card", pressed: false }).click();
+    await expect(page.getByText("Saved No Team", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Done editing card" }).click();
+    await expect(drawerCardName).toBeHidden();
+    await searchCards.clear();
+    await expect(lookupLine).toHaveCount(0);
 
     // The build of Kanji's cards from Anime reports itself, then lands.
     await expect(

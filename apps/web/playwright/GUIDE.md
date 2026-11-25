@@ -421,7 +421,18 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   defaults to `"skip"`, which Skips a card with nothing pink but a Career gap
   open, counted in `WalkTally.careerSkipped` and "still to check" on the end
   screen; `"add"` presses Save & next over the gaps, writing them, so never
-  use it where the player is a catalogue player), `tidyForTheParallelBuild`. Fetch into
+  use it where the player is a catalogue player; `noTeam?: "prefilled" |
+  "noTeamOnCard" | "prefilledElseNoTeamOnCard"`, default `"prefilled"`, the
+  last clicking the suggested chip when there is one (a click saves it) and
+  else answering "No team on this card", counted in `WalkTally.noTeamOnCard`;
+  `title?: "cut" | "leave"`, default `"leave"`, where `"cut"` cuts an
+  over-limit title at the last word within 80 and saves it,
+  `answerPinkTitleTile`, counted in `WalkTally.titlesCut`),
+  `tidyForTheParallelBuild` (the same walk with `"prefilledElseNoTeamOnCard"`
+  and `"cut"`, asserting no card was skipped: any pink card on the source
+  holds a parallel build, NEO-661, so walk a source with it before a build is
+  expected; a card Skipped for a blue Career gap is not pink and does not
+  count). Fetch into
   it: `fetchChecklistToTidyWalk`, `fetchOneMarketplaceSetChecklistToTidyWalk`
   (`openOneMarketplaceSetBase` is in `set-builder.ts`). Each contract is in its
   doc comment; see "The Tidy Up walk" under Gotchas.
