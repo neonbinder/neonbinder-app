@@ -163,7 +163,7 @@ seconds if empty — the API can lag right after merge).
    queue owner, so the next ticket gets CI while this one checks production.
 
 If any later gate fails, send a Mac notification
-(`REASON='one-line reason' notify.sh 'NEO-123 prod check failed' "$REASON"`) and
+(`notify.sh 'NEO-123 prod check failed' 'one-line reason'`) and
 tell Jason.
 
 ### 4. Gate 2 — verify the production deploy actually succeeded
