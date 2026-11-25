@@ -5427,6 +5427,60 @@ describe("SetAttributesPanel — held open by a rename or a delete (NEO-569)", (
     currentTeamRows = undefined;
   });
 
+  // NEO-667 (Jason, 2026-11-25): the rename field opens where the title is,
+  // holding the current name, instead of beside the title.
+  describe("rename in place (NEO-667)", () => {
+    const TITLE = { name: "Attributes for 2024 Topps Chrome (Set)" };
+
+    it("swaps the title for a text area holding the name, and the title returns when it closes", () => {
+      renderPanel();
+      expect(screen.getByRole("heading", TITLE)).toBeTruthy();
+
+      fireEvent.click(screen.getByLabelText("Rename 2024 Topps Chrome"));
+
+      const field = screen.getByLabelText("Edit name for 2024 Topps Chrome") as HTMLTextAreaElement;
+      expect(field.tagName).toBe("TEXTAREA");
+      expect(field.value).toBe("2024 Topps Chrome");
+      expect(document.activeElement).toBe(field);
+      expect(screen.queryByRole("heading", TITLE)).toBeNull();
+
+      fireEvent.keyDown(field, { key: "Escape" });
+
+      expect(screen.getByRole("heading", TITLE)).toBeTruthy();
+      expect(screen.queryByLabelText("Edit name for 2024 Topps Chrome")).toBeNull();
+      expect(mockRenameSelectorOption).not.toHaveBeenCalled();
+    });
+
+    it("Enter saves the edited name", async () => {
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Rename 2024 Topps Chrome"));
+      const field = screen.getByLabelText("Edit name for 2024 Topps Chrome");
+      fireEvent.change(field, { target: { value: "2024 Topps Chrome Update" } });
+      fireEvent.keyDown(field, { key: "Enter" });
+
+      await waitFor(() =>
+        expect(mockRenameSelectorOption).toHaveBeenCalledWith(
+          expect.objectContaining({ value: "2024 Topps Chrome Update" }),
+        ),
+      );
+    });
+
+    it("a refused rename keeps the field in the title's place with its reason, and no title", async () => {
+      mockRenameSelectorOption.mockRejectedValueOnce(
+        new Error('Another set here is already called "Update"'),
+      );
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Rename 2024 Topps Chrome"));
+      const field = screen.getByLabelText("Edit name for 2024 Topps Chrome");
+      fireEvent.change(field, { target: { value: "Update" } });
+      fireEvent.keyDown(field, { key: "Enter" });
+
+      await screen.findByText(/already called/);
+      expect(screen.getByLabelText("Edit name for 2024 Topps Chrome")).toBe(field);
+      expect(screen.queryByRole("heading", TITLE)).toBeNull();
+    });
+  });
+
   describe("rename", () => {
     it("pressing Hide attributes while the name field is open does not shut the panel or lose the field", () => {
       renderPanel();
@@ -5438,7 +5492,7 @@ describe("SetAttributesPanel — held open by a rename or a delete (NEO-569)", (
 
       expect(hide().getAttribute("aria-expanded")).toBe("true");
       expect(screen.getByLabelText("Edit name for 2024 Topps Chrome")).toBe(input);
-      expect((input as HTMLInputElement).value).toBe("2024 Topps Chrome Update");
+      expect((input as HTMLTextAreaElement).value).toBe("2024 Topps Chrome Update");
       // Held-open is not disabled: the toggle stays a live, focusable button.
       expect(hide().getAttribute("aria-disabled")).toBeNull();
     });
@@ -5465,7 +5519,7 @@ describe("SetAttributesPanel — held open by a rename or a delete (NEO-569)", (
       expect(document.activeElement).toBe(field);
       expect(field.getAttribute("aria-describedby")).toBe(reason.id);
       expect(alertTexts()).toContain('Another set here is already called "Update"');
-      expect((screen.getByLabelText("Edit name for 2024 Topps Chrome") as HTMLInputElement).value).toBe("Update");
+      expect((screen.getByLabelText("Edit name for 2024 Topps Chrome") as HTMLTextAreaElement).value).toBe("Update");
     });
 
     it("holds through the save's round trip, then lets the panel shut once it lands", async () => {

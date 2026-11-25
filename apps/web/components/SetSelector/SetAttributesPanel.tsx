@@ -934,7 +934,7 @@ export default function SetAttributesPanel({
       <div
         className={`flex justify-between gap-3 ${expanded ? "items-start" : "items-center"}`}
       >
-        <div className="relative min-w-0">
+        <div className={`relative min-w-0 ${renameHeld ? "flex-1" : ""}`}>
           {/* NEO-569: the collapsed toggle's description. Always mounted (empty
               when there is nothing to say) and `sr-only`: the closed bar shows
               only the title and the toggle. `relative` on this box keeps the
@@ -954,9 +954,14 @@ export default function SetAttributesPanel({
                 token, so past about 100 characters it ran off a phone's right
                 edge, widened the page and put the page under the reader's
                 taps. Now the name breaks wherever it has to. */}
-            <h3 className="min-w-0 wrap-anywhere text-sm font-semibold text-ink">
-              {headerTitle}
-            </h3>
+            {/* NEO-667: while the name is being edited the text area stands in
+                the title's place (it holds the name, full width), so the
+                heading steps aside and comes back when the editor closes. */}
+            {!renameHeld && (
+              <h3 className="min-w-0 wrap-anywhere text-sm font-semibold text-ink">
+                {headerTitle}
+              </h3>
+            )}
             {expanded && (
               <>
               {/* NEO-239: every level renames, variantType included.

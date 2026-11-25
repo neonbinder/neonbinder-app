@@ -231,8 +231,10 @@ test(
     await field.press("Enter");
     // THE REFUSAL (Jason-approved sentence).
     await expect(refusal(page, /only live under an Insert type/)).toBeVisible();
-    // The title stands: the header renders the stored row, not the field.
-    await expect(panelFor(page, "Inserts")).toBeVisible();
+    // NEO-667: the field stands in the title's place while it is open, so the
+    // heading is back only once it closes (asserted after the Escape below).
+    await expect(field).toBeVisible();
+    await expect(panelFor(page, "Inserts")).toHaveCount(0);
     await expectAccessible(page, { label: "Rename refused while sub-variants exist" });
 
     // NEO-569: the panel will not shut over an open name field. A press on "Hide
@@ -337,7 +339,8 @@ test(
     // DRAFT copy, see the header. The one-Base rule runs before the sibling
     // clash in renameSelectorOption, so this is the sentence, not the same-word one.
     await expect(refusal(page, /already has a Base/)).toBeVisible();
-    // The title stands.
+    // The title stands: the field holds the place of the heading until it closes (NEO-667).
+    await second.press("Escape");
     await expect(panelFor(page, SECOND_TYPE)).toBeVisible();
 
     // ── CLAIM 6 (NEO-496, NQ2): A PARALLEL WITH NO MARKETPLACE ID IS BUILT FROM BASE ──
