@@ -12,7 +12,7 @@ and the pointer `selectorOptions.parallelSourceId`, re-verified on every read in
 no cross-set write is possible, a dangling or moved pick reads as absent, and
 no adapter/sync reads it.
 
-The gap: the build action (`buildParallelChecklist`) deletes the target's old
+The gap (closed in NEO-673: the delete page now compares the planned `sourceId` before deleting): the build action (`buildParallelChecklist`) deletes the target's old
 cards via `deleteParallelCardsPage`, which never re-resolves the source; only
 `insertParallelCardsPage` checks `sourceMoved`. Before NEO-673 a target could
 not cheaply become non-buildable mid-run (kind-changing renames are refused
