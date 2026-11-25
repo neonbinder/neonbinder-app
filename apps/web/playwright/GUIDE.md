@@ -892,7 +892,11 @@ this before diagnosing anything that touches BSC:
   `clearMyBscFaults` / `clearBscCallGate`), on a second page, so the spec's own
   page never moves. **Teardown is automatic**: the fixture clears the rules, and
   the worker's own call gate when a rule could have opened it (`clear=all`
-  clears that test user's gate only), whether the test passed or failed. Orders are not cleared (the fake has no per-order delete); a spec that
+  clears that test user's gate only), whether the test passed or failed. A spec
+  that leaves cards waiting on the BSC team lane (the 429 and stall specs) also
+  calls `bscFake.clearTeamLane()` from its own `test.afterEach` (`clear=lane`,
+  `api.testing.cancelMyBscTeamChecks`, NEO-644): the lane is one slot per
+  deployment, and only that test user's queued lookups are cancelled. Orders are not cleared (the fake has no per-order delete); a spec that
   injects one must be the only user of the cards it names. Never write a spec
   that waits for BSC to be slow, and never add a deployment switch for a fault.
 - **Convex keeps one BSC call gate per test user against the fake, and one per

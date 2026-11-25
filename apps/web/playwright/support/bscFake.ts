@@ -13,7 +13,8 @@
  * HOW. A spec cannot call a Convex action, so the helpers open the signed-in
  * worker's second page on `/testing/bsc-fake?...` (the NEO-552 hop, which calls
  * `api.testing.setMyBscFaults` / `addMyBscOrder` / `clearMyBscFaults` /
- * `clearBscCallGate` as that worker), read its status line and close it. The
+ * `clearBscCallGate` / `cancelMyBscTeamChecks` as that worker), read its status
+ * line and close it. The
  * spec's own page is never moved. Every rule lands on the worker's OWN fake
  * account (a namespace per test user), so a fault never reaches another shard.
  *
@@ -295,12 +296,35 @@ export class BscFake {
     this.rules.ebay = [];
   }
 
+  /**
+   * NEO-644: cancel the background BSC team lookups this worker's test user
+   * queued (`clear=lane`, `api.testing.cancelMyBscTeamChecks`), and no other
+   * worker's. The lane is one slot per deployment, so a spec that leaves cards
+   * waiting on it (the 429 and stall specs) holds every other shard's per-card
+   * lookups behind them. Not part of the fixture's teardown: a spec that
+   * queues cards calls it from its own `test.afterEach`. A lookup already
+   * running finishes.
+   *
+   * Contract: ENTRY the worker is signed in. EXIT none of this user's lane
+   * items that had not started is left to run; returns N, how many it
+   * cancelled, read off the hop's "Cleared: lane, N queued team lookups." line
+   * (a spec that queued cards asserts N >= 1, so a teardown that stopped
+   * finding them goes red).
+   */
+  async clearTeamLane(): Promise<number> {
+    const line = await this.hop("clear=lane", "Cleared: lane, \\d+ queued team lookups\\.");
+    const n = /Cleared: lane, (\d+) queued team lookups\./.exec(line)?.[1];
+    if (n === undefined) throw new Error(`The fake BuySportsCards lane clear printed no count: ${line}`);
+    return Number(n);
+  }
+
   /** The fixture's teardown: `clear()`, and it throws if the fake or the gate could not be cleared. */
   async teardown(): Promise<void> {
     await this.clear();
   }
 
-  private async hop(query: string, expected: string): Promise<void> {
+  /** Opens the hop, waits for its line to read `expected` (a regex source) and returns that line's text. */
+  private async hop(query: string, expected: string): Promise<string> {
     const control: Page = await this.context.newPage();
     try {
       await control.goto(`/testing/bsc-fake?${query}`, { waitUntil: "domcontentloaded" });
@@ -312,7 +336,9 @@ export class BscFake {
       if (await failed.isVisible()) {
         throw new Error(`The fake BuySportsCards control refused (${expected}): ${(await failed.innerText()).replace(STATUS, "")}`);
       }
-      await expect(line.filter({ hasText: new RegExp(`^\\[testing-bsc-fake\\] ${expected}`) })).toBeVisible();
+      const settled = line.filter({ hasText: new RegExp(`^\\[testing-bsc-fake\\] ${expected}`) });
+      await expect(settled).toBeVisible();
+      return (await settled.innerText()).replace(STATUS, "");
     } finally {
       await control.close();
     }

@@ -4362,6 +4362,25 @@ export default defineSchema({
   }).index("by_platform_scope", ["platform", "scope"]),
 
   /**
+   * NEO-644 — the `bscTeamPool` work items a test user has on the lane, so an
+   * E2E spec can cancel its own (`testing.cancelMyBscTeamChecks`) and leave
+   * the one slot to the other shards. The workpool cannot list its items by
+   * argument, so the lane keeps the ids itself.
+   *
+   * Fake only: a row is written only for an item that carries `queuedBy`,
+   * which `queuedByForLane` sets only on the fake. Against real BSC nothing is
+   * ever written here. `bscTeamPool.enqueueItem` inserts the row; the item's
+   * completion (`onBscTeamCheckComplete`, cancelled included) deletes it.
+   * No card data: the Clerk subject and the pool's work id.
+   */
+  bscTeamLaneFakeItems: defineTable({
+    queuedBy: v.string(),
+    workId: v.string(),
+  })
+    .index("by_queuedBy", ["queuedBy"])
+    .index("by_workId", ["workId"]),
+
+  /**
    * ── NEO-358: a collector's places to keep cards ───────────────────────────
    *
    * A HOME for copies: a binder, or a box (for-sale cards live in boxes). Every
