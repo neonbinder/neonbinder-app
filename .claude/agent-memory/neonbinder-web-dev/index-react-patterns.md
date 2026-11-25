@@ -32,3 +32,4 @@ React rendering, refs, effects, router, dnd-kit, optimistic updates and compiler
 - [Browser-probe a lib through Vite](reference_browser_probe_a_lib_through_vite.md) — spare-port Vite, goto /robots.txt (not /), page.evaluate(import("/lib/…ts"))
 - [Compiler memoization error points at unrelated callback](reference_compiler_memoization_error_points_at_unrelated_callback.md) — bisect your hunks; a new render-scope object breaks old useCallbacks
 - [Stale-while-loading hides an in-flight query](reference_stale_while_loading_hides_in_flight_query.md) — derive `ready` from the raw useQuery result, not the held value; sr-only span pads Chromium names, use aria-label
+- [ModeRadioGroup empty value = nothing checked](reference_modeRadioGroup_empty_value_means_nothing_checked.md) — no-default picker; labelId for aria-describedby; useConvex().mutation keeps old mocks green

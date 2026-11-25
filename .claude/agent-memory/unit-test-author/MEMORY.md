@@ -65,3 +65,4 @@
 - [NEO-645 tidy test patterns](reference_neo645_tidy_test_patterns.md) — id-only world fixture, fan-out drain, commit-action traps
 - [NEO-645 tidy ported tests](reference_neo645_tidy_ported_tests.md) — porting batch-wizard tests to tidyNames: fixture, walk-driven creates, bulk test removal
 - [NEO-639 chip years + failed lookup tests](reference_neo639_chip_years_and_failed_lookup_tests.md) — reaching an unselected chip, cap vs per-player tie, stints read-cap guard
+- [NEO-673 chosen parallel source tests](reference_neo673_chosen_parallel_source_tests.md) — long-box title fixture, wire-level R1 chain check, mutation checks
