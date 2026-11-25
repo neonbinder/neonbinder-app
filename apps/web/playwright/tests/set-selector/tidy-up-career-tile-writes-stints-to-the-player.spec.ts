@@ -5,7 +5,8 @@
 // the gap is gone; a Team-tile Change to a team the career covers closes the gap with nothing
 // written, and so does a swap pill (NEO-672: under the gap team, a list "Swap <gap team> for" with
 // one pill per career team whose stints cover the set's year and the year before and that is not
-// already on the card, newest first; the gap row says "Or swap the card's team below."); and Save &
+// already on the card, newest first; the gap row says "Or swap the card's team below." while a pill
+// is offered, and a gap whose every covering career team is already on the card has neither); and Save &
 // next with the gap still open takes main's default, adding the stint from the set's year (the line
 // "Save & next adds it to the career." says so), which clears the gap on EVERY card of his with that
 // team, so the walk goes on to the next card that still needs you. There is no "Keep as is" (B23):
@@ -28,20 +29,25 @@
 //     the catalogue's Seattle Mariners 2020-2024 (read only), BEFORE the sync, so the commit links
 //     his seven cards to him (exact name) and the walk reads each card's team against his career:
 //       #1 P · Seattle Mariners  covered: no gap, no walk card
-//       #2 P · Colorado Rockies  gap -> "Add to career" (writes Colorado Rockies 2024)
+//       #2 P · Colorado Rockies / Seattle Mariners
+//                                Rockies gap; his one career team is on the card, so no pill and
+//                                no "Or swap" line -> "Add to career" (writes Colorado Rockies 2024)
 //       #3 P · San Diego Padres  gap -> swap pills Rockies, Mariners (newest first); Team-tile
 //                                Change to the Mariners (writes no stint)
 //       #4 P · Chicago Cubs      gap left open -> Save & next (writes Chicago Cubs 2024)...
 //       #5 P · Chicago Cubs      ...which clears this card too: the walk never shows it
 //       #6 P · San Diego Padres  gap -> swap pills Rockies, Cubs, Mariners (2024 ties keep career
 //                                order); the Cubs pill swaps the card's team (writes no stint)
-//       #7 P · San Diego Padres  gap -> Skip (writes nothing; stays blue, "1 needs you")
+//       #7 P · San Diego Padres / Seattle Mariners
+//                                Padres gap -> pills Rockies, Cubs only (the Mariners are on the
+//                                card: no pill, Jason 2026-11-25) -> Skip (writes nothing; stays
+//                                blue, "1 needs you")
+// A two-team cell is split on "/" (parse-published-checklist). Their titles fit 80 on every token
+// length with only the location cut (no blue title mark; checked offline with assessListingTitle).
 // FRESH-ONLY: P is a global row with a real name, so a second run on the same seed finds him (his
 // admin create demotes to "... anyway"). CI reseeds each pass. Nothing is deleted (R7): the set, its
 // cards and P stand; no catalogue row is written (the catalogue teams are only linked to).
-// The swap pills' years are the Career chips' (`stintYears`): "2020–2024", one season "2024". No
-// card here carries a career team, so the "already on the card, no pill" rule is unit-covered
-// (career-swap.test.tsx), not here.
+// The swap pills' years are the Career chips' (`stintYears`): "2020–2024", one season "2024".
 import type { Page } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { usePastedChecklist } from "../../support/published-checklist";
@@ -116,8 +122,8 @@ test(
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
     const checklist =
       `number,player,team\n` +
-      `1,${P},${COVERED}\n2,${P},${ADDED}\n3,${P},${CHANGED}\n4,${P},${DEFAULTED}\n5,${P},${DEFAULTED}\n6,${P},${CHANGED}\n` +
-      `7,${P},${CHANGED}\n`;
+      `1,${P},${COVERED}\n2,${P},${ADDED} / ${COVERED}\n3,${P},${CHANGED}\n4,${P},${DEFAULTED}\n5,${P},${DEFAULTED}\n` +
+      `6,${P},${CHANGED}\n7,${P},${CHANGED} / ${COVERED}\n`;
     await usePastedChecklist(page, checklist, 7);
     await syncChecklistButton(page).click();
     // Six career gaps and nothing else: the walk opens once the live career-gap query answers,
@@ -159,7 +165,7 @@ test(
     const swapped = (to: string) =>
       walk.getByRole("status").filter({ hasText: `Swapped ${CHANGED} for ${to}.` });
 
-    // ── STEP 1: #2, the Rockies are not in P's career: a blue line, never pink ──
+    // ── STEP 1: #2, the Rockies (beside the Mariners) are not in P's career: a blue line, never pink ──
     await expect(header("2", P)).toBeVisible();
     await expect(walk.getByText(/^#1 · /), "#1's team is in the career, so the walk never shows it").toHaveCount(0);
     await expect(career).toHaveAccessibleDescription("To check");
@@ -169,6 +175,20 @@ test(
     await expect(addToCareer).toBeVisible();
     await expect(defaultLine).toBeVisible();
     await expect(gapRow.getByRole("button", { name: `+ Add stint for ${P}`, exact: true })).toBeVisible();
+    // NEO-672 (Jason, 2026-11-25): a career team already on the card gets no swap pill. #2 carries
+    // the Mariners beside the Rockies gap and the Mariners are his whole career (on file, above), so
+    // the Rockies get no "Swap ... for" list and the gap row no "Or swap" line (R2: paired with the
+    // two team groups, the gap text and the default line, all visible).
+    await expect(teamTile.getByRole("group", { name: `Team ${COVERED}`, exact: true })).toBeVisible();
+    const rockiesTeam = teamTile.getByRole("group", { name: `Team ${ADDED}`, exact: true });
+    await expect(rockiesTeam).toBeVisible();
+    await expect(
+      rockiesTeam.getByRole("list", { name: `Swap ${ADDED} for`, exact: true }),
+      "no swap list: his only covering career team is already on the card",
+    ).toHaveCount(0);
+    await expect(teamTile.getByRole("button", { name: /^Swap / }), "no pill for the Mariners on a Mariners card").toHaveCount(0);
+    await expect(teamTile.getByText(/^Swap .* for$/)).toHaveCount(0);
+    await expect(orSwapLine, "nothing to swap to, so the gap row does not point at pills").toHaveCount(0);
     // J6/B23: nothing records a look, so there is no "Keep as is".
     await expect(career.getByRole("button", { name: /Keep as is/ })).toHaveCount(0);
     // Blue never holds the card: Save & next is usable.
@@ -254,22 +274,30 @@ test(
       ],
       "exactly his three career teams, newest first",
     );
+    await expect(orSwapLine, "the gap row points at the pills").toBeVisible();
     if (isMobile) {
       // The longest pill wraps inside a phone's width: scrolled to, it is wholly on screen.
       const longest = swapPill(COVERED, `2020–${YEAR}`);
       await longest.scrollIntoViewIfNeeded();
       await expect(longest, "the pill is not clipped at 412px").toBeInViewport({ ratio: 1 });
+      // So does the gap row's pointer to them.
+      await orSwapLine.scrollIntoViewIfNeeded();
+      await expect(orSwapLine, "the Or swap line is not clipped at 412px").toBeInViewport({ ratio: 1 });
     }
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, Team tile offering career swaps for a gap team" });
     // The Cubs pill swaps the card's team: the gap closes, and nothing is written to the player
     // (#7's Career tile below still shows the three stints on file; READ BACK proves it too).
     await swapPill(DEFAULTED, YEAR).click();
     // The visible half of the confirmation, in the tile for about 6 s (aria-hidden: the walk's
-    // status below is the spoken half), so it is read straight after the click.
-    await expect(
-      teamTile.getByText(`Swapped ${CHANGED} for ${DEFAULTED}.`, { exact: true }),
-      "the swap is shown in the Team tile",
-    ).toBeVisible();
+    // status below is the spoken half), so it is read straight after the click, and axed (light and
+    // dark) while it shows.
+    const swapToast = teamTile.getByText(`Swapped ${CHANGED} for ${DEFAULTED}.`, { exact: true });
+    await expect(swapToast, "the swap is shown in the Team tile").toBeVisible();
+    if (isMobile) {
+      // Seen where the tap was: no scrolling needed to read it.
+      await expect(swapToast, "the confirmation is on screen at 412px").toBeInViewport();
+    }
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk, Team tile showing a swap confirmation" });
     await expect(teamTile.getByRole("group", { name: `Team ${DEFAULTED}`, exact: true })).toBeVisible();
     await expect(swapped(DEFAULTED), "the pill's swap is announced").toHaveText(`Swapped ${CHANGED} for ${DEFAULTED}.`);
     await expect(gapTeam).toHaveCount(0);
@@ -278,12 +306,25 @@ test(
     await expectCardsLeft(page, 1);
     await saveAndNext(page);
 
-    // ── STEP 5: #7, the Padres again: Skip writes nothing; the gap stays blue ──
+    // ── STEP 5: #7, the Padres beside the Mariners: no Mariners pill; Skip writes nothing; the gap stays blue ──
     await expect(header("7", P)).toBeVisible();
     await expect(gapText(CHANGED)).toBeVisible();
     await expect(career).toHaveAccessibleDescription("To check");
     // The swap on #6 wrote no stint: the career on file is still the three.
     await expect(onFile).toHaveText([`${COVERED} · 2020–${YEAR}`, `${ADDED} · ${YEAR}`, `${DEFAULTED} · ${YEAR}`]);
+    // NEO-672 (Jason, 2026-11-25): the Mariners cover 2023-2024 but are already on the card, so the
+    // Padres list offers only the other two (newest first, the 2024 ties in career order), and the
+    // gap row still points at them.
+    await expect(teamTile.getByRole("group", { name: `Team ${COVERED}`, exact: true })).toBeVisible();
+    await expectSwapPills(
+      [
+        [ADDED, YEAR],
+        [DEFAULTED, YEAR],
+      ],
+      "his two career teams not on the card; the Mariners are on it",
+    );
+    await expect(swapPill(COVERED, `2020–${YEAR}`), "no pill for a career team already on the card").toHaveCount(0);
+    await expect(orSwapLine, "a pill is still offered, so the gap row points at it").toBeVisible();
     await skipCard(page);
     // #2, #3, #4 and #6 fixed; #7 still blue.
     await expectTidyEndScreen(page, { fixed: 4, stillToCheck: 1 });

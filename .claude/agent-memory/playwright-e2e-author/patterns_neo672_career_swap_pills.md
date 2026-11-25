@@ -1,6 +1,6 @@
 ---
 name: neo672-career-swap-pills
-description: NEO-672 Team tile "Swap <gap> for" pills — handles, newest-first order, years text, Or swap line, visible toast, mobile viewport, plants
+description: NEO-672 Team tile "Swap <gap> for" pills — handles, newest-first order, years text, Or swap line, visible toast, mobile viewport, two-team on-card fixture, plants (throw kills setup)
 metadata:
   type: project
 ---
@@ -32,6 +32,17 @@ Team tile "Swap for" pills (NEO-672) on a Tidy Up card with a career gap.
   [[reseed-right-after-a-queued-lookup-spec]]). Then `plant --expect` with no further re-seed.
 - Plant that proves the write: pill `swapTeam(team.teamId, team.teamId, ...)` (swap to itself)
   goes red at the "Team <new>" group assert. On a fresh-only spec use `plant --fresh --expect`.
+
+- "Already on the card" live: a pasted team cell `Colorado Rockies / Seattle Mariners` splits on "/" into two
+  linked teams; the one-player card gets a per-team gap (Rockies) and the covered team (Mariners) gets no pill.
+  Career = only the on-card team -> no list, no `^Swap ` button, no "Or swap" line. Catalogue two-team titles
+  fit 80 on every token length (location cut is quiet, `tidyUp` false), so no blue title mark.
+- Axe right after the visible toast: `expectAccessible` (light + dark, `within: walk`) takes ~1 s, well inside
+  the toast's 6 s.
+- A plain `throw` in `careerSwapOptions` crashes setup's own walk ("An error occurred"), so `plant --fresh`
+  dies in setup. Instead `e2e-run seed` (reset + setup + bootstrap, unplanted), then `plant --expect` with
+  no `--fresh`: the spec reds at the walk's name (app error boundary). Dropping `onCard.has` reds at the
+  "no swap list" assert on card #2.
 
 Covered in `tidy-up-career-tile-writes-stints-to-the-player.spec.ts` (#3 list + Edit hides; #6 click).
 See [[patterns_neo656_career_tile_specs_after_j6]].
