@@ -74,8 +74,9 @@ const ROWS: Record<string, unknown> = Object.fromEntries(
 type Plan = {
   parallels: Array<Record<string, unknown>>;
   truncated: boolean;
-  source?: { id: string; value: string; kind: "base" | "insert"; hasCards: boolean } | null;
+  source?: { id: string; value: string; kind: "base" | "insert" | "chosenParallel"; hasCards: boolean } | null;
   sourceBlocked?: string;
+  sourcePickable?: boolean;
 };
 
 const state: { plan: Plan | undefined } = { plan: undefined };
@@ -97,6 +98,7 @@ vi.mock("../../convex/_generated/api", () => ({
       getParallelsForBuild: "getParallelsForBuild",
       buildParallelChecklist: "buildParallelChecklist",
     },
+    parallelTypeSource: { setParallelTypeSource: "setParallelTypeSource" },
     // NEO-224: the drill's URL gate (skipped unless the URL names rows).
     drillPath: {
       resolveDrillPath: "resolveDrillPath",
@@ -493,5 +495,51 @@ describe("SetSelector — the sources ride in the attributes panel (NEO-496)", (
     const panel = screen.getByRole("region", { name: "Set attributes panel" });
     expect(within(panel).getByText("sources of row-gold-wave")).toBeTruthy();
     expect(screen.getAllByText(/^sources of /)).toHaveLength(1);
+  });
+});
+
+/** NEO-673 — a set with no Base: the picker, and the chosen parallel's own row. */
+describe("SetSelector — a set with no Base (NEO-673)", () => {
+  const SILVER = { _id: "row-silver", value: "Silver", owned: { bsc: true, sportlots: false }, sides: { bsc: true, sportlots: false }, hasCards: true };
+
+  it("shows the picker, and points a parallel row's stand-in at the question", () => {
+    state.plan = { parallels: [SILVER, PARALLEL_A], truncated: false, source: null, sourcePickable: true };
+    render(<SetSelector />, { wrapper: DrilledToASet });
+    selectType("vt-parallel");
+    expect(screen.getByRole("radiogroup", { name: "Which parallel do the others copy from?" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Build / })).toBeNull();
+
+    fireEvent.click(screen.getByText("select-row"));
+    const { parallelBuild } = checklistProps();
+    expect(parallelBuild.unavailableReasonId).toBe(BASE_PARALLELS_REASON_ID);
+    expect(document.getElementById(parallelBuild.unavailableReasonId)?.textContent).toBe(
+      "Which parallel do the others copy from?",
+    );
+  });
+
+  const CHOSEN = { id: "row-gold-wave", value: "Gold Wave", kind: "chosenParallel" as const, hasCards: true };
+
+  it("the chosen source's own row is an insert: Sync and Tidy Up, no build offer", () => {
+    state.plan = { parallels: [SILVER], truncated: false, source: CHOSEN };
+    render(<SetSelector />, { wrapper: DrilledToASet });
+    selectType("vt-parallel");
+    fireEvent.click(screen.getByText("select-row"));
+    expect(checklistProps().parallelBuild).toEqual({ role: "insert" });
+  });
+
+  it("any other parallel row stays a parallel built from the chosen source", () => {
+    state.plan = {
+      parallels: [PARALLEL_A],
+      truncated: false,
+      source: { ...CHOSEN, id: "row-silver", value: "Silver" },
+    };
+    render(<SetSelector />, { wrapper: DrilledToASet });
+    selectType("vt-parallel");
+    fireEvent.click(screen.getByText("select-row"));
+    expect(checklistProps().parallelBuild).toEqual({
+      role: "parallel",
+      sourceId: "row-silver",
+      sourceValue: "Silver",
+    });
   });
 });

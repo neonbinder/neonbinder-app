@@ -21,17 +21,26 @@ vi.mock("../../convex/_generated/api", () => ({
       getParallelsForBuild: "getParallelsForBuild",
       buildParallelChecklist: "buildParallelChecklist",
     },
+    parallelTypeSource: { setParallelTypeSource: "setParallelTypeSource" },
   },
 }));
 
-const mockConvex = { query: vi.fn(), action: vi.fn() };
+const mockConvex = { query: vi.fn(), action: vi.fn(), mutation: vi.fn() };
 vi.mock("convex/react", () => ({
   useConvex: () => mockConvex,
   useQuery: vi.fn(),
   useAction: () => vi.fn(),
 }));
 
+import { ConvexError } from "convex/values";
 import BaseParallelsBuildSection, {
+  CANCEL_CHANGE_ARIA,
+  CHANGE_SOURCE_ARIA,
+  PICK_FAILED_TEXT,
+  PICK_SOURCE_QUESTION,
+  copyFromLabel,
+  copyingFromText,
+  pickFailedText,
   ALL_BLOCKED_TEXT,
   CONFIRM_LABEL,
   LOADING_TEXT,
@@ -682,5 +691,207 @@ describe("BaseParallelsBuildSection — outline and reason id", () => {
     expect(document.getElementById(BASE_PARALLELS_REASON_ID)?.textContent).toBe(
       noSourceText("no base"),
     );
+  });
+});
+
+/**
+ * NEO-673 — a set with no Base asks which parallel the others copy from, and
+ * lets the operator change the answer. The mutation goes through the client
+ * the section already holds.
+ */
+describe("BaseParallelsBuildSection — picking the parallel the others copy from (NEO-673)", () => {
+  const SILVER_ID = "p-silver" as unknown as Id<"selectorOptions">;
+  const silver = (over: Partial<ParallelPlanEntry> = {}) =>
+    entry(1, { _id: SILVER_ID, value: "Silver", hasCards: true, ...over });
+  const gold = () => entry(2, { value: "Gold", hasCards: true });
+  const ruby = () => entry(3, { value: "Ruby" });
+
+  const pickablePlan = () =>
+    planOf([silver(), gold(), ruby()], { source: null, sourcePickable: true });
+  const chosenPlan = () =>
+    planOf([gold(), ruby()], {
+      source: { id: SILVER_ID, value: "Silver", kind: "chosenParallel", hasCards: true },
+    });
+
+  const radios = () => screen.queryAllByRole("radio");
+  const copyFrom = () => screen.getByRole("button", { name: /^Copy from/ });
+  const change = () => screen.getByRole("button", { name: CHANGE_SOURCE_ARIA });
+  const cancel = () => screen.getByRole("button", { name: CANCEL_CHANGE_ARIA });
+
+  beforeEach(() => {
+    mockConvex.mutation.mockReset();
+    mockConvex.mutation.mockResolvedValue(null);
+  });
+
+  it("a set with a Base shows no radiogroup and no Change", () => {
+    renderSection(planOf([gold()]));
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    expect(screen.queryByRole("button", { name: CHANGE_SOURCE_ARIA })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Copy from/ })).toBeNull();
+    expect(button().textContent).toBe("Build 1 parallel from Base");
+  });
+
+  it("with no Base and a pickable list, asks the question as a radiogroup, in server order, none checked", () => {
+    renderSection(pickablePlan());
+    const group = screen.getByRole("radiogroup", { name: PICK_SOURCE_QUESTION });
+    expect(group).toBeTruthy();
+    expect(radios().map((r) => r.textContent)).toEqual(["Silver", "Gold", "Ruby"]);
+    expect(radios().map((r) => r.getAttribute("aria-checked"))).toEqual([
+      "false",
+      "false",
+      "false",
+    ]);
+  });
+
+  it("while picking, shows no card counts, no build button and no summary", () => {
+    renderSection(pickablePlan());
+    expect(screen.queryByText(/\bcards?\b/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Build / })).toBeNull();
+    expect(screen.queryByText(summaryText(tallyParallels(pickablePlan().parallels)))).toBeNull();
+  });
+
+  it("while picking, the reason id is on the question, which is what a parallel row's stand-in is described by", () => {
+    renderSection(pickablePlan());
+    const el = document.getElementById(BASE_PARALLELS_REASON_ID);
+    expect(el?.textContent).toBe(PICK_SOURCE_QUESTION);
+    expect(screen.getByRole("radiogroup").getAttribute("aria-labelledby")).toBe(
+      BASE_PARALLELS_REASON_ID,
+    );
+  });
+
+  it("Copy from… is aria-disabled until a pick, and a click does nothing", () => {
+    renderSection(pickablePlan());
+    expect(copyFrom().textContent).toBe("Copy from…");
+    expect(copyFrom().getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(copyFrom());
+    expect(mockConvex.mutation).not.toHaveBeenCalled();
+  });
+
+  it("picking Silver names it on the button and enables it", () => {
+    renderSection(pickablePlan());
+    fireEvent.click(screen.getByRole("radio", { name: "Silver" }));
+    expect(copyFrom().textContent).toBe(copyFromLabel("Silver"));
+    expect(copyFrom().textContent).toBe("Copy from Silver");
+    expect(copyFrom().getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("saving calls setParallelTypeSource with the type and the picked parallel", async () => {
+    renderSection(pickablePlan());
+    fireEvent.click(screen.getByRole("radio", { name: "Silver" }));
+    await act(async () => {
+      fireEvent.click(copyFrom());
+    });
+    expect(mockConvex.mutation).toHaveBeenCalledTimes(1);
+    expect(mockConvex.mutation).toHaveBeenCalledWith("setParallelTypeSource", {
+      parallelTypeId: TYPE_ID,
+      sourceId: SILVER_ID,
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("a ConvexError's own sentence shows in the alert", async () => {
+    mockConvex.mutation.mockRejectedValue(new ConvexError("Silver has no cards yet."));
+    renderSection(pickablePlan());
+    fireEvent.click(screen.getByRole("radio", { name: "Silver" }));
+    await act(async () => {
+      fireEvent.click(copyFrom());
+    });
+    expect(screen.getByRole("alert").textContent).toBe("Silver has no cards yet.");
+  });
+
+  it("any other failure shows the fixed sentence", async () => {
+    mockConvex.mutation.mockRejectedValue(new Error("Server Error: boom"));
+    renderSection(pickablePlan());
+    fireEvent.click(screen.getByRole("radio", { name: "Gold" }));
+    await act(async () => {
+      fireEvent.click(copyFrom());
+    });
+    expect(screen.getByRole("alert").textContent).toBe("Couldn't save that choice. Try again.");
+    expect(PICK_FAILED_TEXT).toBe("Couldn't save that choice. Try again.");
+  });
+
+  it("pickFailedText falls back for an empty or non-string data and for non-errors", () => {
+    expect(pickFailedText(new ConvexError(""))).toBe(PICK_FAILED_TEXT);
+    expect(pickFailedText(new ConvexError({ code: 1 }))).toBe(PICK_FAILED_TEXT);
+    expect(pickFailedText(undefined)).toBe(PICK_FAILED_TEXT);
+    expect(pickFailedText("nope")).toBe(PICK_FAILED_TEXT);
+  });
+
+  it("a failed save leaves the pick in place for another try", async () => {
+    mockConvex.mutation.mockRejectedValueOnce(new Error("boom"));
+    renderSection(pickablePlan());
+    fireEvent.click(screen.getByRole("radio", { name: "Silver" }));
+    await act(async () => {
+      fireEvent.click(copyFrom());
+    });
+    expect(screen.getByRole("radio", { name: "Silver" }).getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      fireEvent.click(copyFrom());
+    });
+    expect(mockConvex.mutation).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  describe("once chosen", () => {
+    it("says what it copies from, offers Change, and builds from the pick", () => {
+      renderSection(chosenPlan());
+      expect(screen.getByText(copyingFromText("Silver"))).toBeTruthy();
+      expect(change().textContent).toBe("Change");
+      expect(button().textContent).toBe("Build 2 parallels from Silver");
+      expect(screen.queryByRole("radiogroup")).toBeNull();
+    });
+
+    it("Change reopens the list with Silver first and checked, and focuses it", () => {
+      renderSection(chosenPlan());
+      fireEvent.click(change());
+      expect(radios().map((r) => r.textContent)).toEqual(["Silver", "Gold", "Ruby"]);
+      const silverRadio = screen.getByRole("radio", { name: "Silver" });
+      expect(silverRadio.getAttribute("aria-checked")).toBe("true");
+      expect(document.activeElement).toBe(silverRadio);
+      expect(screen.queryByRole("button", { name: /^Build / })).toBeNull();
+      expect(copyFrom().textContent).toBe("Copy from Silver");
+    });
+
+    it("saving a different pick while changing sends that parallel", async () => {
+      renderSection(chosenPlan());
+      fireEvent.click(change());
+      fireEvent.click(screen.getByRole("radio", { name: "Gold" }));
+      await act(async () => {
+        fireEvent.click(copyFrom());
+      });
+      expect(mockConvex.mutation).toHaveBeenCalledWith("setParallelTypeSource", {
+        parallelTypeId: TYPE_ID,
+        sourceId: gold()._id,
+      });
+    });
+
+    it("Cancel restores the summary and returns focus to Change", () => {
+      renderSection(chosenPlan());
+      fireEvent.click(change());
+      fireEvent.click(cancel());
+      expect(screen.queryByRole("radiogroup")).toBeNull();
+      expect(document.activeElement).toBe(change());
+      expect(mockConvex.mutation).not.toHaveBeenCalled();
+      expect(button().textContent).toBe("Build 2 parallels from Silver");
+    });
+
+    it("Escape in the list restores it and returns focus to Change", () => {
+      renderSection(chosenPlan());
+      fireEvent.click(change());
+      fireEvent.keyDown(screen.getByRole("radio", { name: "Silver" }), { key: "Escape" });
+      expect(screen.queryByRole("radiogroup")).toBeNull();
+      expect(document.activeElement).toBe(change());
+    });
+
+    it("the first pick has no Cancel: there is nothing to go back to", () => {
+      renderSection(pickablePlan());
+      expect(screen.queryByRole("button", { name: CANCEL_CHANGE_ARIA })).toBeNull();
+    });
+
+    it("Change is hidden while a run is active", () => {
+      renderSection(chosenPlan(), runnerStub({ active: true }));
+      expect(screen.getByText(copyingFromText("Silver"))).toBeTruthy();
+      expect(screen.queryByRole("button", { name: CHANGE_SOURCE_ARIA })).toBeNull();
+    });
   });
 });
