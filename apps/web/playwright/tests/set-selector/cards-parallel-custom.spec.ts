@@ -27,8 +27,9 @@ test(
     // unlinked copy like any other, so it is no longer listed as skipped).
     await row.click();
     // NEO-334: a row under a Parallel type is a parallel of the BASE set, so the
-    // empty checklist's Sync slot is the build-from-Base stand-in ("Can't build
-    // yet": this set has no Base), not "Fetch from Marketplaces". The empty-state
+    // empty checklist's Sync slot is the build-from-source stand-in ("Can't build
+    // yet": this set has no Base, and no parallel has been picked for the others
+    // to copy from, NEO-673), not "Fetch from Marketplaces". The empty-state
     // line is the same under either kind and is the proof this spec wants: the
     // row opened its own checklist. (The Parallel kind itself is proved in
     // variant-type-title-is-its-kind.) `.first()`: any one copy of the stand-in.

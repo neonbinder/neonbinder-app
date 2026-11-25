@@ -1,26 +1,31 @@
 ---
 name: patterns-no-base-parallel-source-specs
-description: NEO-673 chosen-parallel source specs - handles, press the section build from the type with no row open, Pulse Premier facts and why a real-set spec is costly
+description: NEO-673 chosen-parallel source specs - section names by state, (current)/(source) markers, the loading heading, Rebuild vs Build on the old source, sleeve titles, Pulse Premier facts
 metadata:
   type: patterns
 ---
 
-- Handles: region "Parallels of the base set" (no source name in the heading while the source is a
-  chosen parallel), radiogroup "Which parallel do the others copy from?", radios by parallel name,
-  "Copy from…" (aria-disabled) then "Copy from <name>", status text "Copying from <name>" (exact
-  getByText), Change = "Change the parallel the others copy from". Change reopens the list in child
-  order with NOTHING checked, so a re-run on an already-picked set can adopt through Change.
-- Picking a row folds the column to its card ("Parallels: Silver — change"); click the card to
-  reopen the list before picking a sibling.
-- **Press "Build N parallels from <source>" with no row of the type open.** The section's run starts
-  from the variant type, and SetSelector retires any finished run whose `startedFrom` is not the
-  deepest selected row (NEO-496), so a build pressed while the source row is open ends with no
-  ledger at all (fast hand-made builds finish before any assert). Re-drill with `drillToCustom`.
-- Silver's role-insert row: paste a checklist, Sync, `tidyForTheParallelBuild`; a plant that drops
-  the role makes it a parallel row with no checklist button (red in `usePastedChecklist`).
-- Real set: BSC's 2024 Baseball list (476 sets) has no "Pulse Premier", only "Pulse (unlicensed)";
-  2026 Baseball "Pulse Premier" has Insert + Parallel (13 parallels, no Base), Silver 107 cards,
-  29 need you after a bare fetch (new prospect names, teamless). Without a checklist that means a
-  card-listing lookup per card on the one-slot lane and new real names that reach the enrichment
-  fixture switch; plan a checklist and enrichment entries before writing such a spec.
+- Section region names by state: first pick (no Base, no source) "Parallels of this set"; WHILE THE
+  PLAN LOADS it reads "Parallels of the base set" (the fallback), so never settle on the heading:
+  wait on `firstPicker.or(copyingLine)` before branching fetch-or-adopt. Chosen: "Parallels from
+  <source>" (changes on Change, so locate it with `/^Parallels from .+$/` when the source moves).
+  Base sets: "Parallels of Base".
+- Radiogroup "Which parallel do the others copy from?"; Change reopens it with the standing pick
+  named "<name> (current)" and NOTHING checked; the first-pick list has no marker. Picking an empty
+  parallel while the source has cards shows "<name> has no cards yet." (role=status; two statuses
+  sit in the section while the picker is open, so match by text, never bare getByRole("status")).
+- Parallels column: the source option's accessible name is "<name> (source)" (+ " BSC" on a real
+  set); `columnOption(page, col, name)` still finds it (inner span is the bare name).
+- Row buttons: a non-source parallel WITH cards says "Rebuild from <src>", empty says "Build from
+  <src>"; the source row says Sync (no build). After Change the old source holds cards: Rebuild.
+- "Build N parallels from <src>" can be pressed with a row of the type open; its ledger shows there.
+  Whether it survives a SIBLING pick conflicts with NEO-496 (Base parity spec asserts it goes), so
+  don't assert persistence across a sibling pick.
+- "Silver is not among the N": the section's strip sleeves are aria-hidden with titles
+  "<name> — empty|has cards"; `getByTitle(/^.+ — (empty|has cards)$/)` counts them (the build
+  button also has a title, hence the anchored regex). Summary reads "N parallels, all empty. ...".
+- Planting "source not excluded" (convex filter) duplicates the source radio in Change's list: the
+  spec goes red on a strict-mode "(current)" match, earlier than the build label.
+- Real set: 2026 Baseball › Pulse (known brand, minted by the seed's year-wide Sets sync) › Pulse
+  Premier: Insert + Parallel, 13 parallels, no Base; `drillToSet` waits for Base, so drill by hand.
 Related: [[patterns_parallel_build_specs_must_tidy_the_base_j3]], [[patterns_bsc_team_lane_is_shared_across_shards]]
