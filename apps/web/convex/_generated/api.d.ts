@@ -222,6 +222,7 @@ import type * as publishedChecklistPairs from "../publishedChecklistPairs.js";
 import type * as publishedChecklists from "../publishedChecklists.js";
 import type * as referenceSeed from "../referenceSeed.js";
 import type * as rekeyEntityNames from "../rekeyEntityNames.js";
+import type * as rememberPlayerAliases from "../rememberPlayerAliases.js";
 import type * as rememberTeamAliases from "../rememberTeamAliases.js";
 import type * as repairSportHallOfFameQids from "../repairSportHallOfFameQids.js";
 import type * as resetArming from "../resetArming.js";
@@ -484,6 +485,7 @@ declare const fullApi: ApiFromModules<{
   publishedChecklists: typeof publishedChecklists;
   referenceSeed: typeof referenceSeed;
   rekeyEntityNames: typeof rekeyEntityNames;
+  rememberPlayerAliases: typeof rememberPlayerAliases;
   rememberTeamAliases: typeof rememberTeamAliases;
   repairSportHallOfFameQids: typeof repairSportHallOfFameQids;
   resetArming: typeof resetArming;

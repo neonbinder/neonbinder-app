@@ -1,8 +1,7 @@
-import { useQuery } from "convex/react";
-import { api } from "../../../../convex/_generated/api";
 import CareerGapRow from "../parts/CareerGapRow";
 import CareerStintEntry, { stintPrefillFor } from "../parts/CareerStintEntry";
 import { useTidyWrite } from "../parts/tidy-write";
+import { useSetYear } from "../parts/use-set-year";
 import TidyTile from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
 import { useWalkMemory } from "../walk-memory";
@@ -36,19 +35,13 @@ export default function CareerTile({ row, context, attention, leafId }: TidyTile
   const gapPlayers = new Set(gaps.map((g) => g.playerId));
   const madeNoGap = (row.playerIds ?? []).filter((p) => !gapPlayers.has(p) && memory.madeOnCard(row._id, p));
   const wanted = gaps.length > 0 || madeNoGap.length > 0;
-  const chain = useQuery(api.selectorOptions.getAncestorChain, wanted ? { id: leafId } : "skip");
+  const setYear = useSetYear(leafId, wanted);
 
   if (!wanted || context === null) return null;
   if (context === undefined) {
     if (gaps.length === 0) return null;
     return <TidyTile heading="Career" level="waiting" waitingText="Looking at this card" />;
   }
-
-  // The set's year, as the server reads it for the gap check: the year level's
-  // value, leading digits.
-  const yearValue = chain?.find((c) => c.level === "year")?.value;
-  const parsed = yearValue ? Number.parseInt(yearValue, 10) : Number.NaN;
-  const setYear = Number.isInteger(parsed) ? parsed : undefined;
 
   const multi = gaps.length > 1;
 

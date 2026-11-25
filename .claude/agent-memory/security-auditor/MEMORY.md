@@ -156,3 +156,4 @@
 - [Action scan inside mutation](patterns_action_scan_inside_mutation.md) — action-paged scan in a mutation shares one txn read limit; cheap check first
 - [Neo644 fake-only skip + lane bookkeeping](patterns_neo644_fake_only_skip_and_lane_bookkeeping.md) — skip real safeguards on runtime domain, not stored queuedBy
 - [Neo673 chosen source pick](patterns_neo673_chosen_source_pick.md) — pointer re-verified on read held; source repoint needs delete-page re-resolve
+- [Neo671 player alias on link](patterns_neo671_player_alias_on_link.md) — card-sourced string held; owner check home-sport only vs per-sport alias rows

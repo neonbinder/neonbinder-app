@@ -33,3 +33,4 @@ React rendering, refs, effects, router, dnd-kit, optimistic updates and compiler
 - [Compiler memoization error points at unrelated callback](reference_compiler_memoization_error_points_at_unrelated_callback.md) — bisect your hunks; a new render-scope object breaks old useCallbacks
 - [Stale-while-loading hides an in-flight query](reference_stale_while_loading_hides_in_flight_query.md) — derive `ready` from the raw useQuery result, not the held value; sr-only span pads Chromium names, use aria-label
 - [ModeRadioGroup empty value = nothing checked](reference_modeRadioGroup_empty_value_means_nothing_checked.md) — no-default picker; labelId for aria-describedby; useConvex().mutation keeps old mocks green
+- [Visible confirmation beside a live region is aria-hidden](reference_visible_confirmation_beside_a_live_region_is_aria_hidden.md) — useFieldToast line aria-hidden when the walk already announces it; TeamChip variant="action"

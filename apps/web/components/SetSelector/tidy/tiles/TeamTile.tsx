@@ -6,14 +6,18 @@ import { MAX_CARD_TEAMS } from "../../../../convex/features/cardAttention";
 import { normalizeEntityName } from "@/lib/entities/normalize-name";
 import { hasTeamLine, isTeamlessOnLine, teamLineKey } from "../../../../convex/lib/teamLine";
 import NeonButton from "../../../modules/NeonButton";
+import { useFieldToast } from "../../CardDetailFields";
 import EntityLinkSearch from "../../EntityLinkSearch";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
+import { careerSwapOptions } from "../parts/career-swap";
 import EditLine from "../parts/EditLine";
 import NameApplyToAll from "../parts/NameApplyToAll";
+import TeamChip from "../parts/TeamChip";
 import TeamFillChips from "../parts/TeamFillChips";
 import TeamNameRow, { RuledOutTeamRow } from "../parts/TeamNameRow";
 import { useTidyWrite } from "../parts/tidy-write";
+import { useSetYear } from "../parts/use-set-year";
 import TidyTile, { ApplyToAllButton } from "../TidyTile";
 import type { TidyCardContext, TidyRow, TidyTileProps } from "../tile-types";
 import { useWalkMemory } from "../walk-memory";
@@ -47,6 +51,11 @@ const NO_CONTEXT_YET = {
  *    "+ Another team". A team on a card is the card's team, whoever wrote it
  *    (NEO-656): a linked team has no name of its own, so Change is the Edit here.
  *
+ * A gap team offers the career's covering stints as swaps (NEO-672): under a
+ * team the Career tile says the player's career lacks (`careerGap`), one pill per
+ * career team the set's year covers; a click swaps the card's team for it, the
+ * same write as Change. Nothing is written to the player.
+ *
  * Waits (`level="waiting"`) while a TEAMS disagreement is unsettled: the
  * spelling decides which name this tile asks about.
  *
@@ -73,6 +82,8 @@ export default function TeamTile({
   const write = useTidyWrite();
   const answered = useAnswered();
   const memory = useWalkMemory();
+  // The visible half of a swap's confirmation (the walk's live region is the spoken half).
+  const swapped = useFieldToast();
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const applyTeamToPlayerCards = useMutation(api.tidyCards.applyTeamToPlayerCards);
   const [searchFor, setSearchFor] = useState<
@@ -97,6 +108,8 @@ export default function TeamTile({
     });
   };
   useInlinePart(searchFor !== null, closeSearch, searchScopeRef);
+  const gaps = attention.items.flatMap((i) => (i.kind === "careerGap" ? [i] : []));
+  const setYear = useSetYear(leafId, gaps.length > 0);
 
   if (attention.items.some((i) => i.kind === "sourcesDisagree" && i.field === "teams")) {
     return <TidyTile heading="Team" level="waiting" waitingText="Waiting on the spelling above" />;
@@ -150,18 +163,33 @@ export default function TeamTile({
   const open = nameOpen || noTeam;
   const atCap = teamsOnCard.length >= MAX_CARD_TEAMS;
 
-  const saveTeams = (next: Array<Id<"teams">>) =>
+  const saveTeams = (next: Array<Id<"teams">>, announcement?: string) =>
     write.run(async () => {
       await updateCard({ id: row._id, teamOnCardIds: next, regenerateListing: true });
       setSearchFor(null);
-      answered();
+      if (announcement) swapped.announce(announcement);
+      answered(announcement);
     }, "Couldn't save that team. Try again.");
 
-  const onSelect = (picked: string) => {
+  /**
+   * Replace one of the card's teams with another (Change, and a career swap).
+   * The swap pill's group is gone once the card's teams update, so the walk is
+   * told in words ("Swapped Padres for Pirates.") for a screen reader, and the
+   * tile shows the same sentence for a few seconds (`useFieldToast`, the pattern
+   * "More about this card" uses).
+   */
+  const swapTeam = (from: Id<"teams">, to: Id<"teams">, announcement?: string) =>
+    saveTeams([...new Set(teamsOnCard.map((t) => (t === from ? to : t)))], announcement);
+
+  const onSelect = (picked: string, pickedName?: string) => {
     const id = picked as Id<"teams">;
     if (searchFor?.kind === "change") {
-      const next = teamsOnCard.map((t) => (t === searchFor.teamId ? id : t));
-      return saveTeams([...new Set(next)]);
+      const fromName = ctx.teams.find((t) => t.teamId === searchFor.teamId)?.name;
+      return swapTeam(
+        searchFor.teamId,
+        id,
+        fromName && pickedName ? `Swapped ${fromName} for ${pickedName}.` : undefined,
+      );
     }
     return saveTeams([...new Set([...teamsOnCard, id])]);
   };
@@ -209,23 +237,65 @@ export default function TeamTile({
         />
       ))}
 
-      {unrowed.map((team) => (
-        <div
-          key={team.teamId}
-          role="group"
-          aria-label={`Team ${team.name}`}
-          className="grid gap-1.5"
-        >
-          <EditLine
-            editLabel={`Edit ${team.name}`}
-            busy={write.busy}
-            onEdit={(opener) => openSearch({ kind: "change", teamId: team.teamId }, opener)}
-            textClass="text-sm font-medium text-ink"
+      {unrowed.map((team) => {
+        const gap = gaps.find((g) => g.teamId === team.teamId);
+        const stints = ctx.players.find((p) => p.playerId === gap?.playerId)?.stints ?? [];
+        const swaps =
+          gap && searchFor === null ? careerSwapOptions({ stints, teamsOnCard, setYear }) : [];
+        const swapLabelId = `swap-for-${row._id}-${team.teamId}`;
+        return (
+          <div
+            key={team.teamId}
+            role="group"
+            aria-label={`Team ${team.name}`}
+            className="grid gap-1.5"
           >
-            {team.name}
-          </EditLine>
-        </div>
-      ))}
+            <EditLine
+              editLabel={`Edit ${team.name}`}
+              busy={write.busy}
+              onEdit={(opener) => openSearch({ kind: "change", teamId: team.teamId }, opener)}
+              textClass="text-sm font-medium text-ink"
+            >
+              {team.name}
+            </EditLine>
+            {swaps.length > 0 && (
+              // Its own inset with a rule down the side, so on a two-team card the
+              // pills belong to the team above and never head the next team's row.
+              <div className="mb-1 ml-1 grid gap-1 border-l-2 border-neon-blue-text/40 pl-2.5">
+                <p id={swapLabelId} className="text-xs text-ink-2 wrap-anywhere">
+                  Swap {team.name} for
+                </p>
+                <ul role="list" className="flex flex-wrap gap-1.5" aria-labelledby={swapLabelId}>
+                  {swaps.map((option) => (
+                    <li key={option.teamId} className="max-w-full">
+                      <TeamChip
+                        label={option.teamName}
+                        on={false}
+                        variant="action"
+                        suffix={option.years}
+                        accessibleName={`Swap ${team.name} for ${option.teamName} · ${option.years}`}
+                        busy={write.busy}
+                        onClick={() =>
+                          void swapTeam(
+                            team.teamId,
+                            option.teamId as Id<"teams">,
+                            `Swapped ${team.name} for ${option.teamName}.`,
+                          )
+                        }
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Seen, not heard: the walk's live region already says it (aria-hidden, so it is not read twice). */}
+      <p aria-hidden="true" className="text-xs text-neon-green-text empty:hidden">
+        {swapped.toast}
+      </p>
 
       {linkedHere.map((a) => (
         <NameApplyToAll
@@ -258,7 +328,7 @@ export default function TeamTile({
             kind="team"
             sportId={sportId}
             contextOptionId={leafId}
-            onSelect={(id) => void onSelect(id)}
+            onSelect={(id, name) => void onSelect(id, name)}
             onCancel={closeSearch}
           />
         </div>
