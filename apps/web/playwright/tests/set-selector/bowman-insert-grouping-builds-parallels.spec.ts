@@ -158,6 +158,21 @@ async function renameSelected(page: Page, from: string, to: string): Promise<voi
   await expect(page.getByRole("heading", { name: new RegExp(`^Attributes for ${escapeRe(to)} \\(Parallel\\)$`) })).toBeVisible();
 }
 
+/** Set once the Anime fetch is pressed: from then on LOOKUP_CARD's lookup may sit on the BSC team lane. */
+const run = { synced: false };
+
+// NEO-644: pass or fail, the lookup this spec leaves waiting (LOOKUP_CARD, 429'd) comes off the BSC
+// team lane. The lane is one slot per deployment, so it would otherwise run after the spec ends, in
+// front of every other shard's per-card team lookups. Only this test user's items are cancelled; one
+// already running finishes. The count is recorded, not asserted: marking the card No Team may already
+// have ended its lookup, so zero is a valid teardown here.
+test.afterEach(async ({ bscFake }, testInfo) => {
+  if (!run.synced) return;
+  run.synced = false;
+  const cleared = await bscFake.clearTeamLane();
+  testInfo.annotations.push({ type: "bsc-team-lane-cleared", description: String(cleared) });
+});
+
 test(
   "2026 Bowman inserts — BSC's inserts become NB sets, Group Parallels nests Anime Kanji under Anime, and saving Anime builds Kanji's cards (NEO-293…312)",
   { tag: ["@set-selector", "@parallel-grouping"] },
@@ -315,6 +330,7 @@ test(
     await bscFake.setFaults([
       bscFault.tooManyRequests(BSC_PATH.cardListing, { retryAfterS: LOOKUP_RETRY_AFTER_S, times: 5, ttlS: 900 }),
     ]);
+    run.synced = true;
     await syncChecklistButton(page).click();
 
     // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources. NEO-640: the file is
