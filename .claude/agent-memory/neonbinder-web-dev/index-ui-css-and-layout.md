@@ -35,3 +35,4 @@ Radix, Tailwind, theming, sticky/scroll layout, wrapping, Clerk appearance and d
 - [Error ink = neon-pink-text alias](reference_error_ink_is_neon_pink_text_alias.md) — notice-danger-ink inherits its TEXT_NEVER_ON bars; error in a dark tile goes on a bg-field well
 - [Dense one-line rows: wrap atomic pieces, never clip](reference_fixed_table_layout_counts_a_hidden_column_in_a_colspan.md) — nowrap atoms, w-1 short cols, no-clip assertion; table-fixed colSpan phantom col
 - [Radix size-1 button does not wrap](reference_radix_button_size1_does_not_wrap_long_labels.md) — 24px fixed height, no wrap; data-driven labels overflow phones; use h-auto min-h-6 max-w-full wrap-anywhere
+- [Grid auto-fit stops last-row stretch](reference_grid_autofit_stops_last_row_stretching.md) — flex-wrap+grow stretches a short last row; grid auto-fit keeps equal cards
