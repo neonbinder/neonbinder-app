@@ -1,6 +1,6 @@
 ---
 name: patterns-player-alias-read-back-and-remember-box
-description: NEO-671 Player tile "Remember “X” as a name for this player" box — handles, read-back via Player Management's Aliases textbox, plants, and why no spec reaches the Tidy Up Possible matches panel
+description: NEO-671 Player tile "Remember “X” as a name for this player" box — handles, read-back via Player Management's Aliases textbox, plants, and the hand-made-sport fixture that reaches the Tidy Up Possible matches panel
 metadata:
   type: reference
 ---
@@ -16,9 +16,18 @@ metadata:
   `toBeVisible()` on the same box.
 - **Plants that went red as planted:** client `withAlias && saveAsAlias` → `withAlias` (catalogue
   row gets the alias, negative reds); `… && false` (hand-made player's toHaveValue reds).
-- **Possible matches panel on the Tidy Up Player tile:** no spec reaches it (2026-11-25). It needs
-  a printed name with a single alias hit or a close spelling in the row's sport; a hand-added
-  near-spelling player reaches a Wikidata lookup, so it needs an enrichment recording first, and
-  a pre-existing alias equal to the printed name makes the remember write a no-op (already held).
+- **Possible matches panel on the Tidy Up Player tile (reached, NEO-671):** use a per-attempt
+  HAND-MADE sport (no `sportConfig.wikidata`, so neither the hand-added player nor the printed name
+  is looked up: no recording needed). Add `Joshua <Sur><token>` by hand, paste a checklist printing
+  `Josh <Sur><token>`: the truncated-first-name rung of `playerNamesMatch` makes him `close`, never
+  `exact`, so no one-tap link or same-name step stands in front of the panel. Pick:
+  `row.getByRole("list", { name: "Possible player matches" }).getByRole("button", { name: `Link to ${onFile}`, exact: true })`
+  (no birth year, no career = bare name). Spec: `tidy-up-possible-matches-pick-remembers-…`.
+  A real sport would need the lookup recording; the hand-made sport avoids it entirely.
+- **Plant that went red as planted:** panel `onPick={(id) => void link(id, true)}` → `link(id)`
+  (Aliases read back "").
+- **Temporary screenshots for the coordinator:** `tidyWalk(page).screenshot({ path })` inside an
+  `if (!project.name.includes("mobile"))` block, run once, then delete the block; the dialog
+  shot is the whole walk.
 
 Related: [[reference_neo284_team_alias_fixture]], [[patterns_e2e_run_tool_in_practice]]
