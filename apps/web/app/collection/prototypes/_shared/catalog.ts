@@ -848,7 +848,7 @@ defineSet({
   inserts: [
     {
       name: "Chrome Rookie Autographs",
-      finish: { kind: "refractor" },
+      finish: { kind: "standard" },
       lines: [
         ["RA-PS", "Paul Skenes", "pirates", "rc,au"],
         ["RA-JH", "Jackson Holliday", "orioles", "rc,au"],
