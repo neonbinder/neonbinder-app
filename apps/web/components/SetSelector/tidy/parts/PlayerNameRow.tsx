@@ -282,6 +282,9 @@ function UnansweredPlayerName({
   const [linkOpen, setLinkOpen] = useState(false);
   const [createAnyway, setCreateAnyway] = useState(false);
   const [addSetSport, setAddSetSport] = useState(false);
+  // NEO-671: keep the printed name as one of the picked player's names; on by
+  // default, like the team's box.
+  const [saveAsAlias, setSaveAsAlias] = useState(true);
   // NEO-212: the Wikidata career teams the operator unticked, by name.
   const [excludedCareer, setExcludedCareer] = useState<ReadonlySet<string>>(new Set());
   const linkButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -372,7 +375,11 @@ function UnansweredPlayerName({
     ...(enrichment?.existingCandidates ?? []).map((c) => c.playerId as string),
   ]);
 
-  const link = (playerId: string) =>
+  // `withAlias`: the pick came from a list of players whose name differs from the
+  // printed one (Possible matches, the fragment panel, Link to existing…). The
+  // exact-name and same-name links never send it: the printed name is already
+  // the player's own.
+  const link = (playerId: string, withAlias = false) =>
     answer(
       async () => {
         const offered = offeredIds.has(playerId);
@@ -385,6 +392,7 @@ function UnansweredPlayerName({
             kind: "linkPlayer",
             playerId: playerId as Id<"players">,
             ...(crossSport && addSetSport ? { addSetSport: true as const } : {}),
+            ...(withAlias && saveAsAlias ? { saveAsAlias: true as const } : {}),
           },
           ...(offered ? { offered: true as const } : {}),
         });
@@ -469,6 +477,30 @@ function UnansweredPlayerName({
   // is described by while that line is on screen.
   const reasonId = useId();
 
+  const aliasBox = (
+    <div className="space-y-0.5">
+      <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2">
+        <input
+          type="checkbox"
+          checked={saveAsAlias}
+          aria-disabled={write.busy || undefined}
+          aria-label={`Remember “${name.printed}” as a name for this player`}
+          onChange={(e) => {
+            if (write.busy) return;
+            setSaveAsAlias(e.target.checked);
+          }}
+          className="h-6 w-6 shrink-0 rounded accent-neon-green-text focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
+        />
+        <span>{`Remember “${name.printed}” as a name for this player`}</span>
+      </label>
+      <p className="pl-8 text-xs text-ink-3">
+        Kicks in when you link. Next time this name shows up, it goes straight to that player.
+      </p>
+    </div>
+  );
+  const showAliasBox =
+    !linkOpen && (panelMatches.length > 0 || (!pickStep && fragmentStep));
+
   // One filled button per tile (the walk's own rule: the best answer leads,
   // everything else is an outline). In this order, and only on the lead row:
   // the suggested link, the exact link, Add as new.
@@ -547,12 +579,14 @@ function UnansweredPlayerName({
           disabled={write.busy}
           onPick={(id) => {
             if (write.busy) return;
-            void link(id);
+            void link(id, true);
           }}
         />
       )}
 
-      {!linkOpen && <NearMatchPanel kind="player" matches={panelMatches} busy={write.busy} onPick={(id) => void link(id)} />}
+      {!linkOpen && <NearMatchPanel kind="player" matches={panelMatches} busy={write.busy} onPick={(id) => void link(id, true)} />}
+
+      {showAliasBox && aliasBox}
 
       {crossSport && (
         <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2">
@@ -573,13 +607,16 @@ function UnansweredPlayerName({
 
       {linkOpen ? (
         rowSportId && (
-          <EntityLinkSearch
-            kind="player"
-            sportId={rowSportId}
-            initialQuery={queryName}
-            onSelect={(id) => void link(id)}
-            onCancel={closeLink}
-          />
+          <>
+            <EntityLinkSearch
+              kind="player"
+              sportId={rowSportId}
+              initialQuery={queryName}
+              onSelect={(id) => void link(id, true)}
+              onCancel={closeLink}
+            />
+            {aliasBox}
+          </>
         )
       ) : (
         <div className="flex flex-wrap items-center gap-2" aria-busy={write.busy || undefined}>

@@ -72,7 +72,7 @@ const answerPlayer = (
   cardId: Id<"cardChecklist">,
   playerId: Id<"players">,
   name = BO,
-  extra: { addSetSport?: true } = {},
+  extra: { addSetSport?: true; saveAsAlias?: true } = {},
 ) =>
   t.withIdentity(ADMIN).mutation(api.tidyNames.answerName, {
     cardId,
@@ -338,6 +338,84 @@ describe("answerName — NEO-284 saveAsAlias and NEO-313 addSetSport", () => {
     );
     await answerTeam(t, w, open, "Pads", { kind: "linkTeam", teamId: w.padres });
     expect((await t.run((ctx) => ctx.db.get(w.padres)))!.aliases ?? []).toEqual([]);
+  });
+
+  test("NEO-671: saveAsAlias on a player writes the PRINTED spelling and the alias index, and links", async () => {
+    const t = newT();
+    const w = await world(t);
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Bo J." }] }),
+    );
+    await answerPlayer(t, w, open, w.bo, "Bo J.", { saveAsAlias: true });
+    const bo = (await t.run((ctx) => ctx.db.get(w.bo)))!;
+    expect(bo.aliases).toEqual(["Bo J."]);
+    const rows = await t.run((ctx) =>
+      ctx.db
+        .query("playerAliases")
+        .withIndex("by_player_id", (q) => q.eq("playerId", w.bo))
+        .collect(),
+    );
+    expect(rows.map((r) => r.aliasNormalized)).toEqual([normalizeEntityName("Bo J.")]);
+    expect((await card(t, open))!.playerIds).toEqual([w.bo]);
+    expect((await card(t, open))!.pendingPlayerNames).toBeUndefined();
+  });
+
+  test("NEO-671: without saveAsAlias a player's aliases are untouched", async () => {
+    const t = newT();
+    const w = await world(t);
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Bo J." }] }),
+    );
+    await answerPlayer(t, w, open, w.bo, "Bo J.");
+    expect((await t.run((ctx) => ctx.db.get(w.bo)))!.aliases ?? []).toEqual([]);
+  });
+
+  test("NEO-671: a name another player holds as their PRIMARY name is not remembered; the link lands", async () => {
+    const t = newT();
+    const w = await world(t);
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Vincent Jackson" }] }),
+    );
+    // Linked to Bo, though the printed spelling is Vincent's own name.
+    await answerPlayer(t, w, open, w.bo, "Vincent Jackson", { saveAsAlias: true });
+    expect((await t.run((ctx) => ctx.db.get(w.bo)))!.aliases ?? []).toEqual([]);
+    expect((await card(t, open))!.playerIds).toEqual([w.bo]);
+  });
+
+  test("NEO-671: the player's own name, an alias already held and a full list are skipped silently", async () => {
+    const t = newT();
+    const w = await world(t);
+    // Own name under another spelling (token order folds), then an alias already held.
+    const [a, b] = await t.run(async (ctx) => {
+      await ctx.db.patch(w.bo, { aliases: ["Boz"] });
+      return [
+        await printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Jackson Bo" }] }),
+        await printCard(ctx, w, { number: "2", printed: [{ kind: "player", name: "boz" }] }),
+      ];
+    });
+    await answerPlayer(t, w, a, w.bo, "Jackson Bo", { saveAsAlias: true });
+    await answerPlayer(t, w, b, w.bo, "boz", { saveAsAlias: true });
+    expect((await t.run((ctx) => ctx.db.get(w.bo)))!.aliases).toEqual(["Boz"]);
+    // At the cap: linked, not remembered.
+    const full = Array.from({ length: 32 }, (_, i) => `Alias Number ${i}`);
+    await t.run((ctx) => ctx.db.patch(w.bo, { aliases: full }));
+    const c = await t.run((ctx) =>
+      printCard(ctx, w, { number: "3", printed: [{ kind: "player", name: "Bo J." }] }),
+    );
+    await answerPlayer(t, w, c, w.bo, "Bo J.", { saveAsAlias: true });
+    expect((await t.run((ctx) => ctx.db.get(w.bo)))!.aliases).toEqual(full);
+    expect((await card(t, c))!.playerIds).toEqual([w.bo]);
+  });
+
+  test("NEO-671: an alias another player holds as an ALIAS is still remembered (NEO-254 allows shared aliases)", async () => {
+    const t = newT();
+    const w = await world(t);
+    await t.run((ctx) => ctx.db.patch(w.other, { aliases: ["Bo J."] }));
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, { number: "1", printed: [{ kind: "player", name: "Bo J." }] }),
+    );
+    await answerPlayer(t, w, open, w.bo, "Bo J.", { saveAsAlias: true });
+    expect((await t.run((ctx) => ctx.db.get(w.bo)))!.aliases).toEqual(["Bo J."]);
   });
 
   test("a team that is not in the question's sport is refused", async () => {
