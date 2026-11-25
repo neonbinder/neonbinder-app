@@ -1047,6 +1047,24 @@ describe("TeamTile", () => {
         });
       });
 
+      it("two preselected chips point at the 'save together' note; a chip that is not preselected points at nothing", () => {
+        evidence(
+          1940,
+          { answer: career(T("t-b", "Boston Red Sox")), candidates: [T("t-b", "Boston Red Sox"), T("t-a", "Philadelphia Athletics")], stints: foxx },
+          { answer: career(T("t-c", "Cincinnati Reds")), candidates: [T("t-c", "Cincinnati Reds")], stints: [S("t-c", 1930, 1945)] },
+        );
+        const bench = { playerId: "player-2", name: "Johnny Bench", sportId: SPORT, stints: [], stintsMore: false };
+        renderTile({
+          row: card({ playerIds: ["player-1", "player-2"] }),
+          ctx: context({ players: [player, bench] }),
+          items,
+        });
+        const note = screen.getByText("Suggested teams save together.");
+        expect(screen.getByRole("button", { name: /Boston Red Sox/ }).getAttribute("aria-describedby")).toBe(note.id);
+        expect(screen.getByRole("button", { name: /Cincinnati Reds/ }).getAttribute("aria-describedby")).toBe(note.id);
+        expect(screen.getByRole("button", { name: /Philadelphia Athletics/ }).getAttribute("aria-describedby")).toBeNull();
+      });
+
       it("an undated career lead prints no years, even offered unselected", () => {
         evidence(2025, { answer: null, candidates: [T("t-a", "Philadelphia Athletics")], stints: [] });
         renderTile({ row: row(), ctx: ctx(), items });
@@ -1226,6 +1244,192 @@ describe("TeamTile", () => {
         id: CARD,
         teamOnCardIds: ["team-7", "team-9"],
         regenerateListing: true,
+      });
+    });
+
+    describe("a career gap: swap pills (NEO-672)", () => {
+      const gap = (teamId = "team-7", playerId = "player-1") =>
+        ({ level: "check", kind: "careerGap", playerId, teamId, key: `careerGap:${playerId}:${teamId}` }) as const;
+      const stintsOf = [
+        { teamId: "team-bos", teamName: "Boston Red Sox", fromYear: 2025 },
+        { teamId: "team-pit", teamName: "Pittsburgh Pirates", fromYear: 2026 },
+      ];
+      const merrill = (stints = stintsOf, playerId = "player-1", name = "Jackson Merrill") => ({
+        playerId,
+        name,
+        sportId: SPORT,
+        stints,
+        stintsMore: false,
+      });
+      const gapCtx = (over: Record<string, unknown> = {}) =>
+        context({
+          players: [merrill()],
+          teams: [{ teamId: "team-7", name: "San Diego Padres", onCard: true, candidate: false }],
+          ...over,
+        });
+      const render2026 = (opts: Parameters<typeof renderTile>[0] = {}) => {
+        queryResults["selectorOptions.getAncestorChain"] = [{ _id: "y", level: "year", value: "2026" }];
+        return renderTile({
+          row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7"] }),
+          ctx: gapCtx(),
+          items: [gap()],
+          ...opts,
+        });
+      };
+      const swapPill = (gapName: string, team: string, years: string) =>
+        screen.getByRole("button", { name: `Swap ${gapName} for ${team} · ${years}` });
+
+      it("lists the covering career teams under the gap team's group, labelled 'Swap for'", () => {
+        render2026();
+        const group = screen.getByRole("group", { name: "Team San Diego Padres" });
+        const list = within(group).getByRole("list", { name: "Swap for" });
+        expect(
+          within(list)
+            .getAllByRole("button")
+            .map((b) => b.getAttribute("aria-label")),
+        ).toEqual([
+          "Swap San Diego Padres for Boston Red Sox · 2025–present",
+          "Swap San Diego Padres for Pittsburgh Pirates · 2026–present",
+        ]);
+      });
+
+      it("shows no pill as pressed or suggested: a swap is the operator's choice", () => {
+        render2026();
+        for (const b of screen.getAllByRole("button", { name: /^Swap / })) {
+          expect(b.getAttribute("aria-label")).not.toMatch(/suggested/);
+          expect(b.getAttribute("aria-describedby")).toBeNull();
+          expect(b.getAttribute("aria-pressed")).toBeNull();
+        }
+      });
+
+      it("a click replaces the gap team on this card, keeps the card's other team, and regenerates the listing", async () => {
+        render2026({ row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7", "team-2"] }) });
+        await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–present"));
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledTimes(1);
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+          id: CARD,
+          teamOnCardIds: ["team-bos", "team-2"],
+          regenerateListing: true,
+        });
+      });
+
+      it("writes nothing to the player's career", async () => {
+        render2026();
+        await click(swapPill("San Diego Padres", "Pittsburgh Pirates", "2026–present"));
+        expect(mutation("players.addStint")).not.toHaveBeenCalled();
+      });
+
+      it("offers no pill on a card without a career gap", () => {
+        render2026({ items: [] });
+        expect(screen.queryByText("Swap for")).toBeNull();
+        expect(screen.queryByRole("button", { name: /^Swap / })).toBeNull();
+      });
+
+      it("offers no pill for a team that is already on the card", () => {
+        render2026({
+          row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7", "team-bos"] }),
+          ctx: gapCtx({
+            teams: [
+              { teamId: "team-7", name: "San Diego Padres", onCard: true, candidate: false },
+              { teamId: "team-bos", name: "Boston Red Sox", onCard: true, candidate: false },
+            ],
+          }),
+        });
+        const group = screen.getByRole("group", { name: "Team San Diego Padres" });
+        expect(within(group).queryByRole("button", { name: /Swap San Diego Padres for Boston Red Sox/ })).toBeNull();
+        expect(within(group).getByRole("button", { name: /Swap San Diego Padres for Pittsburgh Pirates/ })).toBeTruthy();
+      });
+
+      it("a team on the card that is not a gap gets no swap list", () => {
+        render2026({
+          row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7", "team-2"] }),
+          ctx: gapCtx({
+            teams: [
+              { teamId: "team-7", name: "San Diego Padres", onCard: true, candidate: false },
+              { teamId: "team-2", name: "Seattle Mariners", onCard: true, candidate: false },
+            ],
+          }),
+        });
+        expect(within(screen.getByRole("group", { name: "Team San Diego Padres" })).getAllByRole("list")).toHaveLength(1);
+        expect(within(screen.getByRole("group", { name: "Team Seattle Mariners" })).queryByRole("list")).toBeNull();
+      });
+
+      it("one player with two gap teams gets a list under each, each naming its own gap", async () => {
+        render2026({
+          row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7", "team-2"] }),
+          ctx: gapCtx({
+            teams: [
+              { teamId: "team-7", name: "San Diego Padres", onCard: true, candidate: false },
+              { teamId: "team-2", name: "Seattle Mariners", onCard: true, candidate: false },
+            ],
+          }),
+          items: [gap("team-7"), gap("team-2")],
+        });
+        const padres = screen.getByRole("group", { name: "Team San Diego Padres" });
+        const mariners = screen.getByRole("group", { name: "Team Seattle Mariners" });
+        const padresList = within(padres).getByRole("list", { name: "Swap for" });
+        const marinersList = within(mariners).getByRole("list", { name: "Swap for" });
+        expect(padresList).not.toBe(marinersList);
+        expect(within(padresList).getAllByRole("button").every((b) => /^Swap San Diego Padres for /.test(b.getAttribute("aria-label") ?? ""))).toBe(true);
+        expect(within(marinersList).getAllByRole("button").every((b) => /^Swap Seattle Mariners for /.test(b.getAttribute("aria-label") ?? ""))).toBe(true);
+        await click(within(marinersList).getByRole("button", { name: /Boston Red Sox/ }));
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+          id: CARD,
+          teamOnCardIds: ["team-7", "team-bos"],
+          regenerateListing: true,
+        });
+      });
+
+      it("offers nothing until the set's year is known", () => {
+        queryResults["selectorOptions.getAncestorChain"] = undefined;
+        renderTile({ row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7"] }), ctx: gapCtx(), items: [gap()] });
+        expect(screen.queryByRole("button", { name: /^Swap / })).toBeNull();
+      });
+
+      it("does not read the ancestor chain when the card has no gap", () => {
+        // A year level in the chain would offer pills if it were read for a card with no gap.
+        render2026({ items: [] });
+        expect(screen.queryByRole("button", { name: /^Swap / })).toBeNull();
+      });
+
+      it("a second click while the first save is running does nothing", async () => {
+        mutation("selectorOptions.updateCard").mockReturnValue(new Promise(() => {}));
+        render2026();
+        await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–present"));
+        await click(swapPill("San Diego Padres", "Pittsburgh Pirates", "2026–present"));
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledTimes(1);
+        expect(swapPill("San Diego Padres", "Pittsburgh Pirates", "2026–present").getAttribute("aria-disabled")).toBe("true");
+      });
+
+      it("hides the pills while Edit's team search is open, and brings them back on cancel", async () => {
+        render2026();
+        await click(screen.getByRole("button", { name: "Edit San Diego Padres" }));
+        expect(screen.queryByRole("button", { name: /^Swap / })).toBeNull();
+        await click(screen.getByRole("button", { name: "Cancel linking" }));
+        expect(screen.getAllByRole("button", { name: /^Swap / }).length).toBe(2);
+      });
+
+      it("Edit still swaps the team through the search, beside the pills", async () => {
+        render2026();
+        await click(screen.getByRole("button", { name: "Edit San Diego Padres" }));
+        await click(screen.getByRole("button", { name: "Pick a team" }));
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+          id: CARD,
+          teamOnCardIds: ["team-9"],
+          regenerateListing: true,
+        });
+      });
+
+      it("swapping for a team the card already has leaves it once (the swap dedupes)", async () => {
+        // Not offered as a pill, but Edit's search can pick it: the shared swap must not duplicate it.
+        render2026({ row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7", "team-9"] }) });
+        await click(screen.getByRole("button", { name: "Edit San Diego Padres" }));
+        await click(screen.getByRole("button", { name: "Pick a team" }));
+        expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
+          id: CARD,
+          teamOnCardIds: ["team-9"],
+          regenerateListing: true,
+        });
       });
     });
 
