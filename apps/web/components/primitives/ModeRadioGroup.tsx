@@ -16,9 +16,11 @@ import React, { useId, useRef } from "react";
  * 3, Bright as a brand-new Trapper Keeper".
  *
  * Layout: the cards share a grid of equal columns, each at least ~9rem, so at
- * 320px they stack one per line instead of overflowing. A short last row keeps
- * the same card size as the rows above it rather than stretching across. Every card is at least 44px tall
- * (min-h-11), a label-only card included, so each is a full-size target.
+ * 320px they stack one per line instead of overflowing. Rows beyond the first
+ * keep the card size of the row above, so a short last row does not stretch
+ * across; a group with fewer options than one row holds stretches them to fill
+ * it. Every card is at least 44px tall (min-h-11), a label-only card
+ * included, so each is a full-size target.
  */
 export interface ModeRadioOption<T extends string = string> {
   value: T;

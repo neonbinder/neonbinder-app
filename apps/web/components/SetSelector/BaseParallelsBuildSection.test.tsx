@@ -55,6 +55,7 @@ import BaseParallelsBuildSection, {
   sectionHeading,
   currentOptionLabel,
   pickedEmptyText,
+  chosenSectionHeading,
   sourceEmptyText,
   summaryText,
   tallyParallels,
@@ -836,7 +837,9 @@ describe("BaseParallelsBuildSection — picking the parallel the others copy fro
 
   describe("focus, announcement and the held button (NEO-673 audit)", () => {
     const heading = () => screen.getByRole("heading", { level: 3 });
-    const status = () => screen.getByRole("status");
+    // The first status region is the heading's; the picker has its own beside
+    // the empty-pick note, so the heading's is the first in the document.
+    const status = () => screen.getAllByRole("status")[0];
 
     /** A mutation the test resolves by hand, after the "server" has moved. */
     function deferred() {
@@ -882,6 +885,32 @@ describe("BaseParallelsBuildSection — picking the parallel the others copy fro
       expect(screen.queryByRole("radiogroup")).toBeNull();
       expect(document.activeElement).toBe(change());
       expect(status().textContent).toBe(copyingFromText("Silver"));
+    });
+
+    it("a first pick whose write settles before the source arrives still lands on Change once it draws", async () => {
+      const write = deferred();
+      mockConvex.mutation.mockReturnValue(write.promise);
+      const { rerender, runner } = renderSection(pickablePlan());
+      fireEvent.click(screen.getByRole("radio", { name: "Silver" }));
+      await act(async () => {
+        fireEvent.click(copyFrom());
+      });
+      // The write settles first: the plan still has no source.
+      await act(async () => {
+        write.resolve(null);
+      });
+      expect(screen.queryByRole("button", { name: CHANGE_SOURCE_ARIA })).toBeNull();
+      expect(document.activeElement).not.toBe(document.body);
+      // Then the source arrives and Change draws.
+      rerender(
+        <BaseParallelsBuildSection
+          variantTypeId={TYPE_ID}
+          plan={chosenPlan()}
+          runner={runner}
+          showsRun={false}
+        />,
+      );
+      expect(document.activeElement).toBe(change());
     });
 
     it("a first pick that fails puts focus back on the button and says so in the alert", async () => {
@@ -1058,12 +1087,27 @@ describe("BaseParallelsBuildSection — picking the parallel the others copy fro
       expect(screen.queryByText(pickedEmptyText("Ruby"))).toBeNull();
       fireEvent.click(screen.getByRole("radio", { name: "Ruby" }));
       const line = screen.getByText("Ruby has no cards yet.");
-      expect(line.getAttribute("role")).toBeNull();
+      // Announced: the line is the text of an always-mounted status region.
+      expect(line.getAttribute("role")).toBe("status");
       expect(line.compareDocumentPosition(copyFrom()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(line.textContent).not.toMatch(/\d/);
       // Back to a parallel with cards: gone again.
       fireEvent.click(screen.getByRole("radio", { name: "Gold" }));
       expect(screen.queryByText("Ruby has no cards yet.")).toBeNull();
+    });
+
+    it("the empty-pick note's region is mounted (empty) before the pick, and the heading names its source", () => {
+      renderSection(chosenPlan());
+      expect(chosenSectionHeading("Silver")).toBe("Parallels from Silver");
+      fireEvent.click(change());
+      const regions = screen.getAllByRole("status");
+      expect(regions).toHaveLength(2);
+      const note = regions[1];
+      expect(note.textContent).toBe("");
+      fireEvent.click(screen.getByRole("radio", { name: "Ruby" }));
+      // The same element now holds the words: it was announced, not inserted.
+      expect(screen.getAllByRole("status")[1]).toBe(note);
+      expect(note.textContent).toBe("Ruby has no cards yet.");
     });
 
     it("says nothing when the current source itself is picked, or when the source has no cards", () => {
@@ -1087,11 +1131,11 @@ describe("BaseParallelsBuildSection — picking the parallel the others copy fro
       expect(screen.queryByText("Ruby has no cards yet.")).toBeNull();
     });
 
-    it("the heading reads Parallels once a parallel is chosen, and while Change is open", () => {
+    it('the heading reads "Parallels from Silver" once a parallel is chosen, and while Change is open', () => {
       renderSection(chosenPlan());
-      expect(screen.getByRole("heading", { level: 3, name: "Parallels" })).toBeTruthy();
+      expect(screen.getByRole("heading", { level: 3, name: chosenSectionHeading("Silver") })).toBeTruthy();
       fireEvent.click(change());
-      expect(screen.getByRole("heading", { level: 3, name: "Parallels" })).toBeTruthy();
+      expect(screen.getByRole("heading", { level: 3, name: chosenSectionHeading("Silver") })).toBeTruthy();
     });
 
     it("Change slots the standing pick in at the server's position, not first", () => {

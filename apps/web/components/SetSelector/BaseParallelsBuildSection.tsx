@@ -77,9 +77,13 @@ export function sectionHeading(sourceValue: string | undefined): string {
 
 /**
  * NEO-673 — the heading once the others copy from a parallel the operator
- * picked: the set has no Base, so "of the base set" would be untrue.
+ * picked: the set has no Base, so "of the base set" would be untrue. It names
+ * its source ("Parallels from Silver") so it never reads the same as the
+ * Variants column's own "Parallels" label.
  */
-export const CHOSEN_SECTION_HEADING = "Parallels";
+export function chosenSectionHeading(sourceValue: string): string {
+  return `Parallels from ${sourceValue}`;
+}
 
 /** "Build 12 parallels from Base"; no count until the list is in. */
 export function buildAllLabel(
@@ -349,14 +353,16 @@ export default function BaseParallelsBuildSection({
       return;
     }
     // "change": armed by a save that went through. Stay armed until Change
-    // exists to take focus; once the save has settled with no Change drawn
-    // (a run started meanwhile), stop and make sure focus is not on <body>.
+    // exists to take focus: on a first pick the write can settle before the
+    // plan carries the new source, so Change draws a render later. Make sure
+    // focus is not on <body> meanwhile. A run that hides Change stops the
+    // wait, so Change does not take focus whenever the run ends.
     if (changeRef.current) {
       focusAfterRef.current = null;
       changeRef.current.focus();
     } else if (!savingChoice) {
-      focusAfterRef.current = null;
       if (document.activeElement === document.body) headingRef.current?.focus();
+      if (runner.active) focusAfterRef.current = null;
     }
   });
   /**
@@ -515,7 +521,9 @@ export default function BaseParallelsBuildSection({
             tabIndex={-1}
             className="rounded-sm text-sm font-semibold text-ink focus-outline"
           >
-            {chosen ? CHOSEN_SECTION_HEADING : sectionHeading(sourceValue)}
+            {chosen && source
+              ? chosenSectionHeading(source.value)
+              : sectionHeading(sourceValue)}
           </h3>
           {/* Always mounted so the save is announced: "Saving…", then
               "Copying from X". The visible "Copying from X" line IS this
@@ -640,11 +648,15 @@ export default function BaseParallelsBuildSection({
           ) : (
             <p className="text-xs text-ink-3">{LOADING_TEXT}</p>
           )}
-          {pickedEmpty && picked && (
-            <p className="mt-3 text-xs text-notice-warn-ink break-words">
-              {pickedEmptyText(picked.value)}
-            </p>
-          )}
+          {/* Always mounted, so the note is announced when it appears (a
+              region that arrives with its text is often skipped). The margin
+              rides the text, so the empty region takes no space. */}
+          <p
+            role="status"
+            className={`text-xs text-notice-warn-ink break-words ${pickedEmpty && picked ? "mt-3" : ""}`}
+          >
+            {pickedEmpty && picked ? pickedEmptyText(picked.value) : ""}
+          </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <NeonButton
               ref={saveRef}

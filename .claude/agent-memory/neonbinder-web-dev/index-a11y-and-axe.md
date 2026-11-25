@@ -44,3 +44,4 @@ Accessible names, focus handling, live regions, dialogs, axe false reds and cont
 - [Re-opened row focus is owed in walk memory](pattern_reopened_row_focus_is_owed_in_walk_memory.md) — oweFocus before the write; the row that mounts takes it; answer sentences go to the walk's status line
 - [Extra line in an option stays out of its name](reference_extra_line_in_option_stays_out_of_its_name.md) — aria-hidden span + aria-describedby on role=option; t.run turns undefined into null; drain
 - [Park focus before a write that unmounts the button](reference_park_focus_before_a_write_that_unmounts_the_button.md) — heading tabIndex -1 park, then Change; focus ref armed until target exists; status span is the visible line
+- [Armed focus ref must outlive the settle](reference_focus_armed_ref_must_outlive_the_settle.md) — write settles before the reactive plan arrives; stay armed until the target mounts

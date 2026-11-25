@@ -47,15 +47,17 @@ describe("VariantSelector — the source tag (NEO-673)", () => {
     render(column("silver"));
     const silver = screen.getByRole("option", { name: /^Silver/ });
     const gold = screen.getByRole("option", { name: /^Gold/ });
-    expect(silver.textContent).toContain("source");
+    expect(silver.textContent).toContain("(source)");
     expect(gold.textContent).not.toContain("source");
-    // The name stays alone in its own node, beside the tag.
+    // The name stays alone in its own node, beside the tag, and the row's
+    // accessible name reads "Silver (source)".
     expect(screen.getByText("Silver")).toBeTruthy();
-    expect(screen.getAllByText("source")).toHaveLength(1);
+    expect(screen.getAllByText("(source)")).toHaveLength(1);
+    expect(screen.getByRole("option", { name: "Silver (source)" })).toBe(silver);
   });
 
   it("tags nothing without a source", () => {
     render(column(undefined));
-    expect(screen.queryByText("source")).toBeNull();
+    expect(screen.queryByText("(source)")).toBeNull();
   });
 });
