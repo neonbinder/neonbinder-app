@@ -95,7 +95,7 @@ enqueue.
      Claude-run queue today**: the delta audit of the fix and the local gates
      (and covering specs) green first;
    - send the Mac notification, with the ticket's Occurrences count for a
-     known failure so a loop shows: `REASON='#499 ejected: one-line reason' notify.sh 'NEO-123 ejected' "$REASON"`
+     known failure so a loop shows: `notify.sh 'NEO-123 ejected' '#499 ejected: one-line reason'`
      (free text single-quoted, as above);
    - tell Jason only if he must decide; otherwise keep working.
 6. **REMOVED** (a person, an unknown dequeue reason, or a closed PR) →
@@ -147,14 +147,15 @@ even when he is not looking at the terminal:
 ```bash
 N="$(git rev-parse --show-toplevel)/.claude/skills/pr-queue/notify.sh"
 "$N" 'NEO-123 merged' '#499 is on main: Short title'
-REASON='#499 passed its turn: one-line reason' "$N" 'NEO-123 stopped' "$REASON"
+"$N" 'NEO-123 stopped' '#499 passed its turn: one-line reason'
 ```
 
 **Free text goes in single quotes, never inside double quotes.** A reason or
 title may be copied from CI, a marketplace page or an error message, and inside
-double quotes `$(...)` or backticks would run in your shell. Write it as a
-single-quoted literal or a single-quoted variable as above; if it holds a single
-quote itself, drop that character.
+double quotes `$(...)` or backticks would run in your shell. Pass it as a
+single-quoted literal argument, as above; if it holds a single quote itself,
+drop that character. Never write `VAR='…' cmd "$VAR"`: the shell expands
+`"$VAR"` before the assignment takes effect, so the argument arrives empty.
 
 ## State and addresses
 
@@ -281,12 +282,12 @@ given on the local build. Your turn's CI run ends in a merge, so nothing may
 still be open when it starts.
 
 1. Read `"$Q" owner`. Empty, or not in `ListAgents`: no queue is running.
-   Notify Jason (`notify.sh "NEO-123 ready" "No PR queue is running"`), say so,
+   Notify Jason (`notify.sh 'NEO-123 ready' 'No PR queue is running'`), say so,
    and stop. Never start a queue yourself.
 2. Write your own entry, then tell the queue:
 
    ```bash
-   TITLE='Short title' "$Q" join NEO-123 "$(git branch --show-current)" '<this session name>' "$TITLE"
+   "$Q" join NEO-123 "$(git branch --show-current)" '<this session name>' 'Short title'
    ```
 
    The title may hold letters, digits, spaces and `. , : ( ) # _ / + ' -`;
@@ -317,7 +318,7 @@ still be open when it starts.
    5. **On a red, pass the turn at once.** Save the run's artifacts (the
       red-run triage steps) into the session scratchpad, never inside the
       checkout, then send `PR-QUEUE PASS NEO-123` so the next ticket gets CI,
-      and `notify.sh "NEO-123 stopped" "#<pr> passed its turn: <reason>"`.
+      and `notify.sh 'NEO-123 stopped' '#<pr> passed its turn: <reason>'`.
       No rerun inside the turn.
    6. **Triage cheaply, then stop.**
       - Spawn one agent on `model: sonnet` to find candidate `ci-fail`
@@ -359,7 +360,7 @@ still be open when it starts.
       stop (the pass, notify and report at the end of step 6, no
       triage) and tell Jason.
    8. **Notify the merge.** The moment the merge commit exists:
-      `notify.sh "NEO-123 merged" "#<pr> is on main: <short title>"`.
+      `notify.sh 'NEO-123 merged' '#<pr> is on main: <short title>'`.
    9. **Tell every other session main moved.** `ListAgents`, then one message
       to each other session (not the queue, not your own subagents) whose
       first line is `PR-QUEUE MAIN MOVED NEO-123 #<pr> <short sha>`, followed
