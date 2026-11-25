@@ -736,7 +736,8 @@ export async function createTeamOnOpenRow(page: Page): Promise<string> {
  *    card with none pink; `"noTeamOnCard"` answers "No team on this card";
  *    `"prefilledElseNoTeamOnCard"` clicks a suggested chip when there is one,
  *    else answers "No team on this card", so no card is left pink (NEO-661: any
- *    pink card holds a parallel build).
+ *    pink card holds a parallel build). Every choice waits for the tile's
+ *    "Looking up teams…" to go first (7 s), so no answer beats a suggestion.
  *
  * Contract: ENTRY a settled card. EXIT no printed team name is waiting. The
  * tile can stay pink only for a no-team card the `"prefilled"` rule left alone
@@ -791,6 +792,14 @@ export async function answerPinkTeamTiles(
     const preselected = tile.getByRole("button", { name: ANY_SUGGESTED_CHIP, disabled: false });
     const none = tile.getByRole("button", { name: "No team on this card", exact: true, disabled: false });
     await expect(none, "the Team tile is pink with no name row left, so it is asking for a team").toBeVisible();
+    // NEO-661: the chips preselect nothing while the tile's suggestions load, and it says so
+    // ("Looking up teams…", a role=status mounted with the chips, so the line is read in the same
+    // render as `none` above). Wait it out before choosing, or "No team on this card" could beat a
+    // suggestion that was on its way. By text: the tile can hold more than one status.
+    await expect(
+      tile.getByText("Looking up teams…", { exact: true }),
+      "the Team tile is still looking up teams to suggest",
+    ).toHaveCount(0);
     if (noTeam === "noTeamOnCard") {
       await none.click();
       onNoTeam?.();
