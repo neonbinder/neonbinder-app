@@ -2,7 +2,7 @@
  * NEO-645 — the shared parts' accessibility: 24px checkbox rows that hold with
  * aria-disabled (never native `disabled`), and the team chips' non-colour mark.
  */
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../../convex/_generated/api", () => ({
@@ -299,5 +299,65 @@ describe("TeamFillChips", () => {
     fireEvent.click(other);
     fireEvent.click(screen.getByRole("button", { name: "Cancel linking" }));
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Other team…" })));
+  });
+  describe("the 'Looking up teams…' line (NEO-661)", () => {
+    const LOOKING = "Looking up teams…";
+    const lists = (c: HTMLElement) => Array.from(c.querySelectorAll<HTMLElement>("ul[aria-labelledby]"));
+    // The listing names a team and its era lookup has not answered: not ready, career chips shown.
+    const lookupPending = { bscTeamName: "Padres" };
+
+    it("loading: the status is empty on first commit, then reads the sentence; chip lists are busy and the buttons stay pressable", async () => {
+      const { container } = render(<Chips row={lookupPending} />);
+      const status = screen.getByRole("status");
+      expect(status.textContent).toBe("");
+      expect(status.parentElement).toBe(container.firstElementChild);
+      expect(status.className).toContain("empty:hidden");
+      await waitFor(() => expect(status.textContent).toBe(LOOKING));
+      const careerLists = lists(container);
+      expect(careerLists.map((ul) => ul.getAttribute("aria-labelledby"))).toEqual(["fill-career-c1"]);
+      for (const ul of careerLists) expect(ul.getAttribute("aria-busy")).toBe("true");
+      const none = screen.getByRole("button", { name: "No team on this card" });
+      expect(none.getAttribute("aria-disabled")).toBeNull();
+      const onAnswered = vi.fn();
+      cleanup();
+      render(<Chips row={lookupPending} onAnswered={onAnswered} />);
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "No team on this card" })));
+      expect(onAnswered).toHaveBeenCalledTimes(1);
+    });
+
+    it("loading: a marketplace chip list is busy too, and its chip is pressable", async () => {
+      delete queryResults["cardChecklist.teamSuggestionsForPreview"];
+      queryResults["teams.erasByNameAndSport"] = [{ _id: "t1", label: "San Diego Padres" }];
+      const { container } = render(<Chips row={lookupPending} />);
+      await waitFor(() => expect(screen.getByRole("status").textContent).toBe(LOOKING));
+      const [ul] = lists(container);
+      expect(ul.getAttribute("aria-labelledby")).toBe("fill-listing-c1");
+      expect(ul.getAttribute("aria-busy")).toBe("true");
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: /San Diego Padres/ })));
+      expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledTimes(1);
+    });
+
+    it("ready: the status stays empty and no list carries aria-busy", async () => {
+      const { container } = render(<Chips />);
+      const status = screen.getByRole("status");
+      // Let the one-tick timer fire; an empty status after it is the point.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      expect(status.textContent).toBe("");
+      expect(lists(container).length).toBeGreaterThan(0);
+      for (const ul of lists(container)) expect(ul.hasAttribute("aria-busy")).toBe(false);
+    });
+
+    it("loading to ready: the line clears and the lists lose aria-busy", async () => {
+      const { container, rerender } = render(<Chips row={lookupPending} />);
+      const status = screen.getByRole("status");
+      await waitFor(() => expect(status.textContent).toBe(LOOKING));
+      expect(lists(container)[0].getAttribute("aria-busy")).toBe("true");
+      queryResults["teams.erasByNameAndSport"] = [{ _id: "t1", label: "San Diego Padres" }];
+      rerender(<Chips row={lookupPending} />);
+      await waitFor(() => expect(screen.getByRole("status").textContent).toBe(""));
+      for (const ul of lists(container)) expect(ul.hasAttribute("aria-busy")).toBe(false);
+    });
   });
 });
