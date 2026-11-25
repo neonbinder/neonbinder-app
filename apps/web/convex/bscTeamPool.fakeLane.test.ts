@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
-import { bscTeamPool } from "./bscTeamPool";
+import { BSC_TEAM_CANCEL_FOR_USER_MAX, bscTeamPool } from "./bscTeamPool";
 import { BSC_TEAM_ENRICH_DELAY_MS } from "./adapters/buysportscards";
 import { FAKE_BSC_NS_HEADER } from "./lib/bscHttp";
 import { fakeBscNamespaceFor, fakeBscPrefixFor } from "./testing";
@@ -247,6 +247,31 @@ describe("testing.cancelMyBscTeamChecks", () => {
       cancelled: 0,
     });
     expect(cancel).toHaveBeenCalledTimes(2);
+  });
+
+  test("caps one call at BSC_TEAM_CANCEL_FOR_USER_MAX items; repeat calls drain the rest", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    const total = BSC_TEAM_CANCEL_FOR_USER_MAX + 1;
+    const cancel = vi.spyOn(bscTeamPool, "cancel").mockResolvedValue(undefined);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < total; i++) {
+        await ctx.db.insert("bscTeamLaneFakeItems", { queuedBy: USER_A, workId: `work-${i}` });
+      }
+    });
+    const caller = t.withIdentity({ subject: USER_A });
+
+    expect(await caller.mutation(api.testing.cancelMyBscTeamChecks, {})).toEqual({
+      cancelled: BSC_TEAM_CANCEL_FOR_USER_MAX,
+    });
+    expect(await laneRows(t)).toHaveLength(1);
+    expect(cancel).toHaveBeenCalledTimes(BSC_TEAM_CANCEL_FOR_USER_MAX);
+
+    expect(await caller.mutation(api.testing.cancelMyBscTeamChecks, {})).toEqual({ cancelled: 1 });
+    expect(await laneRows(t)).toHaveLength(0);
+
+    expect(await caller.mutation(api.testing.cancelMyBscTeamChecks, {})).toEqual({ cancelled: 0 });
+    expect(cancel).toHaveBeenCalledTimes(total);
   });
 
   test("a cancelled item's completion is done: no re-enqueue, no write to the card", async () => {

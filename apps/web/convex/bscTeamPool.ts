@@ -138,8 +138,11 @@ async function enqueueItem(ctx: MutationCtx, item: BscTeamCheckItem, runAt?: num
   );
   // NEO-644 — the fake only (`queuedBy` is stored nowhere else): remember the
   // item so its operator's E2E spec can cancel it (`cancelQueuedBscTeamChecksFor`).
-  if (item.queuedBy !== undefined) {
-    await ctx.db.insert("bscTeamLaneFakeItems", { queuedBy: item.queuedBy, workId });
+  // Re-checked here, not only at first queue: a re-enqueue carries the stored
+  // context, and the target may have moved to real BSC since.
+  const laneQueuedBy = queuedByForLane(item.queuedBy);
+  if (laneQueuedBy !== undefined) {
+    await ctx.db.insert("bscTeamLaneFakeItems", { queuedBy: laneQueuedBy, workId });
   }
 }
 
