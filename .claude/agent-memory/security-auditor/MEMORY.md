@@ -154,3 +154,4 @@
 - [Agent memory index overwrite](patterns_agent_memory_index_overwrite.md) — a Written (not appended) MEMORY.md wipes the index; check diff --stat on .claude/
 - [Neo661 attention-level hold](patterns_neo661_attention_level_hold.md) — pink or awaiting-lookup hold; workflow not boundary; ref presence only; stuck-await escape
 - [Action scan inside mutation](patterns_action_scan_inside_mutation.md) — action-paged scan in a mutation shares one txn read limit; cheap check first
+- [Neo644 fake-only skip + lane bookkeeping](patterns_neo644_fake_only_skip_and_lane_bookkeeping.md) — skip real safeguards on runtime domain, not stored queuedBy

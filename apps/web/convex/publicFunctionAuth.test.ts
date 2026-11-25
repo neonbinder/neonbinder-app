@@ -3996,6 +3996,8 @@ describe("NEO-552: the fake BSC test controls are locked like the other testing 
     ],
     ["testing.clearMyBscFaults", (t) => t.action(api.testing.clearMyBscFaults, {})],
     ["testing.clearBscCallGate", (t) => t.action(api.testing.clearBscCallGate, {})],
+    // NEO-644 — the lane teardown: cancels the caller's own queued BSC team lookups.
+    ["testing.cancelMyBscTeamChecks", (t) => t.mutation(api.testing.cancelMyBscTeamChecks, {})],
     ["testing.resetMyTestState", (t) => t.action(api.testing.resetMyTestState, {})],
   ];
 
@@ -4013,7 +4015,7 @@ describe("NEO-552: the fake BSC test controls are locked like the other testing 
     await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/not enabled/);
   });
 
-  test.each(cases.slice(0, 5))("%s refuses a deployment on the real BuySportsCards", async (_name, call) => {
+  test.each(cases.slice(0, 6))("%s refuses a deployment on the real BuySportsCards", async (_name, call) => {
     vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
     vi.stubEnv("NEONBINDER_BSC_API_BASE", "");
     await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/real BuySportsCards/);

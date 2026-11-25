@@ -37,13 +37,12 @@ afterEach(async () => {
 const CPC = "It Takes Two CPC";
 const LINDOR = "Francisco Lindor";
 
-const entry = (a: string[], b: string[], chosen?: Entry["chosen"]): Entry => ({
+const entry = (a: string[], b: string[]): Entry => ({
   field: "players",
   values: [
     { value: a, sources: ["bsc"] },
     { value: b, sources: ["checklist"] },
   ],
-  ...(chosen ? { chosen } : {}),
 });
 
 async function setup(t: T, values: Entry = entry([CPC], [LINDOR]), extra: Record<string, unknown> = {}) {

@@ -41,4 +41,4 @@
 - [Gate flags need a full union](gate-flags-need-a-full-union.md) — a fact that decides "skip the review" is a union on every row; absence = unknown = open
 - [Convex tests have no static gate](convex-tests-have-no-static-gate.md) — convex/*.test.ts escapes tsconfig + eslint; grep dead helpers/literals; branch-only literal removal order
 - [Dropping a whole table](dropping-a-whole-table.md) — one PR, rows outside schema unvalidated; CLI large-index check fails non-TTY deploy at 100k+ docs
-- [Field removal on a staying table is two releases](field-removal-on-a-staying-table-is-two-releases.md) — clear and tighten cannot share a push; PR1 stop writes + armed clear, ops, PR2 tighten
+- [Field removal on a staying table is two releases](field-removal-on-a-staying-table-is-two-releases.md) — clear and tighten cannot share a push; PR1 stop writes + armed clear, ops, PR2 tighten; stale previews; orphan sub-validators

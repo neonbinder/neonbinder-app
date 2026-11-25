@@ -28,7 +28,6 @@ export type DisagreementValue = { value: string[]; sources: SourceKey[] };
 export type DisagreementEntry = {
   field: DisagreementField;
   values: DisagreementValue[];
-  chosen?: { value: string[]; by: "operator"; typed?: true };
 };
 
 /** Values one field may hold, names one value may hold, bytes one card may keep. */

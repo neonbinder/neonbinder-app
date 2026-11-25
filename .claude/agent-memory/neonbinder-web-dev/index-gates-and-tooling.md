@@ -30,3 +30,4 @@ Typecheck, lint, worktree, node/shell and macOS tooling gotchas that make gates 
 - [Typecheck gate skips components](typecheck-gate-skips-components.md) — npm run typecheck covers convex/ only; filter the root tsc to your files
 - [BSD sed has no \b](reference_bsd_sed_has_no_word_boundary.md) — macOS sed ignores \b so a bulk rename silently no-ops; python re.sub; keep a Legacy-named old body when a shared fn changes shape
 - [macOS sed -i needs an empty suffix](macos-sed-i-needs-an-empty-suffix.md) — BSD sed eats the script as a suffix; use perl or python, check git status for strays
+- [Dropping a schema field strands its read guards](reference_dropping_a_schema_field_strands_its_read_guards.md) — tsc flags only Doc-typed `!e.legacy` guards; twin types, helpers and tests keep it: grep repo-wide

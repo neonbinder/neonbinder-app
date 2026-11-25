@@ -54,7 +54,7 @@ describe("deriveCardAttention — nothing to ask", () => {
 });
 
 describe("deriveCardAttention — pink: sources disagree", () => {
-  test("a disagreement with no chosen value is pink", () => {
+  test("a disagreement between the sources is pink", () => {
     const row: AttentionCardRow = {
       ...CLEAN,
       sourceDisagreements: [
@@ -71,24 +71,6 @@ describe("deriveCardAttention — pink: sources disagree", () => {
       { level: "fix", kind: "sourcesDisagree", field: "players" },
     ]);
     expect(level(row)).toBe("fix");
-  });
-
-  test("an operator's choice answers it: nothing is left", () => {
-    expect(
-      deriveCardAttention({
-        ...CLEAN,
-        sourceDisagreements: [
-          {
-            field: "players",
-            values: [
-              { value: ["A"], sources: ["bsc"] },
-              { value: ["B"], sources: ["checklist"] },
-            ],
-            chosen: { value: ["B"], by: "operator" },
-          },
-        ],
-      }),
-    ).toEqual({ level: "none", items: [] });
   });
 
   test("two unsettled fields are two items, players before teams as stored", () => {
@@ -200,32 +182,6 @@ describe("deriveCardAttention — pink: no team", () => {
       ],
     };
     expect(kinds(row)).toEqual(["sourcesDisagree"]);
-  });
-
-  test("a settled teams disagreement does not hide a card that still has no team", () => {
-    expect(
-      kinds({
-        ...TEAMLESS,
-        sourceDisagreements: [
-          {
-            field: "teams",
-            values: [
-              { value: ["Padres"], sources: ["bsc"] },
-              { value: ["Mets"], sources: ["checklist"] },
-            ],
-            chosen: { value: ["Padres"], by: "operator" },
-          },
-        ],
-      }),
-    ).toEqual(["noTeam"]);
-  });
-
-  test("a card the commit pre-filled (teamFill) has a team and is not a stop", () => {
-    const row: AttentionCardRow = {
-      ...CLEAN,
-      tidyChecks: [{ kind: "teamFill", teamIds: ["t1"], reason: "career" }],
-    };
-    expect(deriveCardAttention(row)).toEqual({ level: "none", items: [] });
   });
 
   test("a pending player name and no team are both asked: one tile each", () => {
@@ -376,19 +332,6 @@ describe("deriveCardAttention — blue", () => {
     const row: AttentionCardRow = { ...CLEAN, listingTitle: after.title, listingTitleTruncated: true };
     expect(deriveCardAttention(row).items.map((i) => i.kind)).toEqual(["titleCut"]);
   });
-
-  test("a leftover stored note on the row is ignored: nothing in tidyChecks raises an item", () => {
-    expect(
-      deriveCardAttention({
-        ...CLEAN,
-        tidyChecks: [
-          { kind: "teamFill", teamIds: ["t1"], reason: "otherCards" },
-          { kind: "newPlayerCareer", playerId: "p1" },
-          { kind: "careerGap", playerId: "p1", teamId: "t1" },
-        ],
-      } as never).items,
-    ).toEqual([]);
-  });
 });
 
 describe("deriveCardAttention — a card always has a name (Jason, 2026-11-23)", () => {
@@ -409,7 +352,6 @@ describe("deriveCardAttention — a card always has a name (Jason, 2026-11-23)",
   test("an old card and a new one read the same: the row alone decides (Jason, 2026-11-23)", () => {
     // No stamp, no creation marker: a stored row with a placeholder name is asked
     // exactly as a freshly written one, and never rewritten by reading it.
-    expect(deriveCardAttention({ ...NAMELESS, tidyChecks: [] })).toEqual(deriveCardAttention(NAMELESS));
     expect(level(NAMELESS)).toBe("fix");
   });
 
@@ -436,10 +378,9 @@ describe("deriveCardAttention — a card always has a name (Jason, 2026-11-23)",
     expect(kinds(unknown)).toEqual([]);
   });
 
-  test("it is pink, never reviewed away, and the card stays in the walk until it is named", () => {
-    const row: AttentionCardRow = { ...NAMELESS, tidyReviewed: { keys: ["anything"] } };
-    expect(level(row)).toBe("fix");
-    expect(level({ ...row, cardName: "Checklist" })).toBe("none");
+  test("it is pink, and the card stays in the walk until it is named", () => {
+    expect(level(NAMELESS)).toBe("fix");
+    expect(level({ ...NAMELESS, cardName: "Checklist" })).toBe("none");
   });
 
   test("it sits after the player item and before the team's", () => {

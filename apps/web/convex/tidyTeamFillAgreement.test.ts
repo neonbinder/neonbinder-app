@@ -149,15 +149,12 @@ describe("NEO-639: a missing lookup is not a claim; the set's own No Team is", (
   test("a card whose team lookup failed is filled from the career like any other, and the tile preselects the same team", async () => {
     const { world, card, tile } = await commitOne({ year: "2024", stints: oneTeam, teamLookup: "failed" });
     expect(card.teamOnCardIds).toEqual([world.b]);
-    // The fill is written; no note about it is stored (NEO-656).
-    expect(card.tidyChecks).toBeUndefined();
     expect(preselected(tile)).toEqual([world.b]);
   });
 
   test("under the set's own No Team the commit writes no team, though the career gives exactly one", async () => {
     const { card } = await commitOne({ year: "2024", stints: oneTeam, setNoTeam: true });
     expect(card.teamOnCardIds ?? []).toEqual([]);
-    expect(card.tidyChecks?.some((c) => c.kind === "teamFill") ?? false).toBe(false);
   });
 
   test("the control: the same card in a set with no team default is filled", async () => {
@@ -181,7 +178,6 @@ describe("the tile preselects exactly what the commit writes", () => {
       ],
     });
     expect(card.teamOnCardIds ?? []).toEqual([]);
-    expect(card.tidyChecks?.some((c) => c.kind === "teamFill") ?? false).toBe(false);
     expect([...tile.offered].sort()).toEqual([world.a, world.b].sort());
     expect(preselected(tile)).toEqual([]);
   });
@@ -218,8 +214,6 @@ describe("the tile preselects exactly what the commit writes", () => {
       stints: [{ team: "B", fromYear: 2020 }],
     });
     expect(card.teamOnCardIds).toEqual([world.b]);
-    // The fill is written; no note about it is stored (NEO-656).
-    expect(card.tidyChecks).toBeUndefined();
     expect(preselected(tile)).toEqual([world.b]);
   });
 

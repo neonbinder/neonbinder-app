@@ -190,28 +190,13 @@ export type AttentionCardRow = {
 };
 
 /**
- * Structural twin of `sourceDisagreementValidator` (schema.ts).
- *
- * `chosen` is LEGACY and read-only (NEO-656): a pick now removes the entry from
- * the card, so nothing writes `chosen` any more. A card that still holds one
- * (stored before the release, until the armed clear has run) is read as if the
- * entry were absent (`isOpenDisagreement`).
+ * Structural twin of `sourceDisagreementValidator` (schema.ts). A pick removes
+ * the entry from the card (NEO-656), so every entry present is open.
  */
 export type TidyDisagreement = {
   field: "players" | "teams";
   values: ReadonlyArray<{ value: readonly string[]; sources: readonly string[] }>;
-  chosen?: { value: readonly string[]; by: "operator"; typed?: true };
 };
-
-/**
- * NEO-656 — is this entry a disagreement still waiting on the operator? One
- * env-free predicate for every reader (`allTidyItems`, `entryFor`, the tile):
- * an entry that carries the legacy `chosen` is settled, so it raises nothing and
- * offers nothing, exactly as a card picked after the release.
- */
-export function isOpenDisagreement(d: Pick<TidyDisagreement, "chosen">): boolean {
-  return !d.chosen;
-}
 
 /**
  * NEO-656 (J5/J6, Jason: "it should read real data and display pink/blue as
@@ -439,7 +424,7 @@ export type AttentionLevel = "fix" | "check" | "none";
  */
 export type TidyAttentionItem =
   // ── pink ──
-  // A `sourceDisagreements` entry (an entry carrying the legacy `chosen` is settled).
+  // A `sourceDisagreements` entry.
   | { level: "fix"; kind: "sourcesDisagree"; field: "players" | "teams" }
   // `pendingPlayerNames` is not empty. A same-name pair is a pending name, so it is
   // covered. A multi-player card with
@@ -485,9 +470,7 @@ function allTidyItems(row: AttentionCardRow, live?: LiveAttention): TidyAttentio
 
   // 2 — Sources disagree.
   for (const d of disagreements) {
-    if (isOpenDisagreement(d)) {
-      items.push({ level: "fix", kind: "sourcesDisagree", field: d.field });
-    }
+    items.push({ level: "fix", kind: "sourcesDisagree", field: d.field });
   }
 
   // 3 — Player. A pending name is a pink row whatever else the card links: it
@@ -531,9 +514,7 @@ function allTidyItems(row: AttentionCardRow, live?: LiveAttention): TidyAttentio
   if (pendingTeams.length > 0) {
     items.push({ level: "fix", kind: "teamName", names: [...pendingTeams] });
   }
-  const unsettledTeams = disagreements.some(
-    (d) => d.field === "teams" && isOpenDisagreement(d),
-  );
+  const unsettledTeams = disagreements.some((d) => d.field === "teams");
   if (
     teamIds.length === 0 &&
     pendingTeams.length === 0 &&

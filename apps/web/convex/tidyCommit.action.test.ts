@@ -153,7 +153,6 @@ describe("commit — sourceDisagreements", () => {
     const card = (await byNumber(t, w.base)).get("7")!;
     expect(card.sourceDisagreements).toHaveLength(1);
     const entry = card.sourceDisagreements![0];
-    expect(entry.chosen).toBeUndefined();
     expect(entry.values.map((v) => v.value.join("|")).sort()).toEqual([NOBODY, "Other Nobody"].sort());
     expect(entry.values.find((v) => v.value[0] === NOBODY)!.sources).toEqual(["bsc"]);
     expect(entry.values.find((v) => v.value[0] === "Other Nobody")!.sources).toEqual(["checklist"]);
@@ -174,7 +173,7 @@ describe("commit — sourceDisagreements", () => {
     // The prelude resolves the names the card lists; the conflict still stays unsettled.
     await commit(t, w, [wire("7", { players: [JUDGE, NOBODY], ...conflict([JUDGE], [NOBODY]) })]);
     const card = (await byNumber(t, w.base)).get("7")!;
-    expect(card.sourceDisagreements![0].chosen).toBeUndefined();
+    expect(card.sourceDisagreements).toHaveLength(1);
     expect(card.playerIds).toBeUndefined();
     expect(card.pendingPlayerNames).toBeUndefined();
   });
@@ -184,7 +183,7 @@ describe("commit — sourceDisagreements", () => {
     const { w } = await world(t);
     await commit(t, w, [wire("7", conflict([JUDGE], [SOTO]))]);
     const card = (await byNumber(t, w.base)).get("7")!;
-    expect(card.sourceDisagreements![0].chosen).toBeUndefined();
+    expect(card.sourceDisagreements).toHaveLength(1);
     expect(card.playerIds).toBeUndefined();
   });
 
@@ -192,7 +191,7 @@ describe("commit — sourceDisagreements", () => {
     const t = newT();
     const { w } = await world(t);
     await commit(t, w, [wire("7", conflict([NOBODY], ["Other Nobody"]))]);
-    expect((await byNumber(t, w.base)).get("7")!.sourceDisagreements![0].chosen).toBeUndefined();
+    expect((await byNumber(t, w.base)).get("7")!.sourceDisagreements).toHaveLength(1);
   });
 
   test("a payload over 4096 bytes refuses the commit, names the card by its number, and writes no card", async () => {
@@ -252,14 +251,13 @@ describe("commit — a career gap is read live (today's rule: a stint that start
     return t.withIdentity(ADMIN).query(api.careerCoverage.careerGaps, { pairs });
   };
 
-  test("a one-player card printing a team the career does not cover is a gap; the commit stores no check", async () => {
+  test("a one-player card printing a team the career does not cover is a gap", async () => {
     const t = newT();
     const { w, merrill } = await career(t, [{ team: "mets", fromYear: 2020, toYear: 2023 }]);
     await commit(t, w, [wire("1", { players: ["Jackson Merrill"], teams: ["San Diego Padres"] })]);
     expect(await gapsOf(t, w, "1")).toEqual([
       { selectorOptionId: w.base, playerId: merrill, teamId: w.padres },
     ]);
-    expect((await byNumber(t, w.base)).get("1")!.tidyChecks).toBeUndefined();
   });
 
   test("a stint that started by the card year covers it: no gap", async () => {
@@ -338,9 +336,6 @@ describe("commit — the team fill: the batch tier", () => {
     const cards = await byNumber(t, w.base);
     expect(cards.get("1")!.teamOnCardIds).toEqual([w.padres]);
     expect(cards.get("2")!.teamOnCardIds).toEqual([w.padres]);
-    // The fill is written; the note is not (NEO-656: nothing here can be derived from data).
-    expect(cards.get("2")!.tidyChecks).toBeUndefined();
-    expect(cards.get("1")!.tidyChecks).toBeUndefined();
     expect(merrill).toBeTruthy();
   });
 

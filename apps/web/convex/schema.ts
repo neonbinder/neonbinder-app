@@ -1553,10 +1553,9 @@ export const sourceKeyValidator = v.union(
  * through the shared name matcher ("Judge / Soto" and "Judge | Soto" are one
  * value, Acuña and Acuna are one value; those are never stored).
  *
- * While `chosen` is absent the field holds nothing: no links and no pending
+ * While an entry is present the field holds nothing: no links and no pending
  * names, which is what keeps the losing side out of the walk. NB never picks a
- * side, so `chosen.by` is always "operator" (a person picked); `typed` marks a
- * value the operator typed rather than picked.
+ * side: the operator's pick writes the field and removes the entry (NEO-656).
  *
  * Bounds, enforced by the writer (the validator cannot): at most 3 values per
  * field, at most MAX_CARD_PLAYERS (20) / MAX_CARD_TEAMS (8) names per value,
@@ -1573,18 +1572,6 @@ export const sourceDisagreementValidator = v.object({
       sources: v.array(sourceKeyValidator),
     }),
   ),
-  /**
-   * @deprecated NEO-656 — nothing writes it any more (a picked entry is
-   * removed instead). Kept `v.optional` for PR1 so stored rows still validate;
-   * a later PR drops it once the armed clear has run on every deployment.
-   */
-  chosen: v.optional(
-    v.object({
-      value: v.array(v.string()),
-      by: v.literal("operator"),
-      typed: v.optional(v.literal(true)),
-    }),
-  ),
 });
 
 /**
@@ -1597,53 +1584,6 @@ export const tidyTeamFillReasonValidator = v.union(
   v.literal("otherCards"),
   v.literal("career"),
 );
-
-/**
- * NEO-645 — a fact the tiles need that cannot be derived from the card row
- * alone, stored where it changes (at commit, on a link, on Add to career, and
- * when a player is created) so `deriveCardAttention` stays a pure function of
- * the row (D3).
- *
- *  - careerGap: single-player card whose player has no stint covering the
- *    card's team by the card's year (`careerCoversCardTeam`, J2: today's rule,
- *    not a [Y-1, Y] window). Blue.
- *  - newPlayerCareer: the player was created on this card; check the career
- *    Wikidata proposed. Blue, only on the card where the player was created.
- *  - teamFill: the commit wrote these teams itself from strict pre-fill
- *    evidence. NOTE-ONLY, never blue and never a stop; cleared when the team
- *    is changed by hand.
- *
- * @deprecated NEO-656 — nothing writes it any more (the walk reads live facts).
- * Kept for PR1 so stored rows still validate; removed after the armed clear.
- */
-export const tidyCheckValidator = v.union(
-  v.object({
-    kind: v.literal("careerGap"),
-    playerId: v.id("players"),
-    teamId: v.id("teams"),
-  }),
-  v.object({ kind: v.literal("newPlayerCareer"), playerId: v.id("players") }),
-  v.object({
-    kind: v.literal("teamFill"),
-    teamIds: v.array(v.id("teams")),
-    reason: tidyTeamFillReasonValidator,
-  }),
-);
-
-/**
- * NEO-645 — "seen", for blue. A blue item is suppressed while its fingerprint
- * key is in `keys` (at most 16 keys, each at most 64 characters). Keys hash
- * their values (`features/cardAttention.ts` `tidyReviewedKey*`), so the client
- * and `tidyCards.markReviewed` produce identical keys. Writing it must NOT
- * bump `lastUpdated`, which is the NEO-203 baseVersion.
- *
- * @deprecated NEO-656 — nothing writes or applies it any more. Kept for PR1 so
- * stored rows still validate; a later PR removes it after the armed clear.
- */
-export const tidyReviewedValidator = v.object({
-  at: v.number(),
-  keys: v.array(v.string()),
-});
 
 /**
  * NEO-335 / PR 451 — how a card's fetch-time team answer was reached:
@@ -2549,23 +2489,18 @@ export default defineSchema({
     pendingTeamNames: v.optional(v.array(v.string())),
     // ── NEO-645: One-card Tidy Up review state ───────────────────────────────
     //
-    // All four optional and all additive. Parallel copies do NOT carry any of
-    // them: they are review state of the source card, and carrying them would
-    // make every parallel show blue. See the validators above `sourceKeyValidator`.
+    // Both optional and additive. Parallel copies do NOT carry either: they
+    // are review state of the source card, and carrying them would put the
+    // source card's stops on every parallel. See the validators beside
+    // `sourceKeyValidator`.
     //
     // Fields on which the sources still disagree after parsing. Written only on
-    // NEW rows (D4: a re-synced row keeps NB's data, NEO-203). While a
-    // disagreement has no `chosen`, the field holds nothing.
+    // NEW rows (D4: a re-synced row keeps NB's data, NEO-203). While an entry
+    // is present the field holds nothing; the operator's pick removes it.
     sourceDisagreements: v.optional(v.array(sourceDisagreementValidator)),
     // What each source numbered the card, for the "Numbers didn't match" note.
     // The commit used to accept this and drop it.
     sourceNumbers: v.optional(sourceNumbersValidator),
-    // Facts the tiles need that the row cannot derive; stored where they change.
-    // @deprecated NEO-656 — kept `v.optional` for PR1; removed after the armed clear.
-    tidyChecks: v.optional(v.array(tidyCheckValidator)),
-    // "Seen" for blue. Writing it does not bump `lastUpdated`.
-    // @deprecated NEO-656 — kept `v.optional` for PR1; removed after the armed clear.
-    tidyReviewed: v.optional(tidyReviewedValidator),
     // NEO-24: per-card override of marketplace-agnostic feature map. Inherits
     // merged ancestor `selectorOptions.features` at card-creation time
     // (`commitCardChecklist`). Subsequent edits via `setSelectorOptionFeature`
@@ -4360,6 +4295,25 @@ export default defineSchema({
     probeGrantedAt: v.optional(v.number()),
     updatedAt: v.number(),
   }).index("by_platform_scope", ["platform", "scope"]),
+
+  /**
+   * NEO-644 — the `bscTeamPool` work items a test user has on the lane, so an
+   * E2E spec can cancel its own (`testing.cancelMyBscTeamChecks`) and leave
+   * the one slot to the other shards. The workpool cannot list its items by
+   * argument, so the lane keeps the ids itself.
+   *
+   * Fake only: a row is written only for an item that carries `queuedBy`,
+   * which `queuedByForLane` sets only on the fake. Against real BSC nothing is
+   * ever written here. `bscTeamPool.enqueueItem` inserts the row; the item's
+   * completion (`onBscTeamCheckComplete`, cancelled included) deletes it.
+   * No card data: the Clerk subject and the pool's work id.
+   */
+  bscTeamLaneFakeItems: defineTable({
+    queuedBy: v.string(),
+    workId: v.string(),
+  })
+    .index("by_queuedBy", ["queuedBy"])
+    .index("by_workId", ["workId"]),
 
   /**
    * ── NEO-358: a collector's places to keep cards ───────────────────────────

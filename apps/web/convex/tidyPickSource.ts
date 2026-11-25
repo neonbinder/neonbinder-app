@@ -29,7 +29,7 @@
 import { ConvexError, getConvexSize } from "convex/values";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, isOpenDisagreement } from "./features/cardAttention";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
   nameFieldsOf,
   writeNameChange,
@@ -101,16 +101,14 @@ export function sameDisagreement(a: Entry, b: Entry): boolean {
 }
 
 /**
- * The card's open disagreement on `field`, or undefined. An entry that carries
- * the legacy `chosen` (stored before NEO-656, until the armed clear has run) is
- * settled and is read as absent (D16, `isOpenDisagreement`).
+ * The card's open disagreement on `field`, or undefined.
  */
 export function entryFor(
   card: Pick<Doc<"cardChecklist">, "sourceDisagreements">,
   field: PickField,
 ): { entry: Entry; index: number } | undefined {
   const list = card.sourceDisagreements ?? [];
-  const index = list.findIndex((e) => e.field === field && isOpenDisagreement(e));
+  const index = list.findIndex((e) => e.field === field);
   return index < 0 ? undefined : { entry: list[index], index };
 }
 

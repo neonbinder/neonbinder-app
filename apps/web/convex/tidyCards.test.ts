@@ -438,44 +438,4 @@ describe("getCardChecklist — the strict returns after NEO-656", () => {
     expect(rows[0].sourceDisagreements).toHaveLength(1);
     expect(rows[0].sourceNumbers).toEqual({ bsc: "OV-ANFI", checklist: "NNO" });
   });
-
-  test("stored review state from before NEO-656 never reaches the client: tidyChecks, tidyReviewed and a settled (chosen) entry", async () => {
-    const t = convexTest(schema, modules);
-    const base = await t.run(async (ctx) => {
-      const s = await seedBase(ctx);
-      await s.card("1", {
-        playerIds: [s.merrill],
-        teamOnCardIds: [s.padres],
-        sourceDisagreements: [
-          {
-            field: "players",
-            values: [
-              { value: ["Jackson Merril"], sources: ["bsc"] },
-              { value: ["Jackson Merrill"], sources: ["checklist"] },
-            ],
-            chosen: { value: ["Jackson Merrill"], by: "operator" },
-          },
-          {
-            field: "teams",
-            values: [
-              { value: ["Padres"], sources: ["bsc"] },
-              { value: ["Mets"], sources: ["checklist"] },
-            ],
-          },
-        ],
-        tidyChecks: [{ kind: "careerGap", playerId: s.merrill, teamId: s.padres }],
-        tidyReviewed: { at: NOW, keys: ["cut:abc"] },
-      });
-      return s.base;
-    });
-    const rows = await t
-      .withIdentity(ADMIN)
-      .query(api.selectorOptions.getCardChecklist, { selectorOptionId: base });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).not.toHaveProperty("tidyChecks");
-    expect(rows[0]).not.toHaveProperty("tidyReviewed");
-    // The settled players entry is left out; the open teams entry stays, with no `chosen`.
-    expect(rows[0].sourceDisagreements!.map((e) => e.field)).toEqual(["teams"]);
-    expect(rows[0].sourceDisagreements![0]).not.toHaveProperty("chosen");
-  });
 });
