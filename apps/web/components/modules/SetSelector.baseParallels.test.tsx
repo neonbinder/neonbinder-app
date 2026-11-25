@@ -157,8 +157,16 @@ vi.mock("../SetSelector/SetVariantSelector", () => ({
 
 /** One selectable row on the Variants column: a base-parallel under the Parallel type. */
 vi.mock("../SetSelector/VariantSelector", () => ({
-  default: ({ onVariantSelect }: { onVariantSelect: (id: string) => void }) => (
-    <button onClick={() => onVariantSelect("row-gold-wave")}>select-row</button>
+  default: ({
+    onVariantSelect,
+    sourceId,
+  }: {
+    onVariantSelect: (id: string) => void;
+    sourceId?: string;
+  }) => (
+    <button data-source-id={sourceId ?? ""} onClick={() => onVariantSelect("row-gold-wave")}>
+      select-row
+    </button>
   ),
 }));
 
@@ -458,19 +466,45 @@ describe("SetSelector — a finished run retires once the selection moves (NEO-4
     await waitFor(() => expect(mockConvex.action).toHaveBeenCalled());
   }
 
-  it("hides a finished run's ledger on the next pick, and keeps it hidden back on its row", async () => {
+  it("keeps a finished run's ledger while a row under its type is open, then hides it once the selection leaves the type", async () => {
     mockConvex.action.mockImplementation(() => Promise.reject(new Error("BSC is down")));
     await buildFromSection();
     // Finished on its own row: the ledger says so.
     await waitFor(() => expect(ledgers()).toHaveLength(1));
 
+    // The section stays open over one of the type's rows and hosts the ledger
+    // there: opening a row is not leaving the run's section.
     fireEvent.click(screen.getByText("select-row"));
     expect(checklistProps().variantId).toBe("row-gold-wave");
-    expect(ledgers()).toHaveLength(0);
+    expect(ledgers()).toHaveLength(1);
 
     selectType("vt-inserts");
+    expect(ledgers()).toHaveLength(0);
     selectType("vt-parallel");
     expect(sectionHeading()).toBeTruthy();
+    expect(ledgers()).toHaveLength(0);
+  });
+
+  it("a build pressed while a row is open keeps its ledger after it finishes", async () => {
+    mockConvex.action.mockImplementation(() => Promise.reject(new Error("BSC is down")));
+    render(<SetSelector />, { wrapper: DrilledToASet });
+    selectType("vt-parallel");
+    fireEvent.click(screen.getByText("select-row"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Build 1 parallel from Base/ }));
+    });
+    await waitFor(() => expect(mockConvex.action).toHaveBeenCalled());
+    await waitFor(() => expect(ledgers()).toHaveLength(1));
+    // Settled (not running) and still on screen.
+    await act(async () => {});
+    expect(ledgers()).toHaveLength(1);
+  });
+
+  it("moving to another Parallel-kind type is leaving the run's section, so the ledger retires", async () => {
+    mockConvex.action.mockImplementation(() => Promise.reject(new Error("BSC is down")));
+    await buildFromSection();
+    await waitFor(() => expect(ledgers()).toHaveLength(1));
+    selectType("vt-parallel-plural");
     expect(ledgers()).toHaveLength(0);
   });
 
@@ -525,6 +559,19 @@ describe("SetSelector — a set with no Base (NEO-673)", () => {
     selectType("vt-parallel");
     fireEvent.click(screen.getByText("select-row"));
     expect(checklistProps().parallelBuild).toEqual({ role: "insert" });
+  });
+
+  it("tags the chosen source's row, and only when a chosen parallel is the source", () => {
+    state.plan = { parallels: [PARALLEL_A], truncated: false, source: CHOSEN };
+    const { unmount } = render(<SetSelector />, { wrapper: DrilledToASet });
+    selectType("vt-parallel");
+    expect(screen.getByText("select-row").getAttribute("data-source-id")).toBe("row-gold-wave");
+    unmount();
+
+    state.plan = planWith([PARALLEL_A]);
+    render(<SetSelector />, { wrapper: DrilledToASet });
+    selectType("vt-parallel");
+    expect(screen.getByText("select-row").getAttribute("data-source-id")).toBe("");
   });
 
   it("any other parallel row stays a parallel built from the chosen source", () => {

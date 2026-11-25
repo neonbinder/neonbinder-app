@@ -1076,7 +1076,12 @@ export default function SetSelector() {
     hostedRun.phase !== "running" &&
     hostedRun.phase !== "stopping" &&
     hostedRun.phase !== "left" &&
-    deepestSelectedId !== hostedRun.startedFrom
+    deepestSelectedId !== hostedRun.startedFrom &&
+    // The base-parallels section stays on screen while one of its type's rows
+    // is open (`baseSectionShowsRun`), and it hosts the run's ledger there:
+    // a selection still inside the type is not "leaving the row it started
+    // from", so the finished ledger stays.
+    !(isParallelTypeSelected && selectedVariantTypeId === hostedRun.startedFrom)
   ) {
     setRetiredRun(hostedRun);
   }
@@ -1687,6 +1692,11 @@ export default function SetSelector() {
                     expanded={variantExpanded}
                     setExpanded={setVariantExpanded}
                     title={variantsColumnLabel}
+                    sourceId={
+                      isParallelTypeSelected && baseSource?.kind === "chosenParallel"
+                        ? baseSource.id
+                        : undefined
+                    }
                   />
                 }
                 renderForm={(onDone) => (

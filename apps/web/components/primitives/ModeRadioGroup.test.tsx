@@ -126,4 +126,14 @@ describe("ModeRadioGroup", () => {
     expect(group.getAttribute("aria-required")).toBeNull();
     expect(group.getAttribute("tabindex")).toBeNull();
   });
+
+  it("lays options out on equal columns, so a short last row is not stretched (NEO-673)", () => {
+    render(<Harness />);
+    const group = screen.getByRole("radiogroup", { name: "Theme" });
+    expect(group.className).toContain("grid");
+    expect(group.className).not.toContain("flex-wrap");
+    for (const name of ["Light", "Dark", "System"]) {
+      expect(radio(name).className).not.toMatch(/\bgrow\b/);
+    }
+  });
 });

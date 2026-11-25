@@ -1,6 +1,7 @@
+import { useCallback } from "react";
 import type { GenericId } from "convex/values";
 import { api } from "../../convex/_generated/api";
-import EntitySelector, { displayByValue } from "./EntitySelector";
+import EntitySelector, { displayByValue, type SelectorItem } from "./EntitySelector";
 
 type VariantSelectorProps = {
   variantTypeId: GenericId<"selectorOptions">;
@@ -9,6 +10,11 @@ type VariantSelectorProps = {
   expanded: boolean;
   setExpanded: (expanded: boolean) => void;
   title?: string;
+  /**
+   * NEO-673 — the parallel the others copy from (a set with no Base): its row
+   * is tagged "source".
+   */
+  sourceId?: GenericId<"selectorOptions">;
 };
 
 export default function VariantSelector({
@@ -18,7 +24,12 @@ export default function VariantSelector({
   expanded,
   setExpanded,
   title = "Variants",
+  sourceId,
 }: VariantSelectorProps) {
+  const getTag = useCallback(
+    (item: SelectorItem) => (sourceId && item._id === sourceId ? "source" : undefined),
+    [sourceId],
+  );
   return (
     <EntitySelector
       title={title}
@@ -34,6 +45,7 @@ export default function VariantSelector({
       // -900 fill in dark, a pale tint in light, the -700 edge in both.
       selectedColor="bg-pick-teal border-pick-teal-rule"
       isItemTerminal={() => true}
+      getTag={getTag}
     />
   );
 }

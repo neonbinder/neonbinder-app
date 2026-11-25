@@ -75,6 +75,12 @@ export function sectionHeading(sourceValue: string | undefined): string {
   return `Parallels of ${sourceValue ?? SOURCE_FALLBACK}`;
 }
 
+/**
+ * NEO-673 — the heading once the others copy from a parallel the operator
+ * picked: the set has no Base, so "of the base set" would be untrue.
+ */
+export const CHOSEN_SECTION_HEADING = "Parallels";
+
 /** "Build 12 parallels from Base"; no count until the list is in. */
 export function buildAllLabel(
   sourceValue: string | undefined,
@@ -98,6 +104,14 @@ export function copyFromLabel(sourceValue: string | undefined): string {
 }
 export function copyingFromText(sourceValue: string): string {
   return `Copying from ${sourceValue}`;
+}
+/** The standing pick, marked in the list Change reopens (checked: never). */
+export function currentOptionLabel(value: string): string {
+  return `${value} (current)`;
+}
+/** The newly picked parallel has nothing to build from the pick's side yet. */
+export function pickedEmptyText(value: string): string {
+  return `${value} has no cards yet.`;
 }
 export const CHANGE_SOURCE_LABEL = "Change";
 export const CHANGE_SOURCE_ARIA = "Change the parallel the others copy from";
@@ -382,7 +396,7 @@ export default function BaseParallelsBuildSection({
     const at = Math.min(source.position ?? 0, parallels.length);
     return [
       ...parallels.slice(0, at),
-      { _id: source.id, value: source.value },
+      { _id: source.id, value: source.value, hasCards: source.hasCards },
       ...parallels.slice(at),
     ];
   })();
@@ -390,6 +404,10 @@ export default function BaseParallelsBuildSection({
   // no choice.
   const picked = pickOptions.find((o) => o._id === choice);
   const pickedName = picked?.value;
+  // Changing to a parallel with no cards while the current pick has some: the
+  // others would have nothing to copy, so say so before the button.
+  const pickedEmpty =
+    changing && chosen && !!source?.hasCards && !!picked && !picked.hasCards;
   const statusText = savingChoice
     ? SAVING_TEXT
     : chosen && source && !pickerOpen
@@ -497,7 +515,7 @@ export default function BaseParallelsBuildSection({
             tabIndex={-1}
             className="rounded-sm text-sm font-semibold text-ink focus-outline"
           >
-            {sectionHeading(chosen ? undefined : sourceValue)}
+            {chosen ? CHOSEN_SECTION_HEADING : sectionHeading(sourceValue)}
           </h3>
           {/* Always mounted so the save is announced: "Saving…", then
               "Copying from X". The visible "Copying from X" line IS this
@@ -605,7 +623,13 @@ export default function BaseParallelsBuildSection({
               // source; once there is one, the group takes a generated id.
               labelId={source ? undefined : REASON_ID}
               value={picked?._id ?? ""}
-              options={pickOptions.map((o) => ({ value: o._id, label: o.value }))}
+              options={pickOptions.map((o) => ({
+                value: o._id,
+                label:
+                  chosen && source && o._id === source.id
+                    ? currentOptionLabel(o.value)
+                    : o.value,
+              }))}
               onChange={(next) => {
                 setPickError(null);
                 setChoice(next);
@@ -615,6 +639,11 @@ export default function BaseParallelsBuildSection({
             />
           ) : (
             <p className="text-xs text-ink-3">{LOADING_TEXT}</p>
+          )}
+          {pickedEmpty && picked && (
+            <p className="mt-3 text-xs text-notice-warn-ink break-words">
+              {pickedEmptyText(picked.value)}
+            </p>
           )}
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <NeonButton

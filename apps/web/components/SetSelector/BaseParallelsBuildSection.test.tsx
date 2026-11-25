@@ -53,6 +53,8 @@ import BaseParallelsBuildSection, {
   noSourceText,
   replaceConfirmCopy,
   sectionHeading,
+  currentOptionLabel,
+  pickedEmptyText,
   sourceEmptyText,
   summaryText,
   tallyParallels,
@@ -1016,16 +1018,80 @@ describe("BaseParallelsBuildSection — picking the parallel the others copy fro
     it("Change reopens the same list with nothing checked, and focuses its first radio", () => {
       renderSection(chosenPlan());
       fireEvent.click(change());
-      expect(radios().map((r) => r.textContent)).toEqual(["Silver", "Gold", "Ruby"]);
+      expect(radios().map((r) => r.textContent)).toEqual([
+        "Silver (current)",
+        "Gold",
+        "Ruby",
+      ]);
       expect(radios().map((r) => r.getAttribute("aria-checked"))).toEqual([
         "false",
         "false",
         "false",
       ]);
-      expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Silver" }));
+      expect(document.activeElement).toBe(
+        screen.getByRole("radio", { name: "Silver (current)" }),
+      );
       expect(screen.queryByRole("button", { name: /^Build / })).toBeNull();
       expect(copyFrom().textContent).toBe("Copy from…");
       expect(copyFrom().getAttribute("aria-disabled")).toBe("true");
+    });
+
+    it("Change marks the current pick as (current) in visible text, names it by the parallel first, and checks nothing", () => {
+      renderSection(chosenPlan());
+      fireEvent.click(change());
+      const current = screen.getByRole("radio", { name: /^Silver/ });
+      expect(current.textContent).toBe("Silver (current)");
+      expect(current.getAttribute("aria-checked")).toBe("false");
+      expect(screen.getByRole("radio", { name: "Gold" }).textContent).toBe("Gold");
+      expect(screen.queryByText("Silver")).toBeNull();
+      expect(currentOptionLabel("Silver")).toBe("Silver (current)");
+    });
+
+    it("the first pick marks nothing as current", () => {
+      renderSection(pickablePlan());
+      expect(radios().map((r) => r.textContent)).toEqual(["Silver", "Gold", "Ruby"]);
+    });
+
+    it("choosing an empty parallel over a source with cards says so above Copy, as plain text", () => {
+      renderSection(chosenPlan());
+      fireEvent.click(change());
+      expect(screen.queryByText(pickedEmptyText("Ruby"))).toBeNull();
+      fireEvent.click(screen.getByRole("radio", { name: "Ruby" }));
+      const line = screen.getByText("Ruby has no cards yet.");
+      expect(line.getAttribute("role")).toBeNull();
+      expect(line.compareDocumentPosition(copyFrom()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(line.textContent).not.toMatch(/\d/);
+      // Back to a parallel with cards: gone again.
+      fireEvent.click(screen.getByRole("radio", { name: "Gold" }));
+      expect(screen.queryByText("Ruby has no cards yet.")).toBeNull();
+    });
+
+    it("says nothing when the current source itself is picked, or when the source has no cards", () => {
+      renderSection(chosenPlan());
+      fireEvent.click(change());
+      fireEvent.click(screen.getByRole("radio", { name: /^Silver/ }));
+      expect(screen.queryByText(/has no cards yet\.$/)).toBeNull();
+    });
+
+    it("says nothing for an empty pick when the current source is empty too", () => {
+      const plan = chosenPlan();
+      renderSection({ ...plan, source: { ...plan.source!, hasCards: false } });
+      fireEvent.click(change());
+      fireEvent.click(screen.getByRole("radio", { name: "Ruby" }));
+      expect(screen.queryByText("Ruby has no cards yet.")).toBeNull();
+    });
+
+    it("the first pick never shows the empty-pick line", () => {
+      renderSection(pickablePlan());
+      fireEvent.click(screen.getByRole("radio", { name: "Ruby" }));
+      expect(screen.queryByText("Ruby has no cards yet.")).toBeNull();
+    });
+
+    it("the heading reads Parallels once a parallel is chosen, and while Change is open", () => {
+      renderSection(chosenPlan());
+      expect(screen.getByRole("heading", { level: 3, name: "Parallels" })).toBeTruthy();
+      fireEvent.click(change());
+      expect(screen.getByRole("heading", { level: 3, name: "Parallels" })).toBeTruthy();
     });
 
     it("Change slots the standing pick in at the server's position, not first", () => {
@@ -1035,7 +1101,7 @@ describe("BaseParallelsBuildSection — picking the parallel the others copy fro
         source: { ...plan.source!, position: 1 },
       });
       fireEvent.click(change());
-      expect(radios().map((r) => r.textContent)).toEqual(["Gold", "Silver", "Ruby"]);
+      expect(radios().map((r) => r.textContent)).toEqual(["Gold", "Silver (current)", "Ruby"]);
       // Focus is the first radio (the group's tab stop), whatever is standing.
       expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Gold" }));
     });
@@ -1047,7 +1113,7 @@ describe("BaseParallelsBuildSection — picking the parallel the others copy fro
         source: { ...plan.source!, position: 9 },
       });
       fireEvent.click(change());
-      expect(radios().map((r) => r.textContent)).toEqual(["Gold", "Ruby", "Silver"]);
+      expect(radios().map((r) => r.textContent)).toEqual(["Gold", "Ruby", "Silver (current)"]);
       unmount();
     });
 
@@ -1077,7 +1143,7 @@ describe("BaseParallelsBuildSection — picking the parallel the others copy fro
     it("Escape in the list restores it and returns focus to Change", () => {
       renderSection(chosenPlan());
       fireEvent.click(change());
-      fireEvent.keyDown(screen.getByRole("radio", { name: "Silver" }), { key: "Escape" });
+      fireEvent.keyDown(screen.getByRole("radio", { name: /^Silver/ }), { key: "Escape" });
       expect(screen.queryByRole("radiogroup")).toBeNull();
       expect(document.activeElement).toBe(change());
     });
