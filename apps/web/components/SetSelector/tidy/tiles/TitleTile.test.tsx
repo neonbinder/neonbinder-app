@@ -3,7 +3,7 @@
  * Regenerate, the inline set-name panel with its live preview, the variation
  * trim, and the purple notes.
  */
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../../convex/_generated/api", () => ({
@@ -78,6 +78,12 @@ beforeEach(() => {
   previewResult = { title: SHORT, coreFits: true, dropped: [], inputs };
 });
 
+/** The pills of the "Left out to fit" list, in order. */
+const leftOutPills = () =>
+  within(screen.getByRole("list", { name: "Left out to fit" }))
+    .getAllByRole("listitem")
+    .map((li) => li.textContent);
+
 const titleField = () => screen.getByLabelText("Card title for #USC118") as HTMLTextAreaElement;
 
 describe("TitleTile Left out to fit: a name still waiting is not left out", () => {
@@ -87,13 +93,14 @@ describe("TitleTile Left out to fit: a name still waiting is not left out", () =
   it("lists the name a card prints that is not answered yet as nothing left out to fit", () => {
     previewResult = { title: stored, coreFits: true, dropped: [], inputs: waitingInputs };
     renderTile(cardOf("c1", { listingTitle: stored, pendingPlayerNames: ["Dave Stewart"] }));
+    expect(screen.queryByRole("list", { name: "Left out to fit" })).toBeNull();
     expect(screen.queryByText(/Left out to fit/)).toBeNull();
   });
 
   it("still lists a name that was answered and did not fit", () => {
     previewResult = { title: stored, coreFits: true, dropped: [], inputs: waitingInputs };
     renderTile(cardOf("c1", { listingTitle: stored }));
-    expect(screen.getByText("Left out to fit: Dave Stewart")).toBeTruthy();
+    expect(leftOutPills()).toEqual(["Dave Stewart"]);
   });
 
   it("lists only the answered name when another is waiting", () => {
@@ -104,7 +111,7 @@ describe("TitleTile Left out to fit: a name still waiting is not left out", () =
       inputs: { ...waitingInputs, playerNames: ["Dave Stewart", "Rickey Henderson"] },
     };
     renderTile(cardOf("c1", { listingTitle: stored, pendingPlayerNames: ["Dave Stewart"] }));
-    expect(screen.getByText("Left out to fit: Rickey Henderson")).toBeTruthy();
+    expect(leftOutPills()).toEqual(["Rickey Henderson"]);
   });
 });
 
@@ -165,7 +172,9 @@ describe("TitleTile: a title that fits because the set name was shortened (Jason
       { level: "check", items: [{ level: "check", kind: "titleCut", key: "cut:1" }] } as unknown as TidyAttention,
     );
     expect(screen.queryByText(NOTE)).toBeNull();
-    expect(screen.getByText("Auto title was cut short. Rewrite it.")).toBeTruthy();
+    // NEO-665: nothing to name, so nothing shows (no generic "rewrite it" line).
+    expect(screen.queryByText(/Auto title was cut short/)).toBeNull();
+    expect(screen.queryByRole("list", { name: "Left out to fit" })).toBeNull();
   });
 
   it("says nothing when a Tidy Up cut is out, or the stored title is not the generated one", () => {
@@ -554,27 +563,34 @@ describe("TitleTile purple notes", () => {
 describe("TitleTile words and wrapping (NEO-645 audit)", () => {
   const cut = { level: "check", items: [{ level: "check", kind: "titleCut", key: "cut:1" }] } as unknown as TidyAttention;
 
-  it("says 'Auto title was cut short. Rewrite it.' with a full stop, never a dash, when nothing is named as left out", () => {
+  it("says nothing when the title was cut and nothing can be named (NEO-665)", () => {
     renderTile(cardOf("c1"), cut);
-    expect(screen.getByText("Auto title was cut short. Rewrite it.")).toBeTruthy();
-    expect(screen.queryByText(/—/)).toBeNull();
+    expect(screen.queryByText(/Auto title was cut short/)).toBeNull();
+    expect(screen.queryByText(/Rewrite it/)).toBeNull();
+    expect(screen.queryByRole("list", { name: "Left out to fit" })).toBeNull();
     expect(screen.queryByRole("note")).toBeNull();
   });
 
-  it("'Left out to fit' is the purple note whether or not the title was cut", () => {
-    previewResult = { title: SHORT, coreFits: true, dropped: [], inputs: { ...inputs, teamNames: ["Seattle Mariners"] } };
+  it("'Left out to fit' is one purple pill per thing, whether or not the title was cut (NEO-665)", () => {
+    previewResult = {
+      title: SHORT,
+      coreFits: true,
+      dropped: [],
+      inputs: { ...inputs, teamNames: ["Seattle Mariners"], cardVariation: "Image Variation" },
+    };
     const { unmount } = renderTile(cardOf("c1"), cut);
-    const cutNote = screen.getByRole("note");
-    expect(cutNote.textContent).toBe("Left out to fit: Seattle Mariners");
-    expect(cutNote.className).toContain("text-neon-purple-text");
-    // With the note naming what went, the generic sentence is not said too.
+    const cutList = screen.getByRole("list", { name: "Left out to fit" });
+    expect(leftOutPills()).toEqual(["Seattle Mariners", "Image Variation"]);
+    for (const pill of within(cutList).getAllByRole("listitem")) {
+      expect(pill.className).toContain("text-neon-purple-text");
+      expect(pill.className).toContain("wrap-anywhere");
+    }
+    // With the pills naming what went, the generic sentence is not said too.
     expect(screen.queryByText(/Auto title was cut short/)).toBeNull();
     unmount();
 
     renderTile(cardOf("c2"));
-    const plainNote = screen.getByRole("note");
-    expect(plainNote.textContent).toBe("Left out to fit: Seattle Mariners");
-    expect(plainNote.className).toBe(cutNote.className);
+    expect(leftOutPills()).toEqual(["Seattle Mariners", "Image Variation"]);
   });
 
   it("the long 'Shorten the set name for every card' button wraps inside itself", () => {

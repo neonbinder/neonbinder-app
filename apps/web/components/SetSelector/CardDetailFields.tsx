@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
 import { oneLine } from "./card-titles";
-import { AUTO_TITLE_CUT_TEXT } from "./title-copy";
+import LeftOutPills from "./LeftOutPills";
 import { NotesLengthMeter } from "./NotesLengthMeter";
 import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
@@ -23,7 +23,6 @@ import { useReactiveField } from "../forms/useReactiveField";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
-  TitleFieldNote,
   OVER_FIELD_CLASS,
   overFieldProps,
   TitleLengthAlert,
@@ -1336,19 +1335,9 @@ export function CardDetailFields({
               Regenerate again to replace the title you have typed.
             </p>
           )}
-          {/* NEO-535: never beside the over-cap alert, where a long title
-              is not "cut short"; nor beside "Left out to fit", which says
-              exactly what was cut. */}
-          {card.listingTitleTruncated && !titleState.over && titleLeftOut.length === 0 && (
-            <TitleFieldNote>{AUTO_TITLE_CUT_TEXT}</TitleFieldNote>
-          )}
           {/* NEO-535: read from the text in the field now, so retyping a
-              cut word takes it off the note. */}
-          {titleLeftOut.length > 0 && (
-            <TitleFieldNote>
-              Left out to fit: {titleLeftOut.join(", ")}
-            </TitleFieldNote>
-          )}
+              cut word takes it off the list. NEO-665: one purple pill each. */}
+          <LeftOutPills items={titleLeftOut} className="mt-1" />
           {preview.chips.length > 0 && (
             // What the title was built from. Plain text, never links: a card's
             // variation text is operator- and marketplace-sourced content, so

@@ -9,7 +9,8 @@ import { Input } from "../../../primitives/Input";
 import { Textarea } from "../../../primitives/Textarea";
 import NeonButton from "../../../modules/NeonButton";
 import { oneLine } from "../../card-titles";
-import { AUTO_TITLE_CUT_TEXT, SET_NAME_SHORTENED_TEXT } from "../../title-copy";
+import { SET_NAME_SHORTENED_TEXT } from "../../title-copy";
+import LeftOutPills from "../../LeftOutPills";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
@@ -342,9 +343,6 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
         {preview.confirming ? "Regenerate again to replace the title you have typed." : ""}
       </p>
 
-      {cut && !state.over && leftOut.length === 0 && (
-        <p className="text-sm text-ink-2">{AUTO_TITLE_CUT_TEXT}</p>
-      )}
       {/* The stored title is the generated one and fits only because the set name
           was shortened, with nothing else out: a purple note, never a stop. */}
       {!editing &&
@@ -356,10 +354,8 @@ function TitleTileBody({ row, attention, leafId, leafCards, setName }: TidyTileP
         stored !== "" &&
         stored === previewData.title &&
         titleFitsOnShortName(previewData) && <TidyNote>{SET_NAME_SHORTENED_TEXT}</TidyNote>}
-      {/* One form, cut or not: the purple note. */}
-      {!state.over && leftOut.length > 0 && (
-        <TidyNote>Left out to fit: {leftOut.join(", ")}</TidyNote>
-      )}
+      {/* One form, cut or not: a purple pill for each thing left out. */}
+      {!state.over && <LeftOutPills items={leftOut} />}
       {mismatched && <TidyNote>Numbers didn't match: {mismatched}</TidyNote>}
 
       <div className="flex flex-wrap items-center gap-2">

@@ -42,6 +42,13 @@ const CONTEXT: TitleContext = {
 const SHORT: TitleContext = { ...CONTEXT, setNameValue: "Chrome" };
 const OVER: TitleContext = { ...CONTEXT, setNameValue: OVER_SET };
 
+/** Every "Left out to fit" list on the step, in page order, as its pills (NEO-665: one per thing). */
+function leftOutLists(): string[][] {
+  return screen
+    .queryAllByRole("list", { name: "Left out to fit" })
+    .map((list) => within(list).getAllByRole("listitem").map((li) => li.textContent ?? ""));
+}
+
 function card(n: string, extra: Partial<PreviewCardForTitles> = {}): PreviewCardForTitles {
   return { cardNumber: n, cardName: `Card ${n}`, players: ["Shohei Ohtani"], ...extra };
 }
@@ -116,23 +123,21 @@ describe("CardTitlesStep — what is on screen", () => {
       ],
     });
     // NEO-609: a variation is never cut, so the shared drop is a RELIC.
-    const shared = screen.getByText(/^Left out to fit: RELIC/);
+    expect(leftOutLists()).toEqual([["RELIC"], ["Shohei"], ["#2", "Julio"]]);
+    const shared = screen.getAllByRole("list", { name: "Left out to fit" })[0].parentElement!;
     expect(shared.textContent).toContain("(2 cards)");
     expect(shared.textContent).not.toMatch(/Shohei|Julio/);
-    expect(screen.getByText("Left out to fit: Shohei")).toBeTruthy();
-    expect(screen.getByText("Left out to fit: #2, Julio")).toBeTruthy();
   });
 
   test("NEO-535: retyping a cut word takes it off the note", () => {
     setup({ cards: [card("1")] });
-    expect(screen.getByText("Left out to fit: Shohei")).toBeTruthy();
+    expect(leftOutLists()).toEqual([["Shohei"]]);
     fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), {
       target: { value: `2026 Topps Chrome Shohei Ohtani #1` },
     });
-    expect(screen.queryByText(/Left out to fit:.*Shohei/)).toBeNull();
-    // What the operator's own words now leave out is what the note says.
-    expect(screen.getByText(/^Left out to fit: Update Series Sapphire Edition Platinum Anniversary$/))
-      .toBeTruthy();
+    expect(leftOutLists().flat()).not.toContain("Shohei");
+    // What the operator's own words now leave out is what the pills say.
+    expect(leftOutLists()).toEqual([["Update Series Sapphire Edition Platinum Anniversary"]]);
   });
 
   test("NEO-535: a title the builder could not fit arrives over the cap, said once, never cut", () => {
@@ -268,10 +273,12 @@ describe("CardTitlesStep — recomputed from the team answers", () => {
 
     rerenderWith({ teamAnswers: [{ teamIds: [teamId] }, { teamIds: [teamId] }] });
     // Both fields lack the team now: it is the line they share.
-    expect(screen.getByText(/^Left out to fit: Los Angeles Dodgers/).textContent).toContain(
-      "(2 cards)",
-    );
-    expect(screen.getByText("Left out to fit: Shohei")).toBeTruthy();
+    const lists = leftOutLists();
+    expect(lists[0]).toContain("Los Angeles Dodgers");
+    expect(
+      screen.getAllByRole("list", { name: "Left out to fit" })[0].parentElement?.textContent,
+    ).toContain("(2 cards)");
+    expect(lists.slice(1)).toContainEqual(["Shohei"]);
     expect(
       (screen.getByRole("textbox", { name: "Title for #2 Card 2" }) as HTMLInputElement).value,
     ).toBe("Mine #2");
@@ -362,7 +369,7 @@ describe("CardTitlesStep — accessibility wiring", () => {
     const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
     const ids = (field.getAttribute("aria-describedby") ?? "").split(" ");
     const texts = ids.map((id) => document.getElementById(id)?.textContent);
-    expect(texts).toContain("Left out to fit: Shohei");
+    expect(texts).toContain("Left out to fitShohei");
     expect(texts.some((t) => /\/80/.test(t ?? ""))).toBe(true);
     // The over-cap status joins only once the title is over.
     fireEvent.change(field, { target: { value: "t".repeat(84) } });
@@ -381,7 +388,7 @@ describe("CardTitlesStep — accessibility wiring", () => {
     });
     const group = screen.getByRole("group");
     const line = document.getElementById(group.getAttribute("aria-describedby")!);
-    expect(line?.textContent).toMatch(/^Left out to fit: RELIC/);
+    expect(line?.textContent).toMatch(/^Left out to fitRELIC/);
     expect(group.tagName).toBe("DIV");
     expect(group.parentElement?.tagName).toBe("LI");
     expect(within(group).getAllByRole("textbox")).toHaveLength(2);

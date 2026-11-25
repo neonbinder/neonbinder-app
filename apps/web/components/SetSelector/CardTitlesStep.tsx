@@ -6,6 +6,7 @@ import {
   type TitleContext,
 } from "../../convex/features/listingInputs";
 import { MAX_LISTING_SHORT_NAME_LENGTH } from "../../convex/listingShortName";
+import LeftOutPills from "./LeftOutPills";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
@@ -81,7 +82,7 @@ import type { TeamAnswer } from "./teams-on-cards";
  * own description (`setNameInTitlesPrefill`), capped at 80. It is sent only
  * when edited. Every listed title is regenerated with the edited text as it
  * is typed; the builder decides which cards it rewrites (NEO-637: exactly
- * the ones whose title shows the yellow "Left out to fit" line), and the
+ * the ones whose title shows the purple "Left out to fit" pills), and the
  * list itself never changes under the operator's typing. The same goes for
  * a title the operator edited by hand: when its row shows the line, the old
  * set-name text inside the edit is swapped for the new and the rest of the
@@ -406,7 +407,7 @@ export default function CardTitlesStep({
    * NEO-637 — the box's text changes (typing, or Escape taking it back). The
    * set name in effect is the checked box text, else the prefill. Titles with
    * no hand edit follow it through the builder's own rule; a hand-edited
-   * title whose row shows the yellow "Left out to fit" line has its old
+   * title whose row shows the purple "Left out to fit" pills has its old
    * set-name text swapped for the new (or is rebuilt when the old text is
    * not in it), and one whose row does not is left as typed
    * (`retitleDraftsForSetName`, read from the lists as they stand now).
@@ -817,15 +818,18 @@ function TitleGroups({
                     Absent for a one-card group, and when the cards share
                     nothing: each row states its own. */}
                 {hasLine && (
-                  <p id={lineId} className="mb-1.5 break-words text-xs text-notice-warn-ink">
-                    Left out to fit: {group.leftOut.join(", ")}
-                    {group.cards.length > 1 && (
-                      <span className="text-ink-3">
-                        {" "}
-                        (<span className="tabular-nums">{group.cards.length}</span> cards)
-                      </span>
-                    )}
-                  </p>
+                  <LeftOutPills
+                    id={lineId}
+                    items={group.leftOut}
+                    className="mb-1.5"
+                    trailing={
+                      group.cards.length > 1 ? (
+                        <span className="text-ink-3">
+                          (<span className="tabular-nums">{group.cards.length}</span> cards)
+                        </span>
+                      ) : undefined
+                    }
+                  />
                 )}
                 <ul className="space-y-2">
                   {group.cards.slice(0, shown[groupIndex]).map((card) => (
@@ -912,14 +916,10 @@ function TitleRow({
           readOnly={disabled}
           className={`${FIELD_CLASS} ${OVER_FIELD_CLASS}`}
         />
-        {card.leftOut.length > 0 && (
-          // What this card's field lacks beyond its group's line — most often
-          // its own names and number, the loss an operator most wants to put
-          // back, so it sits right under the field.
-          <p id={ownLineId} className="mt-0.5 break-words text-xs text-notice-warn-ink">
-            Left out to fit: {card.leftOut.join(", ")}
-          </p>
-        )}
+        {/* What this card's field lacks beyond its group's line — most often
+            its own names and number, the loss an operator most wants to put
+            back, so it sits right under the field. */}
+        <LeftOutPills id={ownLineId} items={card.leftOut} className="mt-0.5" />
         <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 text-xs">
           {edited ? (
             <NeonButton

@@ -1418,10 +1418,62 @@ describe("NEO-535 leftOutOfTitle: a team the title already names is not left out
     );
   });
 
-  test("a plural or case difference still counts", () => {
+  test("a case or edge-punctuation difference still counts", () => {
+    expect(
+      leftOutOfTitle(card(["Los Angeles Dodgers"]), "2024 Topps DODGERS, Shohei Ohtani #17"),
+    ).not.toContain("Los Angeles Dodgers");
+  });
+
+  // NEO-665 — no plural fold: a parallel's "Red" is not the Reds.
+  test("a singular word does not say the plural nickname", () => {
     expect(
       leftOutOfTitle(card(["Los Angeles Dodgers"]), "2024 Topps DODGER Stadium Shohei Ohtani #17"),
-    ).not.toContain("Los Angeles Dodgers");
+    ).toContain("Los Angeles Dodgers");
+  });
+
+  test("Prismatic Red does not say the Cincinnati Reds", () => {
+    const inputs: ListingCardInputs = {
+      cardNumber: "DD-11",
+      playerNames: ["George Foster", "Tony Perez"],
+      year: "2026",
+      manufacturer: "Pro Set",
+      setName: "Metal",
+      teamNames: ["Cincinnati Reds"],
+      sport: "Baseball",
+    };
+    expect(
+      leftOutOfTitle(
+        inputs,
+        "2026 Pro Set Metal Dugout Duos Prismatic Red George Foster & Tony Perez #DD-11",
+      ),
+    ).toContain("Cincinnati Reds");
+    expect(
+      leftOutOfTitle(
+        inputs,
+        "2026 Pro Set Metal Dugout Duos Prismatic Red George Foster & Tony Perez #DD-11 Reds",
+      ),
+    ).not.toContain("Cincinnati Reds");
+    expect(
+      leftOutOfTitle(
+        inputs,
+        "2026 Pro Set Metal Dugout Duos Prismatic Red George Foster & Tony Perez #DD-11 Cincinnati Reds",
+      ),
+    ).not.toContain("Cincinnati Reds");
+  });
+
+  test("a split team's nickname is still said by its exact words ('Red Sox')", () => {
+    const inputs: ListingCardInputs = {
+      ...card(["Boston Red Sox"]),
+      teamSplits: [{ location: "Boston", name: "Red Sox" }],
+    };
+    expect(leftOutOfTitle(inputs, "2024 Topps Red Sox Shohei Ohtani #17")).not.toContain(
+      "Boston Red Sox",
+    );
+    expect(leftOutOfTitle(inputs, "2024 Topps Red Shohei Ohtani #17")).toContain("Boston Red Sox");
+    // No split on the row: the last word, "Sox", is the nickname.
+    expect(
+      leftOutOfTitle(card(["Boston Red Sox"]), "2024 Topps Sox Shohei Ohtani #17"),
+    ).not.toContain("Boston Red Sox");
   });
 
   test("a team the title does not name is still listed", () => {
