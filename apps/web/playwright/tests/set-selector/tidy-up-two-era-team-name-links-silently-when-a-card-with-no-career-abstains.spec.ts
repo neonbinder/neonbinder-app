@@ -120,7 +120,7 @@ test(
     const facts = await usePastedChecklist(page, `number,player,team\n1,${VOTER},${CURRENT}\n2,${SILENT},${CURRENT}\n`, 2);
     expect(facts.rows).toBe(2);
     await syncChecklistButton(page).click();
-    const opened = await settleWalkAfterCommit(page, page.getByText(/^Saved 2 cards\./).first());
+    const opened = await settleWalkAfterCommit(page, page.getByText(/^Saved 2 cards\./).first(), { opens: true });
     expect(opened, `${SILENT}'s empty career is the commit's one live gap: it opens the walk`).toBe(true);
     const walk = tidyWalk(page);
     await expect(walk).toHaveAccessibleName(tidyUpName({ year: YEAR, set: SET }));

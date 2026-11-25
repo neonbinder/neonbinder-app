@@ -242,21 +242,43 @@ export function needsYouPill(page: Page): Locator {
 
 /**
  * After a commit's "Saved N cards." line is on screen, settle whether the walk
- * opened. The line, the pill and the walk's trigger are one render's work (the
- * commit sets the line and arms the walk together; the pill counts the same
- * live rows the walk opens on), so the pill read with the line is the settled
- * answer. Returns whether the walk is open.
+ * opened. Returns whether the walk is open.
+ *
+ * The line and the walk are NOT one render's work (NEO-656). The commit sets
+ * the line and arms the walk together, but the walk opens only once the
+ * checklist's live career-gap query (`useLeafCareerGaps`, its own
+ * subscription) has answered for the saved cards, tens to hundreds of ms
+ * after the line. Until then a card whose only item is a career gap shows no
+ * pill either. Nothing on the checklist says that query has answered, so a
+ * shut walk is never a settled answer, only an absence at the time of the read.
+ *
+ * - `opens: true` (the caller's cards need a person; prefer it whenever the
+ *   spec knows): waits for the walk web-first (`expectTidyWalkOpen`), so a
+ *   walk opened by career gaps alone is caught when it opens.
+ * - `opens: false`: asserts no pill and no walk at the time of the read. That
+ *   is a negative with no settled signal behind it; pair it with the cards'
+ *   own positives (R2).
+ * - omitted (a spec where either shape is legitimate): a pill or an open walk
+ *   at the read means the walk opens (the pill counts the same live rows the
+ *   walk opens on), and the walk is then awaited; neither means false, which
+ *   is only as good as the read (a career-gap-only walk can still open after).
  *
  * Contract: ENTRY `saved` is visible (the caller asserted it). EXIT either the
- * walk is open and settled, or no card needs a person and the walk is hidden.
+ * walk is open and settled, or the pill and the walk were absent at the read.
  */
-export async function settleWalkAfterCommit(page: Page, saved: Locator): Promise<boolean> {
+export async function settleWalkAfterCommit(
+  page: Page,
+  saved: Locator,
+  { opens }: { opens?: boolean } = {},
+): Promise<boolean> {
   await expect(saved).toBeVisible();
-  if (await needsYouPill(page).isVisible()) {
+  const walk = tidyWalk(page);
+  if (opens === true || (opens === undefined && (await needsYouPill(page).or(walk).first().isVisible()))) {
     await expectTidyWalkOpen(page);
     return true;
   }
-  await expect(tidyWalk(page), "no card needs a person, so the walk stays shut").toBeHidden();
+  await expect(needsYouPill(page), "no card needs a person, so no pill").toBeHidden();
+  await expect(walk, "no card needs a person, so the walk stays shut").toBeHidden();
   return false;
 }
 

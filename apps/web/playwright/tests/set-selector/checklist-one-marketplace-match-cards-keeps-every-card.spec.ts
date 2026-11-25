@@ -372,7 +372,7 @@ test(
     expect(await settleWalkAfterCommit(page, saved), "the saved cards need a person, so the walk opened").toBe(true);
 
     // ── STEP 5b: the count is FINAL at "Saved" (NEO-335) ──
-    // The pill is read with the saved line (one render's work), and the walk opened on exactly the
+    // The pill is read once the walk has opened, and the walk opened on exactly the
     // cards it counts: a count still climbing behind a background lookup would differ, by number.
     const pill = needsYouPill(page);
     await expect(pill).toBeVisible();
