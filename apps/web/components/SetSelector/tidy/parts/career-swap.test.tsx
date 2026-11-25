@@ -13,15 +13,37 @@ const stint = (teamId: string, teamName: string, fromYear?: number, toYear?: num
 });
 
 describe("careerSwapOptions", () => {
-  it("offers every team whose stint covers the set's year, in career order", () => {
+  it("offers every team whose stint covers the set's year, newest first", () => {
     const options = careerSwapOptions({
       stints: [stint("t-bos", "Boston Red Sox", 2025), stint("t-pit", "Pittsburgh Pirates", 2026)],
       setYear: 2026,
     });
     expect(options).toEqual([
-      { teamId: "t-bos", teamName: "Boston Red Sox", years: "2025–present" },
-      { teamId: "t-pit", teamName: "Pittsburgh Pirates", years: "2026–present" },
+      { teamId: "t-pit", teamName: "Pittsburgh Pirates", years: "2026–" },
+      { teamId: "t-bos", teamName: "Boston Red Sox", years: "2025–" },
     ]);
+  });
+
+  it("keeps career order between teams whose latest covering stints start the same year", () => {
+    expect(
+      careerSwapOptions({
+        stints: [stint("t-bos", "Boston Red Sox", 2025), stint("t-pit", "Pittsburgh Pirates", 2025)],
+        setYear: 2026,
+      }).map((o) => o.teamId),
+    ).toEqual(["t-bos", "t-pit"]);
+  });
+
+  it("orders a team by its latest covering stint, not its first", () => {
+    expect(
+      careerSwapOptions({
+        stints: [
+          stint("t-bos", "Boston Red Sox", 2024, 2024),
+          stint("t-pit", "Pittsburgh Pirates", 2025),
+          stint("t-bos", "Boston Red Sox", 2026),
+        ],
+        setYear: 2026,
+      }).map((o) => o.teamId),
+    ).toEqual(["t-bos", "t-pit"]);
   });
 
   it("does not offer a stint that starts after the set's year", () => {
@@ -54,18 +76,18 @@ describe("careerSwapOptions", () => {
         stints: [stint("t-bos", "Boston Red Sox", 2025), stint("t-pit", "Pittsburgh Pirates", 2026)],
         setYear: 2026,
       }).map((o) => o.teamId),
-    ).toEqual(["t-bos", "t-pit"]);
+    ).toEqual(["t-pit", "t-bos"]);
   });
 
-  it("offers a team with several covering stints once, with their years merged", () => {
+  it("offers a team with several covering stints once, each stint's years written as the Career tile writes them", () => {
     const options = careerSwapOptions({
       stints: [stint("t-bos", "Boston Red Sox", 2024, 2025), stint("t-bos", "Boston Red Sox", 2026)],
       setYear: 2026,
     });
-    expect(options).toEqual([{ teamId: "t-bos", teamName: "Boston Red Sox", years: "2024–present" }]);
+    expect(options).toEqual([{ teamId: "t-bos", teamName: "Boston Red Sox", years: "2024–2025, 2026–" }]);
   });
 
-  it("merges only the covering stints into the years, not the team's other stints", () => {
+  it("lists only the covering stints' years, not the team's other stints", () => {
     const options = careerSwapOptions({
       stints: [stint("t-bos", "Boston Red Sox", 2010, 2012), stint("t-bos", "Boston Red Sox", 2025, 2026)],
       setYear: 2026,

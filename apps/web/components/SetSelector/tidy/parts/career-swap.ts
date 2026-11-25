@@ -1,5 +1,5 @@
 import { stintCoversWindow } from "../../../../convex/lib/teamFill";
-import { stintYearsText } from "./copy";
+import { stintYears } from "./copy";
 
 /** One pill under a gap team on the Team tile: a career team the set's year covers. */
 export type CareerSwapOption = { teamId: string; teamName: string; years: string };
@@ -11,10 +11,12 @@ export type CareerSwapOption = { teamId: string; teamName: string; years: string
  * "Covers" is production's window, `stintCoversWindow` (`convex/lib/teamFill`):
  * the set year and the one before it, the same window team-fill reads
  * (`careerTeamVerdict`). An undated stint covers nothing, and a team with
- * several covering stints is one option whose years are those stints merged
- * (`stintYearsText`), in career order. A team already on the card is offered like
- * any other; the swap leaves it once. With no set year there is nothing to
- * cover, so none.
+ * several covering stints is one option whose years are those stints, each
+ * written as the Career tile's chips write it (`stintYears`: "2024–", "2023–2025"),
+ * in career order. Options are newest first: the latest covering `fromYear`
+ * leads, ties keep career order. A team already on the card is offered like any
+ * other; the swap leaves it once. With no set year there is nothing to cover, so
+ * none.
  */
 export function careerSwapOptions({
   stints,
@@ -33,9 +35,12 @@ export function careerSwapOptions({
     if (entry) entry.covering.push(dated);
     else byTeam.set(s.teamId, { teamName: s.teamName, covering: [dated] });
   }
-  return [...byTeam].map(([teamId, { teamName, covering }]) => ({
-    teamId,
-    teamName,
-    years: stintYearsText(covering),
-  }));
+  const newest = (covering: Array<{ fromYear: number }>) => Math.max(...covering.map((c) => c.fromYear));
+  return [...byTeam]
+    .sort(([, a], [, b]) => newest(b.covering) - newest(a.covering))
+    .map(([teamId, { teamName, covering }]) => ({
+      teamId,
+      teamName,
+      years: covering.map((c) => stintYears(c)).join(", "),
+    }));
 }

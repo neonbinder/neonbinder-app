@@ -6,6 +6,7 @@ import { MAX_CARD_TEAMS } from "../../../../convex/features/cardAttention";
 import { normalizeEntityName } from "@/lib/entities/normalize-name";
 import { hasTeamLine, isTeamlessOnLine, teamLineKey } from "../../../../convex/lib/teamLine";
 import NeonButton from "../../../modules/NeonButton";
+import { useFieldToast } from "../../CardDetailFields";
 import EntityLinkSearch from "../../EntityLinkSearch";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
@@ -81,6 +82,8 @@ export default function TeamTile({
   const write = useTidyWrite();
   const answered = useAnswered();
   const memory = useWalkMemory();
+  // The visible half of a swap's confirmation (the walk's live region is the spoken half).
+  const swapped = useFieldToast();
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const applyTeamToPlayerCards = useMutation(api.tidyCards.applyTeamToPlayerCards);
   const [searchFor, setSearchFor] = useState<
@@ -164,13 +167,16 @@ export default function TeamTile({
     write.run(async () => {
       await updateCard({ id: row._id, teamOnCardIds: next, regenerateListing: true });
       setSearchFor(null);
+      if (announcement) swapped.announce(announcement);
       answered(announcement);
     }, "Couldn't save that team. Try again.");
 
   /**
    * Replace one of the card's teams with another (Change, and a career swap).
    * The swap pill's group is gone once the card's teams update, so the walk is
-   * told in words ("Swapped Padres for Pirates.") for a screen reader.
+   * told in words ("Swapped Padres for Pirates.") for a screen reader, and the
+   * tile shows the same sentence for a few seconds (`useFieldToast`, the pattern
+   * "More about this card" uses).
    */
   const swapTeam = (from: Id<"teams">, to: Id<"teams">, announcement?: string) =>
     saveTeams([...new Set(teamsOnCard.map((t) => (t === from ? to : t)))], announcement);
@@ -253,9 +259,11 @@ export default function TeamTile({
               {team.name}
             </EditLine>
             {swaps.length > 0 && (
-              <div className="grid gap-1">
-                <p id={swapLabelId} className="text-xs text-ink-2">
-                  Swap for
+              // Its own inset with a rule down the side, so on a two-team card the
+              // pills belong to the team above and never head the next team's row.
+              <div className="mb-1 ml-1 grid gap-1 border-l-2 border-neon-blue-text/40 pl-2.5">
+                <p id={swapLabelId} className="text-xs text-ink-2 wrap-anywhere">
+                  Swap {team.name} for
                 </p>
                 <ul role="list" className="flex flex-wrap gap-1.5" aria-labelledby={swapLabelId}>
                   {swaps.map((option) => (
@@ -263,6 +271,7 @@ export default function TeamTile({
                       <TeamChip
                         label={option.teamName}
                         on={false}
+                        variant="action"
                         suffix={option.years}
                         accessibleName={`Swap ${team.name} for ${option.teamName} · ${option.years}`}
                         busy={write.busy}
@@ -282,6 +291,11 @@ export default function TeamTile({
           </div>
         );
       })}
+
+      {/* Seen, not heard: the walk's live region already says it (aria-hidden, so it is not read twice). */}
+      <p aria-hidden="true" className="text-xs text-neon-green-text empty:hidden">
+        {swapped.toast}
+      </p>
 
       {linkedHere.map((a) => (
         <NameApplyToAll

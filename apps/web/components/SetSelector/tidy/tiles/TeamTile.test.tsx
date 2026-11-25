@@ -782,6 +782,25 @@ describe("TeamTile", () => {
         none();
       });
 
+      it("both chip lists (the listing's and the career's) carry role=\"list\" and are named by their heading (NEO-672)", () => {
+        // Safari drops list semantics from an unstyled <ul>; the explicit role keeps them.
+        evidence(1940, { answer: career(T("t-b", "Boston Red Sox")), candidates: [T("t-b", "Boston Red Sox")], stints: foxx });
+        queryResults["teams.erasByNameAndSport"] = [
+          { _id: "t-a", name: "Philadelphia Athletics", label: "Philadelphia Athletics" },
+        ];
+        renderTile({ row: row({ bscTeamName: "Philadelphia Athletics" }), ctx: ctx(), items });
+        const lists = Array.from(document.querySelectorAll("ul"));
+        expect(lists).toHaveLength(2);
+        for (const list of lists) {
+          expect(list.getAttribute("role")).toBe("list");
+          expect(list.getAttribute("aria-labelledby")).toBeTruthy();
+        }
+        expect(screen.getAllByRole("list")).toHaveLength(2);
+        // The fill chips keep their own look: only the swap pill is the blue "action" variant.
+        for (const chip of allChips(/Athletics|Red Sox/)) expect(chip.className).toMatch(/border-control/);
+        none();
+      });
+
       it("the career agreeing with the listing preselects nothing either (no 'preselect when career agrees')", () => {
         evidence(1940, { answer: career(T("t-b", "Boston Red Sox")), candidates: [T("t-b", "Boston Red Sox")], stints: foxx });
         queryResults["teams.erasByNameAndSport"] = [{ _id: "t-b", name: "Boston Red Sox", label: "Boston Red Sox" }];
@@ -1279,18 +1298,42 @@ describe("TeamTile", () => {
       const swapPill = (gapName: string, team: string, years: string) =>
         screen.getByRole("button", { name: `Swap ${gapName} for ${team} · ${years}` });
 
-      it("lists the covering career teams under the gap team's group, labelled 'Swap for'", () => {
+      it("lists the covering career teams newest first under the gap team's group, labelled 'Swap <gap team> for'", () => {
         render2026();
         const group = screen.getByRole("group", { name: "Team San Diego Padres" });
-        const list = within(group).getByRole("list", { name: "Swap for" });
+        const list = within(group).getByRole("list", { name: "Swap San Diego Padres for" });
+        expect(within(group).getByText("Swap San Diego Padres for")).toBeTruthy();
         expect(
           within(list)
             .getAllByRole("button")
             .map((b) => b.getAttribute("aria-label")),
         ).toEqual([
-          "Swap San Diego Padres for Boston Red Sox · 2025–present",
-          "Swap San Diego Padres for Pittsburgh Pirates · 2026–present",
+          "Swap San Diego Padres for Pittsburgh Pirates · 2026–",
+          "Swap San Diego Padres for Boston Red Sox · 2025–",
         ]);
+      });
+
+      it("writes the years the way the Career tile's chips do: an open stint is '2026–', never '2026–present'", () => {
+        render2026();
+        const pill = swapPill("San Diego Padres", "Pittsburgh Pirates", "2026–");
+        expect(pill.textContent).toContain("2026–");
+        expect(pill.textContent).not.toMatch(/present/);
+      });
+
+      it("styles the pills as buttons (blue outline at rest), apart from the inert career chips", () => {
+        render2026();
+        const pill = swapPill("San Diego Padres", "Pittsburgh Pirates", "2026–");
+        expect(pill.className).toMatch(/border-neon-blue-text/);
+        expect(pill.className).toMatch(/bg-neon-blue\/10/);
+        expect(pill.className).not.toMatch(/border-control/);
+      });
+
+      it("sets the swap block in its own inset with a rule, so it does not head the next team's row", () => {
+        render2026();
+        const list = screen.getByRole("list", { name: "Swap San Diego Padres for" });
+        const block = list.parentElement as HTMLElement;
+        expect(block.className).toMatch(/border-l-2/);
+        expect(block.className).toMatch(/pl-2\.5/);
       });
 
       it("shows no pill as pressed or suggested: a swap is the operator's choice", () => {
@@ -1304,7 +1347,7 @@ describe("TeamTile", () => {
 
       it("a click replaces the gap team on this card, keeps the card's other team, and regenerates the listing", async () => {
         render2026({ row: card({ playerIds: ["player-1"], teamOnCardIds: ["team-7", "team-2"] }) });
-        await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–present"));
+        await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–"));
         expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledTimes(1);
         expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
           id: CARD,
@@ -1315,13 +1358,13 @@ describe("TeamTile", () => {
 
       it("writes nothing to the player's career", async () => {
         render2026();
-        await click(swapPill("San Diego Padres", "Pittsburgh Pirates", "2026–present"));
+        await click(swapPill("San Diego Padres", "Pittsburgh Pirates", "2026–"));
         expect(mutation("players.addStint")).not.toHaveBeenCalled();
       });
 
       it("offers no pill on a card without a career gap", () => {
         render2026({ items: [] });
-        expect(screen.queryByText("Swap for")).toBeNull();
+        expect(screen.queryByText(/^Swap .* for$/)).toBeNull();
         expect(screen.queryByRole("button", { name: /^Swap / })).toBeNull();
       });
 
@@ -1338,7 +1381,7 @@ describe("TeamTile", () => {
         });
         const group = screen.getByRole("group", { name: "Team Pittsburgh Panthers" });
         expect(within(group).getByRole("button", { name: /Swap Pittsburgh Panthers for Boston Red Sox/ })).toBeTruthy();
-        await click(swapPill("Pittsburgh Panthers", "Pittsburgh Pirates", "2026–present"));
+        await click(swapPill("Pittsburgh Panthers", "Pittsburgh Pirates", "2026–"));
         expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledTimes(1);
         expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledWith({
           id: CARD,
@@ -1350,7 +1393,7 @@ describe("TeamTile", () => {
       it("tells the walk in words that the team was swapped, and the pills are gone once the card's teams update", async () => {
         const onAnswered = vi.fn();
         const { rerender } = render2026({ onAnswered });
-        await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–present"));
+        await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–"));
         expect(onAnswered).toHaveBeenCalledTimes(1);
         expect(onAnswered).toHaveBeenCalledWith("Swapped San Diego Padres for Boston Red Sox.");
         // The card now carries Boston and no longer has a career gap.
@@ -1371,21 +1414,45 @@ describe("TeamTile", () => {
             </AnsweredProvider>
           </WalkMemoryProvider>,
         );
-        expect(screen.queryByRole("list", { name: "Swap for" })).toBeNull();
+        expect(screen.queryByRole("list", { name: /^Swap .* for$/ })).toBeNull();
         expect(screen.queryByRole("button", { name: /^Swap / })).toBeNull();
+      });
+
+      it("shows the swap on the tile for a few seconds, seen and not read a second time", async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        try {
+          const { container } = render2026();
+          await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–"));
+          const line = within(container).getByText("Swapped San Diego Padres for Boston Red Sox.");
+          expect(line.getAttribute("aria-hidden")).toBe("true");
+          expect(screen.queryByRole("status", { name: /Swapped/ })).toBeNull();
+          await act(async () => {
+            vi.advanceTimersByTime(6100);
+          });
+          expect(within(container).queryByText("Swapped San Diego Padres for Boston Red Sox.")).toBeNull();
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it("shows no swap line when the save is refused", async () => {
+        mutation("selectorOptions.updateCard").mockRejectedValueOnce(new Error("Server Error"));
+        render2026();
+        await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–"));
+        expect(screen.queryByText(/^Swapped /)).toBeNull();
       });
 
       it("tells the walk nothing when the save is refused", async () => {
         const onAnswered = vi.fn();
         mutation("selectorOptions.updateCard").mockRejectedValueOnce(new Error("Server Error"));
         render2026({ onAnswered });
-        await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–present"));
+        await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–"));
         expect(onAnswered).not.toHaveBeenCalled();
       });
 
       it("the swap list is an explicit list (Safari drops list semantics from an unstyled one)", () => {
         render2026();
-        expect(screen.getByRole("list", { name: "Swap for" }).getAttribute("role")).toBe("list");
+        expect(screen.getByRole("list", { name: "Swap San Diego Padres for" }).getAttribute("role")).toBe("list");
       });
 
       it("a team on the card that is not a gap gets no swap list", () => {
@@ -1415,8 +1482,8 @@ describe("TeamTile", () => {
         });
         const padres = screen.getByRole("group", { name: "Team San Diego Padres" });
         const mariners = screen.getByRole("group", { name: "Team Seattle Mariners" });
-        const padresList = within(padres).getByRole("list", { name: "Swap for" });
-        const marinersList = within(mariners).getByRole("list", { name: "Swap for" });
+        const padresList = within(padres).getByRole("list", { name: "Swap San Diego Padres for" });
+        const marinersList = within(mariners).getByRole("list", { name: "Swap Seattle Mariners for" });
         expect(padresList).not.toBe(marinersList);
         expect(within(padresList).getAllByRole("button").every((b) => /^Swap San Diego Padres for /.test(b.getAttribute("aria-label") ?? ""))).toBe(true);
         expect(within(marinersList).getAllByRole("button").every((b) => /^Swap Seattle Mariners for /.test(b.getAttribute("aria-label") ?? ""))).toBe(true);
@@ -1443,10 +1510,10 @@ describe("TeamTile", () => {
       it("a second click while the first save is running does nothing", async () => {
         mutation("selectorOptions.updateCard").mockReturnValue(new Promise(() => {}));
         render2026();
-        await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–present"));
-        await click(swapPill("San Diego Padres", "Pittsburgh Pirates", "2026–present"));
+        await click(swapPill("San Diego Padres", "Boston Red Sox", "2025–"));
+        await click(swapPill("San Diego Padres", "Pittsburgh Pirates", "2026–"));
         expect(mutation("selectorOptions.updateCard")).toHaveBeenCalledTimes(1);
-        expect(swapPill("San Diego Padres", "Pittsburgh Pirates", "2026–present").getAttribute("aria-disabled")).toBe("true");
+        expect(swapPill("San Diego Padres", "Pittsburgh Pirates", "2026–").getAttribute("aria-disabled")).toBe("true");
       });
 
       it("hides the pills while Edit's team search is open, and brings them back on cancel", async () => {

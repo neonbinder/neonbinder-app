@@ -255,6 +255,38 @@ describe("CareerTile", () => {
       expect(screen.queryByRole("button", { name: "Add to career" })).toBeNull();
     });
 
+    describe("points at the Team tile's swap pills (NEO-672)", () => {
+      it("says 'Or swap the card's team below.' while the gap is open and a career team covers the set's year", () => {
+        // The default player's El Paso stint (2022–2023) is inside a 2024 set's window.
+        renderTile([gapItem]);
+        expect(screen.getByText("Or swap the card's team below.")).toBeTruthy();
+      });
+
+      it("says nothing of it when no career stint covers the set's year (no pill is offered)", () => {
+        renderTile(
+          [gapItem],
+          context({ players: [player({ stints: [{ teamId: "t-old", teamName: "El Paso Chihuahuas", fromYear: 2010, toYear: 2012 }] })] }),
+        );
+        expect(screen.queryByText(/Or swap the card/)).toBeNull();
+      });
+
+      it("says nothing of it for a player with no career", () => {
+        renderTile([gapItem], context({ players: [player({ stints: [] })] }));
+        expect(screen.queryByText(/Or swap the card/)).toBeNull();
+      });
+
+      it("says nothing of it when the set has no year", () => {
+        queryResults["selectorOptions.getAncestorChain"] = [{ _id: "y", level: "year", value: "Unknown" }];
+        renderTile([gapItem]);
+        expect(screen.queryByText(/Or swap the card/)).toBeNull();
+      });
+
+      it("is gone with the gap", () => {
+        renderTile([]);
+        expect(screen.queryByText(/Or swap the card/)).toBeNull();
+      });
+    });
+
     it("offers no 'Keep as is': nothing records that a gap was seen, so the only ways out are the data", () => {
       renderTile([gapItem]);
       expect(screen.queryByRole("button", { name: "Keep as is" })).toBeNull();
