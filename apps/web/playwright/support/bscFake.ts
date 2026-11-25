@@ -306,10 +306,16 @@ export class BscFake {
    * running finishes.
    *
    * Contract: ENTRY the worker is signed in. EXIT none of this user's lane
-   * items that had not started is left to run.
+   * items that had not started is left to run; returns N, how many it
+   * cancelled, read off the hop's "Cleared: lane, N queued team lookups." line
+   * (a spec that queued cards asserts N >= 1, so a teardown that stopped
+   * finding them goes red).
    */
-  async clearTeamLane(): Promise<void> {
-    await this.hop("clear=lane", "Cleared");
+  async clearTeamLane(): Promise<number> {
+    const line = await this.hop("clear=lane", "Cleared: lane, \\d+ queued team lookups\\.");
+    const n = /Cleared: lane, (\d+) queued team lookups\./.exec(line)?.[1];
+    if (n === undefined) throw new Error(`The fake BuySportsCards lane clear printed no count: ${line}`);
+    return Number(n);
   }
 
   /** The fixture's teardown: `clear()`, and it throws if the fake or the gate could not be cleared. */
@@ -317,7 +323,8 @@ export class BscFake {
     await this.clear();
   }
 
-  private async hop(query: string, expected: string): Promise<void> {
+  /** Opens the hop, waits for its line to read `expected` (a regex source) and returns that line's text. */
+  private async hop(query: string, expected: string): Promise<string> {
     const control: Page = await this.context.newPage();
     try {
       await control.goto(`/testing/bsc-fake?${query}`, { waitUntil: "domcontentloaded" });
@@ -329,7 +336,9 @@ export class BscFake {
       if (await failed.isVisible()) {
         throw new Error(`The fake BuySportsCards control refused (${expected}): ${(await failed.innerText()).replace(STATUS, "")}`);
       }
-      await expect(line.filter({ hasText: new RegExp(`^\\[testing-bsc-fake\\] ${expected}`) })).toBeVisible();
+      const settled = line.filter({ hasText: new RegExp(`^\\[testing-bsc-fake\\] ${expected}`) });
+      await expect(settled).toBeVisible();
+      return (await settled.innerText()).replace(STATUS, "");
     } finally {
       await control.close();
     }

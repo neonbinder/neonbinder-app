@@ -123,10 +123,16 @@ const run = { synced: false };
 // one slot per deployment, so they would otherwise run after the spec ends, in front of every other
 // shard's per-card team lookups. Only this test user's items are cancelled (`bscFake.clearTeamLane`);
 // one already running finishes. Before the `bscFake` fixture's own teardown clears the faults and gate.
-test.afterEach(async ({ bscFake }) => {
+// When the test itself passed, the cards it proved queued must be the ones cleared (N >= 1): a teardown
+// that finds none (the fetch stopped tagging this user's items) goes red. A red test keeps its own error.
+test.afterEach(async ({ bscFake }, testInfo) => {
   if (!run.synced) return;
   run.synced = false;
-  await bscFake.clearTeamLane();
+  const cleared = await bscFake.clearTeamLane();
+  testInfo.annotations.push({ type: "bsc-team-lane-cleared", description: String(cleared) });
+  if (testInfo.status === testInfo.expectedStatus) {
+    expect(cleared, "this user's queued BSC team lookups cancelled by the teardown").toBeGreaterThanOrEqual(1);
+  }
 });
 
 test(
