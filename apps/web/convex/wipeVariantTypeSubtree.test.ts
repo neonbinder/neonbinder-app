@@ -688,6 +688,40 @@ describe("NEO-304: armed run", () => {
     expect(await danglingReferences(t)).toEqual([]);
   });
 
+  test("clears the NEO-673 parallelSourceId pick, which points into the wiped subtree", async () => {
+    vi.stubEnv(ENV_FLAG, "true");
+    const t = convexTest(schema, modules);
+    const f = await seed(t);
+    await t.run((ctx) => ctx.db.patch(f.insertVt, { parallelSourceId: f.insA }));
+
+    const result = await run(t, {
+      variantTypeId: f.insertVt,
+      dryRun: false,
+      confirm: phraseFor(f.insertVt),
+    });
+    expect(result).toMatchObject({ complete: true });
+    const vt = await t.run((ctx) => ctx.db.get(f.insertVt));
+    expect(vt?.parallelSourceId).toBeUndefined();
+    expect(vt?.children).toEqual([]);
+    expect(await danglingReferences(t)).toEqual([]);
+  });
+
+  test("a pick left on a type whose children cache is already empty is still cleared on a replay", async () => {
+    vi.stubEnv(ENV_FLAG, "true");
+    const t = convexTest(schema, modules);
+    const f = await seed(t);
+    const args = {
+      variantTypeId: f.insertVt,
+      dryRun: false,
+      confirm: phraseFor(f.insertVt),
+    };
+    await run(t, args);
+    await t.run((ctx) => ctx.db.patch(f.insertVt, { parallelSourceId: f.insA }));
+    await run(t, args);
+    const vt = await t.run((ctx) => ctx.db.get(f.insertVt));
+    expect(vt?.parallelSourceId).toBeUndefined();
+  });
+
   test("a run stopped after every batch converges, and every stop is consistent", async () => {
     vi.stubEnv(ENV_FLAG, "1");
     const t = convexTest(schema, modules);

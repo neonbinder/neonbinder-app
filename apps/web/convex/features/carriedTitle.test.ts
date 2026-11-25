@@ -121,6 +121,45 @@ describe("carriedTitleRest", () => {
     });
   });
 
+  describe("dropName (NEO-673, a chosen source parallel's own name)", () => {
+    const withName = (title: string, dropName?: string) =>
+      carriedTitleRest({ sourceTitle: title, sourceFlagged: false, sourceInputs: SOURCE }, dropName);
+
+    test("undefined drops nothing", () => {
+      expect(withName("2024 Topps Chrome Anime Silver Trout Halos")).toBe("Silver Trout Halos");
+    });
+
+    test("the name is removed as whole words, case-folded", () => {
+      expect(withName("2024 Topps Chrome Anime SILVER Trout Halos", "Silver")).toBe("Trout Halos");
+      expect(withName("Trout 2024 Topps Chrome Anime silver Halos", "Silver")).toBe("Trout Halos");
+    });
+
+    test("every occurrence goes, not just the first", () => {
+      expect(withName("2024 Topps Chrome Anime Silver Trout Silver Halos", "Silver")).toBe("Trout Halos");
+    });
+
+    test("a multi-token name is removed as one run, in order", () => {
+      expect(withName("2024 Topps Chrome Anime Silver Wave Trout Halos", "Silver Wave")).toBe("Trout Halos");
+      // The words apart from each other are not the name.
+      expect(withName("2024 Topps Chrome Anime Wave Silver Trout", "Silver Wave")).toBe("Wave Silver Trout");
+    });
+
+    test("a word that only contains the name is kept", () => {
+      expect(withName("2024 Topps Chrome Anime Silverton Trout", "Silver")).toBe("Silverton Trout");
+      expect(withName("2024 Topps Chrome Anime Trout Quicksilver", "Silver")).toBe("Trout Quicksilver");
+    });
+
+    test("a title that holds only the name beyond the description has nothing left to carry", () => {
+      expect(withName("2024 Topps Chrome Anime Silver", "Silver")).toBeUndefined();
+    });
+
+    test("the title is still refused where it would be refused without a name", () => {
+      expect(
+        carriedTitleRest({ sourceTitle: "2024 Topps Chrome Anime Silver", sourceFlagged: true, sourceInputs: SOURCE }, "Silver"),
+      ).toBeUndefined();
+    });
+  });
+
   test("a flagged source is no answer to copy", () => {
     expect(rest("2024 Topps Chrome Anime Trout Halos", SOURCE, true)).toBeUndefined();
   });
