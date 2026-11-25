@@ -16,6 +16,9 @@ the tool's current code before relying on any line here; some may be fixed.
 - **`plant` re-seeds by itself** when the spec has already run on this seed
   (`ranOnSeed` → fresh): seed + setup + bootstrap, about 3-4 min, even for a
   public spec like the landing smoke test. Budget for it, or plant before the first plain run.
+  **Except with `--expect`**: it skips that re-seed, so a fresh-only spec that
+  already ran reds at its fixture step (`PLANT RED (--expect not matched)`). Run
+  `seed` first (about 3 min), then the plant (NEO-671).
 - **To exercise the 75 → `wait` cycle**, pass `--slice 5`.
 - A plant that went red as planted prints `PASS (exit 0)` in the header, and the verdict
   is the `PLANT RED as planted` line below it. Read that line, not the header.
