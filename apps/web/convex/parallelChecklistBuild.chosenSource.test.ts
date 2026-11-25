@@ -19,6 +19,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
+  BLOCKED_CHANGED_NOTHING_CLEARED,
   BLOCKED_MANY_BASES,
   BLOCKED_NO_BASE,
   NOT_BUILT_IS_THE_SOURCE,
@@ -55,6 +56,8 @@ type StubCard = { cardNumber: string; cardName: string; platformRef: string };
 const bscState = vi.hoisted(() => ({
   cards: [] as StubCard[],
   calls: [] as Array<Record<string, string[]>>,
+  /** One-shot, run while the action awaits the fetch (before any write). */
+  onFetch: null as null | (() => Promise<void>),
 }));
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adapters/buysportscards")>();
@@ -72,6 +75,11 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
       returns: v.any(),
       handler: async (_ctx, args) => {
         bscState.calls.push(args.facetFilters ?? {});
+        const hook = bscState.onFetch;
+        if (hook) {
+          bscState.onFetch = null;
+          await hook();
+        }
         return { success: true, cards: bscState.cards };
       },
     }),
@@ -97,6 +105,7 @@ vi.mock("./adapters/sportlots", async (importOriginal) => {
 beforeEach(() => {
   bscState.cards = [];
   bscState.calls = [];
+  bscState.onFetch = null;
 });
 
 type T = ReturnType<typeof convexTest>;
@@ -505,6 +514,90 @@ describe("building from a chosen source", () => {
     );
     expect(result.changed).toBe(true);
     expect(await cardsOn(t, gold)).toHaveLength(0);
+  });
+});
+
+describe("NEO-673 — the delete page re-checks the source", () => {
+  const OLD = { cardNumber: "9", cardName: "Old Card" };
+
+  test("a pick repointed to the target mid-build deletes nothing: the page refuses and the build stops", async () => {
+    const t = convexTest(schema, modules);
+    const { silver, gold, parallelType } = await seedSet(t);
+    await addCard(t, silver, { cardNumber: "7", cardName: "Aaron Judge" });
+    const oldCard = await addCard(t, gold, OLD);
+    bscState.cards = [{ cardNumber: "7", cardName: "Aaron Judge", platformRef: "bsc-gold-7" }];
+    // Another tab picks Gold as the source after the context read; Gold's
+    // cards are now the set's only source.
+    bscState.onFetch = async () => {
+      await t.run((ctx) => ctx.db.patch(parallelType, { parallelSourceId: gold }));
+    };
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: gold });
+
+    expect(bscState.onFetch).toBeNull(); // the hook really ran
+    expect(result.status).toBe("blocked");
+    // Nothing had gone when the page refused, so the sentence that is true
+    // is the one that claims no removal (the action says MID_BUILD only once
+    // an earlier page removed cards).
+    expect(result.blockedReason).toBe(BLOCKED_CHANGED_NOTHING_CLEARED);
+    expect((result.deletedCount ?? 0)).toBe(0);
+    const left = await cardsOn(t, gold);
+    expect(left.map((c) => c._id)).toEqual([oldCard]);
+  });
+
+  test("deleteParallelCardsPage on a moved or missing source answers the changed sentinel and reads nothing to delete", async () => {
+    const t = convexTest(schema, modules);
+    const { silver, gold, blue, parallelType } = await seedSet(t);
+    await addCard(t, gold, OLD);
+    const page = (sourceId?: Id<"selectorOptions">) =>
+      t.run((ctx) =>
+        ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, {
+          parallelId: gold,
+          ...(sourceId ? { sourceId } : {}),
+        }),
+      );
+    // Wrong source, and no source: refused, the card stays.
+    expect((await page(blue)).blockedReason).toBe(BLOCKED_CHANGED_NOTHING_CLEARED);
+    expect((await page()).blockedReason).toBe(BLOCKED_CHANGED_NOTHING_CLEARED);
+    expect(await cardsOn(t, gold)).toHaveLength(1);
+    // The pick moved onto the target itself: no longer buildable, refused.
+    await t.run((ctx) => ctx.db.patch(parallelType, { parallelSourceId: gold }));
+    expect((await page(silver)).blockedReason).toBe(BLOCKED_CHANGED_NOTHING_CLEARED);
+    expect(await cardsOn(t, gold)).toHaveLength(1);
+  });
+
+  test("the planned source still deletes the page", async () => {
+    const t = convexTest(schema, modules);
+    const { silver, gold } = await seedSet(t);
+    await addCard(t, gold, OLD);
+    const result = await t.run((ctx) =>
+      ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, {
+        parallelId: gold,
+        sourceId: silver,
+      }),
+    );
+    expect(result.blockedReason).toBeUndefined();
+    expect(result.deleted).toBe(1);
+    expect(await cardsOn(t, gold)).toHaveLength(0);
+  });
+
+  test("a set with a Base still deletes the old cards and inserts the new ones", async () => {
+    const t = convexTest(schema, modules);
+    const { base, gold } = await seedSet(t, { withBase: true });
+    await addCard(t, base!, { cardNumber: "7", cardName: "Aaron Judge" });
+    await addCard(t, gold, OLD);
+    bscState.cards = [{ cardNumber: "7", cardName: "Aaron Judge", platformRef: "bsc-gold-7" }];
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: gold });
+
+    expect(result.status).toBe("built");
+    expect(result.rebuilt).toBe(true);
+    const cards = await cardsOn(t, gold);
+    expect(cards.map((c) => c.cardNumber)).toEqual(["7"]);
   });
 });
 

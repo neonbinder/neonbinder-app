@@ -308,7 +308,8 @@ describe("the changed-mid-build sentence is true to what was removed", () => {
     await addCard(t, base, { cardNumber: "1", cardName: "Aaron Judge" });
     bscState.cards = [{ cardNumber: "1", cardName: "Aaron Judge", platformRef: "bsc-1" }];
     // The parallel holds no cards, so nothing is ever deleted; the move lands
-    // after the context read and before the first insert page.
+    // after the context read and before the first delete page (NEO-673: the
+    // delete page re-checks the source, so the stop is there, not at insert).
     bscState.onFetch = async () => {
       await t.run(async (ctx) => {
         await ctx.db.patch(base, { value: "Flagship" });
@@ -330,7 +331,7 @@ describe("the changed-mid-build sentence is true to what was removed", () => {
     expect(bscState.onFetch).toBeNull(); // the hook really ran
     expect(result.status).toBe("blocked");
     expect(result.blockedReason).toBe(BLOCKED_CHANGED_NOTHING_CLEARED);
-    expect(result.deletedCount).toBe(0);
+    expect(result.deletedCount ?? 0).toBe(0);
     expect(await cardsOn(t, gold)).toHaveLength(0);
   });
 });

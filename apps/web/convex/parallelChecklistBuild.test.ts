@@ -1458,6 +1458,7 @@ describe("buildParallelChecklist — blocks write nothing", () => {
     const page = await t.run((ctx) =>
       ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, {
         parallelId,
+        sourceId: insert,
       }),
     );
     expect(page.deleted).toBe(0);

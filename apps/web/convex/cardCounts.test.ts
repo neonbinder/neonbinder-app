@@ -417,6 +417,7 @@ describe("every writer lands the true counts", () => {
     await primeCounts(t, s.parallel);
     const result = await t.mutation(internal.parallelChecklistBuild.deleteParallelCardsPage, {
       parallelId: s.parallel,
+      sourceId: s.insert,
     });
     expect(result.deleted).toBe(2);
     expect(await stored(t, s.parallel)).toEqual({ cardCount: 0, nonVariationCardCount: 0 });
@@ -556,6 +557,7 @@ describe("the collector guard on every card delete", () => {
     await addCopy(t, s, owned);
     const result = await t.mutation(internal.parallelChecklistBuild.deleteParallelCardsPage, {
       parallelId: s.parallel,
+      sourceId: s.insert,
     });
     expect(result).toMatchObject({
       deleted: 0,
@@ -786,6 +788,7 @@ describe("a refusal says how many collectors are in the way", () => {
     await addCopy(t, s, two, "collector_a");
     const result = await t.mutation(internal.parallelChecklistBuild.deleteParallelCardsPage, {
       parallelId: s.parallel,
+      sourceId: s.insert,
     });
     expect(result.blockedReason).toBe(
       "2 collectors own copies of its cards, and a rebuild would pull those cards out from under them",

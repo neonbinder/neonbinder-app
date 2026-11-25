@@ -1625,7 +1625,14 @@ export const clearParallelReviewPage = internalMutation({
  * card delete, `removeCardRow`, exactly as `deleteCard` does it.
  */
 export const deleteParallelCardsPage = internalMutation({
-  args: { parallelId: v.id("selectorOptions") },
+  args: {
+    parallelId: v.id("selectorOptions"),
+    /**
+     * The source the action planned the build from. Optional so a call made
+     * across a deploy still validates; absent is refused like a moved source.
+     */
+    sourceId: v.optional(v.id("selectorOptions")),
+  },
   returns: v.object({
     deleted: v.number(),
     done: v.boolean(),
@@ -1637,6 +1644,31 @@ export const deleteParallelCardsPage = internalMutation({
   }),
   handler: async (ctx, args) => {
     const empty = { bsc: [] as string[], sportlots: [] as string[] };
+    // NEO-673 (security audit) — the same source check `insertParallelCardsPage`
+    // makes, BEFORE any read or delete: an admin repointing the type's pick to
+    // this parallel mid-build makes its cards the set's only source, and they
+    // must not be wiped. A parallel that no longer resolves to the source the
+    // action planned from stops here, with nothing deleted.
+    const parallel = await ctx.db.get(args.parallelId);
+    const resolved = parallel ? await resolveBuildSource(ctx, parallel) : undefined;
+    if (
+      !resolved ||
+      resolved.status !== "ok" ||
+      args.sourceId === undefined ||
+      resolved.source._id !== args.sourceId
+    ) {
+      console.warn(
+        JSON.stringify({ msg: "parallel_delete_page_refused", parallelId: args.parallelId }),
+      );
+      return {
+        deleted: 0,
+        done: true,
+        // Nothing was removed by THIS page; the action turns it into
+        // BLOCKED_CHANGED_MID_BUILD when an earlier page did remove cards.
+        blockedReason: BLOCKED_CHANGED_NOTHING_CLEARED,
+        refs: empty,
+      };
+    }
     if (await reviewStagedOn(ctx, args.parallelId)) {
       return { deleted: 0, done: true, blockedReason: BLOCKED_REVIEW_OPEN, refs: empty };
     }
@@ -2954,7 +2986,7 @@ export const buildParallelChecklist = action({
     for (;;) {
       const page = await ctx.runMutation(
         internal.parallelChecklistBuild.deleteParallelCardsPage,
-        { parallelId: args.parallelId },
+        { parallelId: args.parallelId, sourceId: plan.sourceId },
       );
       if (page.blockedReason) {
         // Security 3 — a block after the first page is a PARTIAL WIPE, and is
