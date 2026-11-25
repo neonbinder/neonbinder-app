@@ -458,6 +458,19 @@ export const selectorOptionFields = {
   parentId: v.optional(v.id("selectorOptions")), // For hierarchical relationships
   children: v.optional(v.array(v.id("selectorOptions"))), // Child options
   /**
+   * NEO-673 — meaningful only on a Parallel-kind variantType row: the insert
+   * (a base parallel, e.g. Silver) the type's other parallels are built from
+   * when the set has no Base. Absent = no pick (no backfill). Re-verified on
+   * every read (the row exists, `level === "insert"`, `parentId` is this
+   * type); anything invalid reads as absent. Only writer:
+   * `parallelTypeSource.setParallelTypeSource`. Only reader:
+   * `sourceOfParallelType` (parallelChecklistBuild.ts), and only when the set
+   * has zero Bases: a real Base always wins. NB data only: no adapter or sync
+   * reads it. No index (read by `db.get` on the type row). Cleared when the
+   * type's subtree is wiped.
+   */
+  parallelSourceId: v.optional(v.id("selectorOptions")),
+  /**
    * @deprecated NEO-239 — DEAD FIELD. Nothing reads it and nothing writes it.
    *
    * It used to mean "a human typed this row", and five unrelated behaviours

@@ -332,7 +332,7 @@ describe("getParallelsForBuild", () => {
     const result = await t
       .withIdentity(ADMIN)
       .query(api.parallelChecklistBuild.getParallelsForBuild, { insertId: setName });
-    expect(result).toEqual({ parallels: [], truncated: false });
+    expect(result).toEqual({ parallels: [], truncated: false, sourcePickable: false });
   });
 
   test("a parallel with a scanned card is reported blocked", async () => {

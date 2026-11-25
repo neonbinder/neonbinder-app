@@ -45,7 +45,11 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
-import { parallelSetContext, resolveBuildSource } from "./parallelChecklistBuild";
+import {
+  parallelSetContext,
+  resolveBuildSource,
+  type BuildSourceKind,
+} from "./parallelChecklistBuild";
 import {
   listingInputsForStoredCard,
   newStoredCardReadCache,
@@ -111,13 +115,25 @@ const listingInputsValidator = v.object({
 async function requireBuildableParallel(
   ctx: { db: QueryCtx["db"] },
   parallelId: Id<"selectorOptions">,
-): Promise<{ parallel: Doc<"selectorOptions">; source: Doc<"selectorOptions"> }> {
+): Promise<{
+  parallel: Doc<"selectorOptions">;
+  source: Doc<"selectorOptions">;
+  kind: BuildSourceKind;
+}> {
   const parallel = await ctx.db.get(parallelId);
   if (!parallel) throw new ConvexError(GONE);
   const resolved = await resolveBuildSource(ctx, parallel);
   if (resolved.status === "notBuildable") throw new ConvexError(resolved.message);
   if (resolved.status === "blocked") throw new ConvexError(resolved.blockedReason);
-  return { parallel, source: resolved.source };
+  return { parallel, source: resolved.source, kind: resolved.kind };
+}
+
+/**
+ * NEO-673 — the name to leave out of a carried title: a chosen source
+ * parallel's own value. A Base or insert source drops nothing.
+ */
+function dropNameOf(kind: BuildSourceKind, source: Doc<"selectorOptions">): string | undefined {
+  return kind === "chosenParallel" ? source.value : undefined;
 }
 
 /**
@@ -147,16 +163,20 @@ async function copyTitleInputs(
   sourceRowId: Id<"selectorOptions">,
   card: Doc<"cardChecklist">,
   cache: StoredCardReadCache,
+  dropName?: string,
 ): Promise<{ inputs: ListingCardInputs & { playerNames: string[]; teamNames: string[] }; carriedRest?: string }> {
   const { inputs } = await listingInputsForStoredCard(ctx, card, cache);
   const source = await sourceCardOf(ctx, sourceRowId, card);
   if (!source) return { inputs };
   const { inputs: sourceInputs } = await listingInputsForStoredCard(ctx, source, cache);
-  const carriedRest = carriedTitleRest({
-    sourceTitle: source.listingTitle,
-    sourceFlagged: storedTitleFails(source),
-    sourceInputs,
-  });
+  const carriedRest = carriedTitleRest(
+    {
+      sourceTitle: source.listingTitle,
+      sourceFlagged: storedTitleFails(source),
+      sourceInputs,
+    },
+    dropName,
+  );
   return carriedRest === undefined ? { inputs } : { inputs, carriedRest };
 }
 
@@ -166,8 +186,9 @@ async function copyTitleNow(
   sourceRowId: Id<"selectorOptions">,
   card: Doc<"cardChecklist">,
   cache: StoredCardReadCache,
+  dropName?: string,
 ): Promise<ParallelCopyTitle> {
-  const { inputs, carriedRest } = await copyTitleInputs(ctx, sourceRowId, card, cache);
+  const { inputs, carriedRest } = await copyTitleInputs(ctx, sourceRowId, card, cache, dropName);
   return assessParallelCopyTitle(inputs, carriedRest);
 }
 
@@ -217,7 +238,7 @@ export const failingTitles = query({
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const { parallel, source } = await requireBuildableParallel(ctx, args.parallelId);
+    const { parallel, source, kind } = await requireBuildableParallel(ctx, args.parallelId);
     const set = await parallelSetContext(ctx, parallel);
     // The stored box, else the description a copy on this parallel gets: the
     // build names each copy by the parallel row itself (`parallelName`).
@@ -236,7 +257,13 @@ export const failingTitles = query({
     const cache = newStoredCardReadCache();
     const cards = [];
     for (const card of failing.slice(0, want)) {
-      const { inputs, carriedRest } = await copyTitleInputs(ctx, source._id, card, cache);
+      const { inputs, carriedRest } = await copyTitleInputs(
+        ctx,
+        source._id,
+        card,
+        cache,
+        dropNameOf(kind, source),
+      );
       cards.push({
         cardId: card._id,
         cardNumber: card.cardNumber,
@@ -368,7 +395,7 @@ export const saveTitleFixes = mutation({
         ? undefined
         : normalizeListingShortName(args.listingShortName);
 
-    const { parallel, source } = await requireBuildableParallel(ctx, args.parallelId);
+    const { parallel, source, kind } = await requireBuildableParallel(ctx, args.parallelId);
     const boxChanged = box !== undefined && box !== parallel.metadata?.listingShortName;
     // The run id of the chain this save starts, stored beside the box: the
     // save's time, kept strictly past the last one so two saves can never
@@ -422,7 +449,7 @@ export const saveTitleFixes = mutation({
       // the server, reading the box just stored, comes to exactly that text:
       // anything else is a title nobody saw.
       if (boxChanged) {
-        const now = await copyTitleNow(ctx, source._id, card, cache);
+        const now = await copyTitleNow(ctx, source._id, card, cache, dropNameOf(kind, source));
         if (now.title === answer.kept) {
           await writeTitle(ctx, card, now.title, undefined, "inline");
           rewritten++;
@@ -498,7 +525,13 @@ export const rewriteFailingTitlesPage = internalMutation({
     let rewritten = 0;
     for (const card of page.page) {
       if (!storedTitleFails(card)) continue;
-      const now = await copyTitleNow(ctx, resolved.source._id, card, cache);
+      const now = await copyTitleNow(
+        ctx,
+        resolved.source._id,
+        card,
+        cache,
+        dropNameOf(resolved.kind, resolved.source),
+      );
       if (now.title === card.listingTitle) continue;
       await writeTitle(ctx, card, now.title, truncatedFlagFor(now), "scheduled");
       rewritten++;

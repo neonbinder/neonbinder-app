@@ -149,9 +149,9 @@ import { MAX_LINKS_PER_ROW } from "./lib/publishedChecklistSections";
  */
 export const SUBTREE_REFERENCE_GRAPH = {
   selectorOptions: {
-    fields: ["parentId", "children[]"],
+    fields: ["parentId", "children[]", "parallelSourceId"],
     handling:
-      "subtree rows deleted deepest first; a parent's children cache is filtered as each child goes; the variant type's is cleared",
+      "subtree rows deleted deepest first; a parent's children cache is filtered as each child goes; the variant type's is cleared, and so is its parallelSourceId pick (NEO-673)",
   },
   selectorSyncStatus: {
     fields: ["parentId", "unlinked[].id"],
@@ -1507,8 +1507,8 @@ export const deleteEmptyNodes = internalMutation({
 
 /**
  * The variant type's own tidy-up, once its subtree is gone: its child
- * columns' sync status, and its `children` cache. Its links, labels and
- * metadata are not written.
+ * columns' sync status, its `children` cache and its `parallelSourceId` pick
+ * (NEO-673). Its links, labels and metadata are not written.
  */
 export const finalizeVariantType = internalMutation({
   args: armedArgs,
@@ -1559,8 +1559,12 @@ export const finalizeVariantType = internalMutation({
     const current = target.row.children ?? [];
     const next: Id<"selectorOptions">[] = [];
     const changed = !sameIds(current, next);
-    if (changed) {
-      await ctx.db.patch(args.variantTypeId, { children: next });
+    // NEO-673 — the chosen-source pick points into the subtree just wiped.
+    if (changed || target.row.parallelSourceId !== undefined) {
+      await ctx.db.patch(args.variantTypeId, {
+        children: next,
+        parallelSourceId: undefined,
+      });
     }
     return {
       selectorSyncStatus: statuses.length,

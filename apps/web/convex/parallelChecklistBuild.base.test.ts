@@ -352,7 +352,7 @@ describe("getParallelsForBuild — standing on the Parallel variant type", () =>
     const result = await t
       .withIdentity(ADMIN)
       .query(api.parallelChecklistBuild.getParallelsForBuild, { sourceId: base! });
-    expect(result).toEqual({ parallels: [], truncated: false });
+    expect(result).toEqual({ parallels: [], truncated: false, sourcePickable: false });
   });
 });
 

@@ -104,11 +104,16 @@ export type CarriedTitleSource = {
  * the title carries it, is left in place for `assessParallelCopyTitle` to
  * swap; it is the only `/digits` token the answer can hold.
  */
-export function carriedTitleRest({
-  sourceTitle,
-  sourceFlagged,
-  sourceInputs,
-}: CarriedTitleSource): string | undefined {
+export function carriedTitleRest(
+  { sourceTitle, sourceFlagged, sourceInputs }: CarriedTitleSource,
+  /**
+   * NEO-673 — a chosen source parallel's own name (Silver). Every whole-word,
+   * case-folded run of its words is removed from the rest, so the name of the
+   * parallel the others copy from never reaches a sibling's title. Undefined
+   * (a Base or insert source) changes nothing.
+   */
+  dropName?: string,
+): string | undefined {
   const title = sourceTitle.trim();
   if (!title || sourceFlagged || title.length > LISTING_TITLE_MAX) return undefined;
   // Not a hand edit: the builder would write exactly this today.
@@ -130,6 +135,12 @@ export function carriedTitleRest({
     break;
   }
   if (!rest) return undefined;
+  if (dropName !== undefined) {
+    const drop = tokensOf(dropName);
+    for (let at = occurrences(rest, drop)[0]; at !== undefined; at = occurrences(rest, drop)[0]) {
+      rest = [...rest.slice(0, at), ...rest.slice(at + drop.length)];
+    }
+  }
 
   // The source's own print run may appear once; any other `/digits` token is
   // a run the parallel may not share.
