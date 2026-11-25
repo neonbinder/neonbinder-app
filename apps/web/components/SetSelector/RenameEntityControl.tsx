@@ -4,7 +4,7 @@ import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { useFieldTestClass } from "../../src/hooks/useFieldTestClass";
-import { Input } from "../primitives/Input";
+import { Textarea } from "../primitives/Textarea";
 import { VARIANT_TYPE_RENAME_REFUSED } from "../../convex/variantRole";
 
 /**
@@ -43,19 +43,24 @@ import { VARIANT_TYPE_RENAME_REFUSED } from "../../convex/variantRole";
  * DOM holds exactly what was typed and commit() reads it directly: what you
  * see is what you save.
  *
- * ── EMPTY, NOT PRE-SEEDED (deliberate) ──────────────────────────────────────
- * The field opens EMPTY with the current name as its placeholder, rather than
- * pre-filled with the current name. Typing a name replaces it; submitting an
- * empty field is a no-op (treated as cancel), so the old name is never lost by
- * accident.
+ * ── PRE-FILLED, IN THE TITLE'S PLACE (NEO-667) ─────────────────────────────
+ * Jason, 2026-11-25: the editor "should open up a text area where the title
+ * label is before you hit edit instead of opening this tiny text area to the
+ * right of it. The text area should also contain the current title right away
+ * so that it can be inline edited easily."
  *
- * Pre-seeding cost two E2E runs to diagnose: clicking into a pre-filled field
- * puts the caret WHERE YOU CLICKED, and a backspace-based clear only removes
- * what is left of the caret — renaming to `rnmx-0-w0-a2-6355` committed
- * `rnmx-0-w0-a2-6355a2-6355`, the un-erased tail still trailing. A human hits
- * the same edge (click the middle, select-all-and-retype is a habit, not a
- * guarantee); maestro-web additionally cannot send Cmd/Ctrl+A at all, since it
- * rejects modifier combos. Empty-on-open removes the caret from the problem.
+ * So the field opens holding the current name (`defaultValue`, still
+ * uncontrolled: the NEO-36 note above stands), with the caret at the end so one
+ * word can be fixed without retyping the rest. It is a textarea that takes the
+ * title's width and wraps (never clips) a long name; the host hides the title
+ * while this control is busy (`onBusyChange`) so the field stands in its place.
+ * Enter still saves (a name is one line, so Enter never inserts a newline) and
+ * Escape cancels. Saving an unchanged or emptied field is still a no-op that
+ * closes the editor, so the old name is never lost by accident.
+ *
+ * (NEO-96 once opened it EMPTY with the name as a placeholder, because a
+ * caret placed by a click made a backspace-based E2E clear leave a tail. The
+ * specs now `fill`, which replaces, so that reason is gone.)
  *
  * ── MAESTRO ─────────────────────────────────────────────────────────────────
  * Selectors are visible text or aria-label only. The input additionally carries
@@ -137,7 +142,7 @@ export default function RenameEntityControl({
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   // Guards the focus-restore effect below so it only fires on a genuine
   // editing->not-editing transition, never on this component's own initial
@@ -148,8 +153,13 @@ export default function RenameEntityControl({
     focusField: () => inputRef.current?.focus({ preventScroll: true }),
   }));
 
+  // Focus goes into the field with the caret after the name (NEO-667): the
+  // name is already there to edit, not to replace.
   useEffect(() => {
-    if (editing) inputRef.current?.focus();
+    const field = inputRef.current;
+    if (!editing || !field) return;
+    field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
   }, [editing]);
 
   // Held in a ref so a host passing a fresh callback each render does not
@@ -174,9 +184,33 @@ export default function RenameEntityControl({
     wasEditingRef.current = editing;
   }, [editing]);
 
+  // Auto-grow fallback (NEO-667): `[field-sizing:content]` is not in every
+  // browser, and the field is `overflow-hidden` (no scrollbar, rows={1}), so
+  // without this a long name would clip on one line. Size to the content.
+  const grow = () => {
+    const field = inputRef.current;
+    if (!field) return;
+    field.style.height = "auto";
+    field.style.height = `${field.scrollHeight}px`;
+  };
+  useEffect(() => {
+    if (editing) grow();
+  }, [editing]);
+  // A rotation or resize changes the wrapping width without any input, so the
+  // height set above would go stale and clip the name: re-measure on resize.
+  useEffect(() => {
+    const field = inputRef.current;
+    if (!editing || !field || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => grow());
+    observer.observe(field);
+    return () => observer.disconnect();
+  }, [editing]);
+
   const commit = async () => {
     // Read the live DOM value (uncontrolled input) — see the NEO-36 note above.
-    const trimmed = (inputRef.current?.value ?? "").trim();
+    // A textarea keeps a pasted newline where the old single-line input stripped
+    // it: names stay one line, so a line break becomes one space.
+    const trimmed = (inputRef.current?.value ?? "").replace(/(?:\r?\n)+/g, " ").trim();
     if (saving) return;
     if (!trimmed || trimmed === currentValue) {
       setEditing(false);
@@ -200,7 +234,29 @@ export default function RenameEntityControl({
     }
   };
 
-  // Closing unmounts the input; it remounts empty, so there is nothing to reset.
+  // Android soft keyboards send Enter as a `beforeinput` of type
+  // `insertLineBreak` rather than a keydown Enter. React's `onBeforeInput` is
+  // built on keypress/textInput and carries no `inputType`, so this listens for
+  // the native event. Read through a ref so the listener always sees the latest
+  // `commit` (its `saving` guard) without re-binding.
+  const commitRef = useRef(commit);
+  useEffect(() => {
+    commitRef.current = commit;
+  });
+  useEffect(() => {
+    const field = inputRef.current;
+    if (!editing || !field) return;
+    const onBeforeInput = (e: Event) => {
+      if ((e as InputEvent).inputType !== "insertLineBreak") return;
+      e.preventDefault();
+      void commitRef.current();
+    };
+    field.addEventListener("beforeinput", onBeforeInput);
+    return () => field.removeEventListener("beforeinput", onBeforeInput);
+  }, [editing]);
+
+  // Closing unmounts the field; it remounts holding the current name, so there
+  // is nothing to reset.
   const cancel = () => {
     setEditing(false);
     setError(null);
@@ -231,16 +287,21 @@ export default function RenameEntityControl({
   // panel header's wrapping flex row, so `basis-full` gives it a line of its
   // own and `order-last` puts that line under the whole header row (after
   // the Base tag and the delete) rather than splitting the row in two.
+  //
+  // The field's wrapper grows from a zero basis to fill the row (the title
+  // it stands in for is hidden by the host), and wraps the Base tag and
+  // delete onto the next line only when there is no room beside it.
   return (
     <>
-      <div className="shrink-0 flex items-center gap-1">
-        <Input
+      <div className="grow basis-0 min-w-32">
+        <Textarea
           bare
           ref={inputRef}
-          placeholder={currentValue}
+          rows={1}
+          defaultValue={currentValue}
           // readOnly + aria-disabled, not disabled: this field's own onKeyDown
           // triggers commit() directly (Enter), which sets `saving` true
-          // synchronously — a native `disabled` on the still-focused input
+          // synchronously — a native `disabled` on the still-focused field
           // would force-blur it to <body> for the duration of the rename
           // round-trip. readOnly blocks edits without removing focusability;
           // aria-disabled still announces the busy state.
@@ -255,12 +316,22 @@ export default function RenameEntityControl({
           // OPEN in this error state on purpose: closing it would hide the
           // reason and drop what they typed.
           onChange={() => error && setError(null)}
-          className={`${fieldClass("rename")} w-32 px-2 py-1 text-sm aria-disabled:opacity-50 aria-disabled:cursor-not-allowed`}
+          onInput={grow}
+          enterKeyHint="done"
+          // One line tall to start, then as tall as the name needs
+          // (`field-sizing`, as CardTitlesStep's boxes do); `wrap-anywhere`
+          // breaks a long unbroken token rather than clipping or widening the
+          // page (NEO-499). Type matches the title it replaces.
+          className={`${fieldClass("rename")} block w-full min-w-0 resize-none overflow-hidden px-2 py-1 text-sm font-semibold leading-snug wrap-anywhere [field-sizing:content]`}
           onKeyDown={(e) => {
             // Stop the row's own handlers from seeing these — the row is a
             // sibling button and Enter would otherwise also select it.
             e.stopPropagation();
-            if (e.key === "Enter") {
+            // An Enter that confirms an IME composition is not a save. Safari
+            // sends that Enter after compositionend (isComposing already false)
+            // with keyCode 229, so both signals are checked.
+            if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+              // A name is one line: Enter saves rather than adding a newline.
               e.preventDefault();
               void commit();
             } else if (e.key === "Escape") {

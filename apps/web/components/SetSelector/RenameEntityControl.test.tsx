@@ -43,18 +43,131 @@ describe("RenameEntityControl", () => {
     expect(screen.queryByLabelText("Edit name for Baseball")).toBeNull();
   });
 
-  // Opens EMPTY, with the current value as the placeholder — not pre-filled.
-  // Pre-filling put the caret mid-text on click, so a backspace-based clear
-  // left an un-erased tail behind and the rename committed a mangled name
-  // (see the note in RenameEntityControl). Empty-on-open removes the caret
-  // from the problem; an empty submit is treated as cancel, so the existing
-  // name is never lost by accident.
-  it("opens an empty input placeheld by the current value", () => {
+  // NEO-667 (Jason, 2026-11-25): the field opens already holding the current
+  // name, so one word can be fixed without retyping the rest. It is a textarea
+  // (the name wraps at the title's width), the caret sits at the end, and
+  // focus is in it.
+  it("opens a text area already holding the current name, caret at the end, focused", () => {
     renderControl();
     fireEvent.click(screen.getByLabelText("Rename Baseball"));
-    const input = screen.getByLabelText("Edit name for Baseball") as HTMLInputElement;
-    expect(input.value).toBe("");
-    expect(input.placeholder).toBe("Baseball");
+    const input = screen.getByLabelText("Edit name for Baseball") as HTMLTextAreaElement;
+    expect(input.tagName).toBe("TEXTAREA");
+    expect(input.value).toBe("Baseball");
+    expect(input.placeholder).toBe("");
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe("Baseball".length);
+    expect(input.selectionEnd).toBe("Baseball".length);
+  });
+
+  it("saves a one-word fix made inside the pre-filled name", async () => {
+    renderControl("Upper Deck Baseball");
+    fireEvent.click(screen.getByLabelText("Rename Upper Deck Baseball"));
+    const input = screen.getByLabelText("Edit name for Upper Deck Baseball");
+    fireEvent.change(input, { target: { value: "Upper Deck Football" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(mockRename).toHaveBeenCalledWith({ id: ID, value: "Upper Deck Football" }),
+    );
+  });
+
+  it("a pasted line break is saved as one space", async () => {
+    renderControl();
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    const input = screen.getByLabelText("Edit name for Baseball");
+    fireEvent.change(input, { target: { value: "A\nB" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(mockRename).toHaveBeenCalledWith({ id: ID, value: "A B" }));
+  });
+
+  it("Enter saves and never adds a newline", () => {
+    renderControl();
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    const input = screen.getByLabelText("Edit name for Baseball");
+    const notPrevented = fireEvent.keyDown(input, { key: "Enter" });
+    expect(notPrevented).toBe(false);
+  });
+
+  it("an Enter that confirms an IME composition does not save", () => {
+    renderControl();
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    const input = screen.getByLabelText("Edit name for Baseball");
+    fireEvent.change(input, { target: { value: "Football" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    expect(mockRename).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Edit name for Baseball")).toBe(input);
+  });
+
+  it("Safari's composition-confirming Enter (keyCode 229, isComposing false) does not save", () => {
+    renderControl();
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    const input = screen.getByLabelText("Edit name for Baseball");
+    fireEvent.change(input, { target: { value: "Football" } });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229, isComposing: false });
+    expect(mockRename).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Edit name for Baseball")).toBe(input);
+  });
+
+  it("a soft keyboard's insertLineBreak beforeinput saves instead of adding a newline", async () => {
+    renderControl();
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    const input = screen.getByLabelText("Edit name for Baseball") as HTMLTextAreaElement;
+    expect(input.getAttribute("enterkeyhint")).toBe("done");
+    fireEvent.change(input, { target: { value: "Football" } });
+    const ev = new Event("beforeinput", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "inputType", { value: "insertLineBreak" });
+    const notPrevented = input.dispatchEvent(ev);
+    expect(notPrevented).toBe(false);
+    await waitFor(() => expect(mockRename).toHaveBeenCalledWith({ id: ID, value: "Football" }));
+  });
+
+  it("other beforeinput types are left alone", () => {
+    renderControl();
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    const input = screen.getByLabelText("Edit name for Baseball");
+    const ev = new Event("beforeinput", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "inputType", { value: "insertText" });
+    expect(input.dispatchEvent(ev)).toBe(true);
+    expect(mockRename).not.toHaveBeenCalled();
+  });
+
+  it("sizes itself to its content as a fallback for field-sizing", () => {
+    renderControl();
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    const input = screen.getByLabelText("Edit name for Baseball") as HTMLTextAreaElement;
+    Object.defineProperty(input, "scrollHeight", { configurable: true, value: 96 });
+    fireEvent.input(input);
+    expect(input.style.height).toBe("96px");
+  });
+
+  it("re-applies its height when the field's width changes, and stops observing on close", () => {
+    const callbacks: Array<() => void> = [];
+    const disconnect = vi.fn();
+    class MockRO {
+      constructor(cb: () => void) {
+        callbacks.push(cb);
+      }
+      observe() {}
+      disconnect = disconnect;
+    }
+    vi.stubGlobal("ResizeObserver", MockRO);
+    try {
+      renderControl();
+      fireEvent.click(screen.getByLabelText("Rename Baseball"));
+      const input = screen.getByLabelText("Edit name for Baseball") as HTMLTextAreaElement;
+      Object.defineProperty(input, "scrollHeight", { configurable: true, value: 64 });
+      expect(callbacks).toHaveLength(1);
+      callbacks[0]();
+      expect(input.style.height).toBe("64px");
+      Object.defineProperty(input, "scrollHeight", { configurable: true, value: 120 });
+      callbacks[0]();
+      expect(input.style.height).toBe("120px");
+      fireEvent.keyDown(input, { key: "Escape" });
+      expect(disconnect).toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("commits on Enter with the trimmed value", async () => {
@@ -78,6 +191,19 @@ describe("RenameEntityControl", () => {
 
     expect(mockRename).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Rename Baseball")).toBeTruthy();
+    expect(screen.queryByLabelText("Edit name for Baseball")).toBeNull();
+  });
+
+  it("opens again holding the stored name after an Escape, not what was typed", () => {
+    renderControl();
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    fireEvent.change(screen.getByLabelText("Edit name for Baseball"), { target: { value: "Nope" } });
+    fireEvent.keyDown(screen.getByLabelText("Edit name for Baseball"), { key: "Escape" });
+
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    expect((screen.getByLabelText("Edit name for Baseball") as HTMLTextAreaElement).value).toBe(
+      "Baseball",
+    );
   });
 
   it("does not call the mutation when the value is unchanged", async () => {
