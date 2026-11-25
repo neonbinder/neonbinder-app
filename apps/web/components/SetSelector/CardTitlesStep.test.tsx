@@ -42,11 +42,24 @@ const CONTEXT: TitleContext = {
 const SHORT: TitleContext = { ...CONTEXT, setNameValue: "Chrome" };
 const OVER: TitleContext = { ...CONTEXT, setNameValue: OVER_SET };
 
-/** Every "Left out to fit" list on the step, in page order, as its pills (NEO-665: one per thing). */
-function leftOutLists(): string[][] {
+/**
+ * Every "Left out to fit" line on the step, in page order (NEO-665). The step's
+ * lists are unnamed (`listNamed={false}`, so a field's description keeps the
+ * pills), so each line is found by its visible label; its `<ul>` follows it.
+ */
+function leftOutUls(): HTMLElement[] {
   return screen
-    .queryAllByRole("list", { name: "Left out to fit" })
-    .map((list) => within(list).getAllByRole("listitem").map((li) => li.textContent ?? ""));
+    .queryAllByText("Left out to fit")
+    .map((label) => label.nextElementSibling as HTMLElement);
+}
+
+/** The step's "Left out to fit" lines, as their pills: the item text, not the screen-reader ", " after it. */
+function leftOutLists(): string[][] {
+  return leftOutUls().map((list) =>
+    within(list)
+      .getAllByRole("listitem")
+      .map((li) => li.firstChild?.textContent ?? ""),
+  );
 }
 
 function card(n: string, extra: Partial<PreviewCardForTitles> = {}): PreviewCardForTitles {
@@ -124,7 +137,7 @@ describe("CardTitlesStep — what is on screen", () => {
     });
     // NEO-609: a variation is never cut, so the shared drop is a RELIC.
     expect(leftOutLists()).toEqual([["RELIC"], ["Shohei"], ["#2", "Julio"]]);
-    const shared = screen.getAllByRole("list", { name: "Left out to fit" })[0].parentElement!;
+    const shared = leftOutUls()[0].parentElement!;
     expect(shared.textContent).toContain("(2 cards)");
     expect(shared.textContent).not.toMatch(/Shohei|Julio/);
   });
@@ -275,9 +288,7 @@ describe("CardTitlesStep — recomputed from the team answers", () => {
     // Both fields lack the team now: it is the line they share.
     const lists = leftOutLists();
     expect(lists[0]).toContain("Los Angeles Dodgers");
-    expect(
-      screen.getAllByRole("list", { name: "Left out to fit" })[0].parentElement?.textContent,
-    ).toContain("(2 cards)");
+    expect(leftOutUls()[0].parentElement?.textContent).toContain("(2 cards)");
     expect(lists.slice(1)).toContainEqual(["Shohei"]);
     expect(
       (screen.getByRole("textbox", { name: "Title for #2 Card 2" }) as HTMLInputElement).value,

@@ -314,7 +314,12 @@ describe("CardTitlesStep — the box and a title the operator edited (NEO-637)",
   /** The "Left out to fit" lists under a title field's own row (its group line is above the row). */
   const lineUnder = (field: HTMLElement) => {
     const row = field.closest("li");
-    return row ? within(row).queryAllByRole("list", { name: "Left out to fit" }) : [];
+    // The step's lists are unnamed (listNamed={false}); the label's next sibling is the <ul>.
+    return row
+      ? within(row)
+          .queryAllByText("Left out to fit")
+          .map((label) => label.nextElementSibling as HTMLElement)
+      : [];
   };
 
   test("a hand edit that shows the line: only the old set-name text is swapped, the rest is kept", () => {
@@ -324,8 +329,8 @@ describe("CardTitlesStep — the box and a title the operator edited (NEO-637)",
     // The first name is out of that field and the other card's: the group's line shows.
     expect(
       screen
-        .getAllByRole("list", { name: "Left out to fit" })
-        .some((list) => within(list).queryByText("Shohei") !== null),
+        .getAllByText("Left out to fit")
+        .some((label) => within(label.nextElementSibling as HTMLElement).queryByText("Shohei") !== null),
     ).toBe(true);
     fireEvent.change(screen.getByRole("textbox", { name: LABEL }), { target: { value: BOX } });
     expect(titleFields().map((f) => f.value)).toEqual([

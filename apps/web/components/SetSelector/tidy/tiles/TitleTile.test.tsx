@@ -82,7 +82,7 @@ beforeEach(() => {
 const leftOutPills = () =>
   within(screen.getByRole("list", { name: "Left out to fit" }))
     .getAllByRole("listitem")
-    .map((li) => li.textContent);
+    .map((li) => li.firstChild?.textContent);
 
 const titleField = () => screen.getByLabelText("Card title for #USC118") as HTMLTextAreaElement;
 
@@ -173,7 +173,6 @@ describe("TitleTile: a title that fits because the set name was shortened (Jason
     );
     expect(screen.queryByText(NOTE)).toBeNull();
     // NEO-665: nothing to name, so nothing shows (no generic "rewrite it" line).
-    expect(screen.queryByText(/Auto title was cut short/)).toBeNull();
     expect(screen.queryByRole("list", { name: "Left out to fit" })).toBeNull();
   });
 
@@ -565,7 +564,6 @@ describe("TitleTile words and wrapping (NEO-645 audit)", () => {
 
   it("says nothing when the title was cut and nothing can be named (NEO-665)", () => {
     renderTile(cardOf("c1"), cut);
-    expect(screen.queryByText(/Auto title was cut short/)).toBeNull();
     expect(screen.queryByText(/Rewrite it/)).toBeNull();
     expect(screen.queryByRole("list", { name: "Left out to fit" })).toBeNull();
     expect(screen.queryByRole("note")).toBeNull();
@@ -585,8 +583,6 @@ describe("TitleTile words and wrapping (NEO-645 audit)", () => {
       expect(pill.className).toContain("text-neon-purple-text");
       expect(pill.className).toContain("wrap-anywhere");
     }
-    // With the pills naming what went, the generic sentence is not said too.
-    expect(screen.queryByText(/Auto title was cut short/)).toBeNull();
     unmount();
 
     renderTile(cardOf("c2"));

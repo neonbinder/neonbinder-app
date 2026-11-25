@@ -820,6 +820,7 @@ function TitleGroups({
                 {hasLine && (
                   <LeftOutPills
                     id={lineId}
+                    listNamed={false}
                     items={group.leftOut}
                     className="mb-1.5"
                     trailing={
@@ -919,7 +920,7 @@ function TitleRow({
         {/* What this card's field lacks beyond its group's line — most often
             its own names and number, the loss an operator most wants to put
             back, so it sits right under the field. */}
-        <LeftOutPills id={ownLineId} items={card.leftOut} className="mt-0.5" />
+        <LeftOutPills id={ownLineId} listNamed={false} items={card.leftOut} className="mt-0.5" />
         <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 text-xs">
           {edited ? (
             <NeonButton
