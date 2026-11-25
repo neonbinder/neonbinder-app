@@ -396,7 +396,8 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/tidy-walk.ts`: the per-card Tidy Up walk (NEO-645). Open and read
   it: `tidyWalk`, `tidyUpName`, `expectTidyWalkOpen`, `expectCardSettled`,
   `expectCardsLeft`, `needsYouPill`, `openTidyWalk`, `settleWalkAfterCommit`
-  (after "Saved N cards.": did the walk open?), `tidyTile`, `pinkTile`,
+  (after "Saved N cards.": did the walk open? `opens: true` awaits it when the
+  spec knows; the live career gaps answer after the line, NEO-656), `tidyTile`, `pinkTile`,
   `mustFixLine`, `tidyCardHeader`, `EDIT` (an answered row's `Edit <name>`
   button name, cameo rows excluded; scope it to the row's group). Move:
   `saveAndNext`, `skipCard`,

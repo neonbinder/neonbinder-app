@@ -9,10 +9,7 @@ import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import TidyTile, { ApplyToAllButton, WRAP_LABEL_CLASS, type TidyTileLevel } from "../TidyTile";
 import type { TidyTileProps } from "../tile-types";
-import {
-  isOpenDisagreement,
-  type TidyDisagreement as RowDisagreement,
-} from "../../../../convex/features/cardAttention";
+import type { TidyDisagreement as RowDisagreement } from "../../../../convex/features/cardAttention";
 import { useWalkMemory, type KeptPick } from "../walk-memory";
 
 /**
@@ -35,8 +32,7 @@ import { useWalkMemory, type KeptPick } from "../walk-memory";
  * card is open (`WalkMemory.keepPick`), and the tile renders "Using" from that;
  * Change and Apply-to-the-same send the values the sources gave (`offered`),
  * because the card no longer carries them. Once the walk leaves the card the
- * result is changed on the Player or Team tile. An entry still carrying the
- * legacy `chosen` is settled and offers nothing (`isOpenDisagreement`).
+ * result is changed on the Player or Team tile.
  *
  * There is no "Not sure yet": a card cannot be listed without the answer.
  * Picks save as they are made (J1); the tile never navigates.
@@ -127,7 +123,7 @@ function diffParts(text: string, other: string): { head: string; mid: string; ta
 
 export default function SourcesDisagreeTile({ row, leafCards, context }: TidyTileProps) {
   const memory = useWalkMemory();
-  const open = (row.sourceDisagreements ?? []).filter(isOpenDisagreement);
+  const open = row.sourceDisagreements ?? [];
   // The picks made on this card that it no longer carries.
   const kept = (["players", "teams"] as const).flatMap((field) => {
     const pick = memory.pickFor(row._id, field);
@@ -228,7 +224,7 @@ function DisagreementEntry({
       .filter((c) => c._id !== row._id)
       .filter((c) =>
         (c.sourceDisagreements ?? []).some(
-          (d) => d.field === entry.field && isOpenDisagreement(d) && disagreementKey(d) === key,
+          (d) => d.field === entry.field && disagreementKey(d) === key,
         ),
       )
       .slice(0, MAX_APPLY_CARDS);

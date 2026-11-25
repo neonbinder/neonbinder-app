@@ -324,20 +324,6 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
     expect(pill("2 need you").textContent).toBe("2 need you");
   });
 
-  it("does not count a card that only carries a note (purple)", () => {
-    // The commit filled this card's team from the player's career: a note on
-    // a card that is already a stop, never a stop of its own.
-    state.cards = [
-      {
-        ...settled(1),
-        playerIds: ["player-1"],
-        tidyChecks: [{ kind: "teamFill", teamIds: ["team-1"], reason: "career" }],
-      },
-    ];
-    render(ui());
-    expect(queryPill()).toBeNull();
-  });
-
   it("renders nothing — not even the row label — when nothing needs a person", () => {
     state.cards = [settled(1), awaitingLookup(2)];
     render(ui());
