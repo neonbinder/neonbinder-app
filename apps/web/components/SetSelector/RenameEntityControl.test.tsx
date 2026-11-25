@@ -99,6 +99,16 @@ describe("RenameEntityControl", () => {
     expect(screen.getByLabelText("Edit name for Baseball")).toBe(input);
   });
 
+  it("Safari's composition-confirming Enter (keyCode 229, isComposing false) does not save", () => {
+    renderControl();
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    const input = screen.getByLabelText("Edit name for Baseball");
+    fireEvent.change(input, { target: { value: "Football" } });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229, isComposing: false });
+    expect(mockRename).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Edit name for Baseball")).toBe(input);
+  });
+
   it("a soft keyboard's insertLineBreak beforeinput saves instead of adding a newline", async () => {
     renderControl();
     fireEvent.click(screen.getByLabelText("Rename Baseball"));
@@ -129,6 +139,35 @@ describe("RenameEntityControl", () => {
     Object.defineProperty(input, "scrollHeight", { configurable: true, value: 96 });
     fireEvent.input(input);
     expect(input.style.height).toBe("96px");
+  });
+
+  it("re-applies its height when the field's width changes, and stops observing on close", () => {
+    const callbacks: Array<() => void> = [];
+    const disconnect = vi.fn();
+    class MockRO {
+      constructor(cb: () => void) {
+        callbacks.push(cb);
+      }
+      observe() {}
+      disconnect = disconnect;
+    }
+    vi.stubGlobal("ResizeObserver", MockRO);
+    try {
+      renderControl();
+      fireEvent.click(screen.getByLabelText("Rename Baseball"));
+      const input = screen.getByLabelText("Edit name for Baseball") as HTMLTextAreaElement;
+      Object.defineProperty(input, "scrollHeight", { configurable: true, value: 64 });
+      expect(callbacks).toHaveLength(1);
+      callbacks[0]();
+      expect(input.style.height).toBe("64px");
+      Object.defineProperty(input, "scrollHeight", { configurable: true, value: 120 });
+      callbacks[0]();
+      expect(input.style.height).toBe("120px");
+      fireEvent.keyDown(input, { key: "Escape" });
+      expect(disconnect).toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("commits on Enter with the trimmed value", async () => {

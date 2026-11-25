@@ -196,6 +196,15 @@ export default function RenameEntityControl({
   useEffect(() => {
     if (editing) grow();
   }, [editing]);
+  // A rotation or resize changes the wrapping width without any input, so the
+  // height set above would go stale and clip the name: re-measure on resize.
+  useEffect(() => {
+    const field = inputRef.current;
+    if (!editing || !field || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => grow());
+    observer.observe(field);
+    return () => observer.disconnect();
+  }, [editing]);
 
   const commit = async () => {
     // Read the live DOM value (uncontrolled input) — see the NEO-36 note above.
@@ -318,8 +327,10 @@ export default function RenameEntityControl({
             // Stop the row's own handlers from seeing these — the row is a
             // sibling button and Enter would otherwise also select it.
             e.stopPropagation();
-            // An Enter that confirms an IME composition is not a save.
-            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+            // An Enter that confirms an IME composition is not a save. Safari
+            // sends that Enter after compositionend (isComposing already false)
+            // with keyCode 229, so both signals are checked.
+            if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) {
               // A name is one line: Enter saves rather than adding a newline.
               e.preventDefault();
               void commit();
