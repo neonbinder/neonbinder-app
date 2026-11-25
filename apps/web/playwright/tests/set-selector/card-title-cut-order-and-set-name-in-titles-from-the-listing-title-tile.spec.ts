@@ -17,10 +17,11 @@
 //     only the "#" of its card number goes then (the 81 rule), nothing is
 //     reported left out.
 //   * Card B's longer number cannot come back even bare: the number goes, the
-//     player's full name stays, and the drawer says "Left out to fit: #<num>".
-//     Typing the number back into the field takes the note away at once (the
-//     note is read from the field's text, not from the generated assessment:
-//     the NEO-535 stale-note fix), and Regenerate brings both back.
+//     player's full name stays, and the drawer's "Left out to fit" list holds
+//     one pill, "#<num>" (NEO-665). Typing the number back into the field takes
+//     the list away at once (it is read from the field's text, not from the
+//     generated assessment: the NEO-535 stale-note fix), and Regenerate brings
+//     both back.
 //   * Card C sits under an insert whose name never fits: its stored title is
 //     over 80 after every cut, so the Tidy Up walk (NEO-645) shows its
 //     "Listing title" tile PINK and open for editing. The tile's "Shorten the
@@ -37,13 +38,13 @@
 //     dropping the location is the cut that makes the title fit, so its STORED
 //     title (written at creation, no Regenerate) names the team by its
 //     nickname and nothing is reported left out. Card E's team has the same
-//     length and no location: it can only go whole, and the note names it in
-//     full.
+//     length and no location: it can only go whole, and the "Left out to fit"
+//     list names it in full, one pill.
 //   * NEO-637: once the row holds a "Set name in titles", a card added under it
-//     takes the box only when its own title would show the yellow line. Card F
+//     takes the box only when its own title would show "Left out to fit". Card F
 //     (card Q's shape) leaves nothing out and is stored with the builder's
 //     description; card G (card B's shape) would leave its number out, so it is
-//     stored from the box, the number back and no line. Built from the box with
+//     stored from the box, the number back and no pills. Built from the box with
 //     nothing left out, card G carries no "listing title was cut short" in its
 //     checklist mark, while card B (its number left out) does (NEO-645).
 //
@@ -51,9 +52,11 @@
 //   * Every title is a full-string match computed from the cut rules (below),
 //     so a different cut order, a lost "#" rule, a cut description word or a
 //     prepended year/maker each fail on the value.
-//   * The "Left out to fit" absences are paired with the "Title built from"
-//     chips, which render only once Regenerate's preview has answered, so a
-//     note that never loaded cannot pass for "nothing left out".
+//   * The "Left out to fit" list (NEO-665: a list named by its visible label,
+//     one purple pill per item) is asserted pill by pill, so a pill dropped,
+//     added or reordered fails. Its absences are paired with the "Title built
+//     from" chips, which render only once Regenerate's preview has answered, so
+//     a list that never loaded cannot pass for "nothing left out".
 //   * Card C's stored title, read back in the drawer after the walk, is the
 //     full-string box title: a set name the tile kept to itself, or one the
 //     server prefixed with the year and maker, fails there; the panel's value
@@ -65,7 +68,7 @@
 //     (or a location dropped where the team has none) fails on the value.
 //   * Card F's value opens with the description, not the box (a box applied to a
 //     title that left nothing out fails there), and card G's opens with the box
-//     and holds the number (a box held back from a title with the line fails).
+//     and holds the number (a box held back from a title with pills fails).
 //
 // Desktop and mobile - CardDetailPanel and the Attributes panel render the
 // same controls with the same names at phone width; only widths change (the
@@ -259,7 +262,12 @@ test(
     const cardTitle = drawer.getByRole("textbox", { name: "Card title", exact: true });
     const regenerate = drawer.getByRole("button", { name: "Regenerate card title" });
     const builtFrom = drawer.getByRole("list", { name: "Title built from" });
-    const leftOut = drawer.getByText(/^Left out to fit: /);
+    // NEO-665: the visible "Left out to fit" label names a list of one purple
+    // pill per item. Every pill but the last ends in a screen-reader-only ", ",
+    // so a pill's text is matched whole with that separator optional.
+    const leftOut = drawer.getByRole("list", { name: "Left out to fit" });
+    const leftOutPills = leftOut.getByRole("listitem");
+    const pillText = (text: string) => new RegExp(`^${escapeRe(text)},?\\s*$`);
     const overCap = drawer.getByRole("alert").filter({ hasText: /over the 80-character limit/ });
     const doneEditing = page.getByRole("button", { name: "Done editing card" });
 
@@ -316,13 +324,13 @@ test(
     await expect(cardTitle).toHaveValue(titleB);
     await expect(builtFrom.getByRole("listitem").filter({ hasText: `#${numB}` })).toBeVisible();
     // Exactly the number: no first name, no sport, no label is reported.
-    await expect(leftOut).toHaveText(`Left out to fit: #${numB}`);
+    await expect(leftOutPills).toHaveText([pillText(`#${numB}`)]);
     await expectAccessible(page, { within: drawer, label: "Card drawer, number left out to fit" });
     // Phone vs desktop (the one layout difference in this flow): the drawer is
     // `w-full max-w-[95vw]` below the sm breakpoint and 45rem above it; the
     // Attributes panel only goes from one column to two. Same controls, same
     // names on both, so only the drawer's width is asserted per project, and
-    // the note must sit inside the viewport either way.
+    // the pills must sit inside the viewport either way.
     const viewport = page.viewportSize();
     const drawerBox = await drawer.boundingBox();
     if (!viewport || !drawerBox) throw new Error("the drawer and the viewport must be measurable");
@@ -334,19 +342,19 @@ test(
     await leftOut.scrollIntoViewIfNeeded();
     await expect(leftOut).toBeInViewport();
 
-    // The note follows the field: typing the number back takes it off at once
+    // The list follows the field: typing the number back takes it off at once
     // (the title is then over the cap, which the drawer says, and is not saved).
     await cardTitle.fill(`${titleB} #${numB}`);
     await expect(overCap).toBeVisible();
     await expect(leftOut).toHaveCount(0);
     await expectAccessible(page, { within: drawer, label: "Card drawer, number typed back, note gone" });
     // Regenerate asks twice over typed text, then puts the generated title and
-    // its note back.
+    // its pill back.
     await regenerate.click();
     await expect(drawer.getByText("Regenerate again to replace the title you have typed.")).toBeVisible();
     await regenerate.click();
     await expect(cardTitle).toHaveValue(titleB);
-    await expect(leftOut).toHaveText(`Left out to fit: #${numB}`);
+    await expect(leftOutPills).toHaveText([pillText(`#${numB}`)]);
     await expect(overCap).toHaveCount(0);
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
@@ -356,7 +364,7 @@ test(
     // stored with at creation (no Regenerate here) names the team by its
     // nickname, and nothing is reported left out: a location is not a team,
     // and the type name and the sport are quiet cuts.
-    // The chips are drawn from the preview, so they prove the note has loaded.
+    // The chips are drawn from the preview, so they prove the list has loaded.
     await addBrettCard(page, NUM_D, teamD);
     await editCardButton(page, NUM_D).click();
     await expect(cardTitle).toBeVisible();
@@ -367,12 +375,12 @@ test(
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
     // Card E: a team with no location can only be dropped whole (a Tidy Up
-    // cut), and the yellow note names it in full.
+    // cut), and its one "Left out to fit" pill names it in full.
     await addBrettCard(page, NUM_E, teamE);
     await editCardButton(page, NUM_E).click();
     await expect(cardTitle).toBeVisible();
     await expect(cardTitle).toHaveValue(titleE);
-    await expect(leftOut).toHaveText(`Left out to fit: ${teamE.name}`);
+    await expect(leftOutPills).toHaveText([pillText(teamE.name)]);
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
 
@@ -441,8 +449,9 @@ test(
     const shortenedNote = titleTile.getByRole("note").filter({ hasText: /^Set name shortened to fit\.$/ });
     await expect(shortenedNote).toBeVisible();
     await expect(titleTile).not.toHaveAccessibleDescription(/To (check|fix)/);
-    await expect(titleTile.getByText("Auto title was cut short. Rewrite it.", { exact: true })).toHaveCount(0);
-    await expect(titleTile.getByRole("note").filter({ hasText: /^Left out to fit:/ })).toHaveCount(0);
+    // Nothing was left out, so no "Left out to fit" list (NEO-665: nothing to
+    // name means nothing shows).
+    await expect(titleTile.getByRole("list", { name: "Left out to fit" })).toHaveCount(0);
     await expectAccessible(page, { within: walk, label: "Tidy Up walk, a title that fits on the shortened set name" });
 
     // The card has no team: say so, and the card is done. The answer
@@ -500,7 +509,7 @@ test(
     // cards are inserted with the box already stored.
     await addBrettCard(page, NUM_F);
     await addBrettCard(page, numG);
-    // Card F leaves nothing out (only the quiet type name goes), so no line and
+    // Card F leaves nothing out (only the quiet type name goes), so no pills and
     // no box: the builder's own description opens it.
     await editCardButton(page, NUM_F).click();
     await expect(cardTitle).toBeVisible();
@@ -509,7 +518,7 @@ test(
     await expect(leftOut).toHaveCount(0);
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
-    // Card G would leave its number out (the line), so the box opens it and the
+    // Card G would leave its number out (a pill), so the box opens it and the
     // number is back: nothing is reported left out.
     await editCardButton(page, numG).click();
     await expect(cardTitle).toBeVisible();

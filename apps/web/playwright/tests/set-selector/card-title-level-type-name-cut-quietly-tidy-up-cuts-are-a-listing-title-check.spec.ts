@@ -9,19 +9,20 @@
 // The flow, on one hand-made card under a custom "Proofs" variant type:
 //   * Born (quick-add, no print run): the stored title gave up the type name,
 //     the sport, the team (no Location, so it can only go whole) and the first
-//     name, and the number came back bare; the drawer says "Left out to fit:
-//     <team>, Bartholomew" (never the type name or the sport), and the "Title
-//     built from" chip for the level is labelled "Proof".
+//     name, and the number came back bare; the drawer's "Left out to fit" list
+//     holds two purple pills, "<team>" then "Bartholomew" (never the type name
+//     or the sport; NEO-665), and the "Title built from" chip for the level is
+//     labelled "Proof".
 //   * With a print run of 25 saved, the drawer's Regenerate keeps "/25" and
 //     the level's name, gives up the team, the number and the first name, and
-//     the note lists all three. A generated title still past the Tidy Up line
+//     the list holds all three pills. A generated title still past the Tidy Up line
 //     keeps its flag, so the checklist still badges the card "is worth a check"
 //     and the header pill counts it. Blue reads live data (NEO-656 J5, B22):
 //     the new player has no career yet, so the badge also says "team is missing
 //     from the player's career", the commit-free live career check.
 //   * The pill opens the walk on that card. Its Listing title tile is "To
 //     check" (blue, not pink): the title is shown as text with its meter and the
-//     same "Left out to fit" line, it does not open for editing, and Save &
+//     same "Left out to fit" pills, it does not open for editing, and Save &
 //     next is usable. The Career tile beside it is blue too. The walk's place
 //     is in the address (Back closes it, Forward reopens it on the card).
 //   * Save & next adds the default stint for the career gap it shows (D14) and
@@ -38,7 +39,8 @@
 // and the usable Save & next; a Save & next that hid the cut (a stored "seen")
 // fails on the end screen, the badge and the pill; a career reason that stayed
 // after the stint fails on the badge's exact name. The "Left out to fit"
-// absences of the type name and the sport are proved by the exact note text.
+// absences of the type name and the sport are proved by the exact pill list:
+// every pill, in order, and no other (NEO-665).
 //
 // Fixture arithmetic - exact on every runner. ATTEMPT_TOKEN is 12 characters at
 // most, so the set name, the surname and the team are padded to fixed lengths;
@@ -71,7 +73,7 @@
 // Save & next writes lands on that minted player, never a catalogue one.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToCustomSet, setBuilderReady } from "../../support/set-builder";
-import { editCardButton } from "../../support/cards";
+import { editCardButton, escapeRe } from "../../support/cards";
 import {
   expectCardSettled,
   expectTidyWalkOpen,
@@ -112,7 +114,12 @@ test(
     const drawer = page.getByRole("dialog", { name: /^Card #/ });
     const cardTitle = drawer.getByRole("textbox", { name: "Card title", exact: true });
     const builtFrom = drawer.getByRole("list", { name: "Title built from" });
-    const leftOut = drawer.getByText(/^Left out to fit: /);
+    // NEO-665: the visible "Left out to fit" label names a list of one purple
+    // pill per item. Every pill but the last ends in a screen-reader-only ", ",
+    // so a pill's text is matched whole with that separator optional.
+    const pillText = (text: string) => new RegExp(`^${escapeRe(text)},?\\s*$`);
+    const leftOutPills = drawer.getByRole("list", { name: "Left out to fit" }).getByRole("listitem");
+    const allCut = [pillText(team), pillText(`#${NUMBER}`), pillText(FIRST)];
     const doneEditing = page.getByRole("button", { name: "Done editing card" });
     const cardName = page.getByRole("textbox", { name: "Card name", exact: true });
 
@@ -158,7 +165,7 @@ test(
     // Tidy Up cuts, and only those two are reported. The number came back bare.
     await editCardButton(page, NUMBER).click();
     await expect(cardTitle).toHaveValue(bornTitle);
-    await expect(leftOut).toHaveText(`Left out to fit: ${team}, ${FIRST}`);
+    await expect(leftOutPills).toHaveText([pillText(team), pillText(FIRST)]);
     // The level's chip carries its type's name, said in the singular.
     const levelChip = builtFrom.getByRole("listitem").filter({ hasText: LEVEL });
     await expect(levelChip.getByText(TYPE_AS_SAID, { exact: true })).toBeVisible();
@@ -172,12 +179,12 @@ test(
     await expect(cardTitle).toHaveValue(bornTitle);
 
     // The drawer's Regenerate, with the print run in hand: /25 is never cut, so
-    // the number goes too, and the note lists the team, the number and the
+    // the number goes too, and the pills name the team, the number and the
     // first name. Saved, as a title the generator built.
     await drawer.getByRole("button", { name: "Regenerate card title" }).click();
     await expect(cardTitle).toHaveValue(listedTitle);
     await expect(page.getByText(/Saved Card title/).first()).toBeVisible();
-    await expect(leftOut).toHaveText(`Left out to fit: ${team}, #${NUMBER}, ${FIRST}`);
+    await expect(leftOutPills).toHaveText(allCut);
     await expect(cardTitle).not.toHaveAttribute("aria-invalid", "true");
     await expect(levelChip.getByText(TYPE_AS_SAID, { exact: true })).toBeVisible();
     await expectAccessible(page, { within: drawer, label: "Card drawer, a rebuilt title that keeps its print run" });
@@ -204,14 +211,14 @@ test(
     await expect(page).toHaveURL(/[?&]tidy=/);
 
     // The Listing title tile: blue ("To check"), the title as text with its
-    // meter and the generated title's "Left out to fit" line. A cut that fits
+    // meter and the generated title's "Left out to fit" pills. A cut that fits
     // is not opened for editing (that is the over-cap pink tile).
     const titleTile = tidyTile(page, "Listing title");
     await expect(titleTile).toHaveAccessibleDescription(/To check/);
     await expect(pinkTile(page, "Listing title")).toHaveCount(0);
     await expect(titleTile.getByText(listedTitle, { exact: true })).toBeVisible();
     await expect(titleTile.getByText(`${listedTitle.length}/80`, { exact: true })).toBeVisible();
-    await expect(titleTile.getByText(`Left out to fit: ${team}, #${NUMBER}, ${FIRST}`, { exact: true })).toBeVisible();
+    await expect(titleTile.getByRole("list", { name: "Left out to fit" }).getByRole("listitem")).toHaveText(allCut);
     await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
     await expect(titleTile.getByRole("textbox")).toHaveCount(0);
     // The live career gap is its own blue tile, and Save & next says what it does.
@@ -251,7 +258,7 @@ test(
     await expect(pill).toBeVisible();
     await editCardButton(page, NUMBER).click();
     await expect(cardTitle).toHaveValue(listedTitle);
-    await expect(leftOut).toHaveText(`Left out to fit: ${team}, #${NUMBER}, ${FIRST}`);
+    await expect(leftOutPills).toHaveText(allCut);
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
   },
