@@ -64,7 +64,7 @@ import { isGenerationalSuffix } from "../../lib/players/name-fragment";
 import { teamFullName } from "../../lib/teams/team-name";
 import { cardSubjectName } from "../../lib/cards/unnamed-card";
 import { foldNameForCompare } from "../../lib/entities/normalize-name";
-import { foldWord, parallelAfterInsert, parallelOpensWithInsert, roughlySays } from "../listingShortName";
+import { foldWord, parallelAfterInsert, parallelOpensWithInsert } from "../listingShortName";
 
 /** NEO-606 — a team row's Location / Name, as `ListingCardInputs.teamSplits` carries it. */
 export type ListingTeamSplit = { location: string; name: string };
@@ -1425,15 +1425,28 @@ export function leftOutOfTitle(inputs: ListingCardInputs, text: string): string[
 }
 
 /**
+ * NEO-665 — does `text` carry every word of `name`, exactly? Case and edge
+ * punctuation are folded; a plural "s" is not ("Red" does not say "Reds").
+ */
+function saysExactly(text: string, name: string): boolean {
+  const wanted = bareWordsOf(name);
+  if (wanted.length === 0) return false;
+  const present = new Set(bareWordsOf(text));
+  return wanted.every((w) => present.has(w));
+}
+
+/**
  * NEO-535 — does `text` already name `team`, roughly? A title (or the box text
  * it opens with) that says "Dodgers" has told the buyer the team, so "Los
  * Angeles Dodgers" is not "left out" of "2024 Topps Dodgers Japan Edition".
  *
- * Said when the text roughly says (`roughlySays`: case, a plural "s" folded)
- * the whole name, or its nickname: the last word of a name of two words or
- * more, once a trailing sport word is set aside ("Oregon Ducks baseball" reads
- * "Ducks"). A one-word team is said only whole. Display only: it decides what
- * "Left out to fit" lists, never what a title carries.
+ * Said when the text carries the exact words (`saysExactly`: case and edge
+ * punctuation folded, NO plural fold: a parallel "Prismatic Red" does not say
+ * the Cincinnati "Reds", NEO-665) of the whole name, or its nickname: the last
+ * word of a name of two words or more, once a trailing sport word is set aside
+ * ("Oregon Ducks baseball" reads "Ducks"). A one-word team is said only whole.
+ * Display only: it decides what "Left out to fit" lists, never what a title
+ * carries.
  */
 function titleNamesTeam(
   text: string,
@@ -1441,7 +1454,7 @@ function titleNamesTeam(
   sport: string | undefined,
   nickname?: string,
 ): boolean {
-  if (alreadySaid(text, team) || roughlySays(text, team)) return true;
+  if (alreadySaid(text, team) || saysExactly(text, team)) return true;
   const sportWord = sport?.trim().toLowerCase();
   const withoutSport = (name: string): string[] => {
     const words = name.split(/\s+/).filter(Boolean);
@@ -1457,15 +1470,15 @@ function titleNamesTeam(
   if (nickname) {
     return (
       alreadySaid(text, nickname) ||
-      roughlySays(text, nickname) ||
-      roughlySays(text, withoutSport(nickname).join(" "))
+      saysExactly(text, nickname) ||
+      saysExactly(text, withoutSport(nickname).join(" "))
     );
   }
   const words = withoutSport(team);
-  if (words.length < team.split(/\s+/).filter(Boolean).length && roughlySays(text, words.join(" "))) {
+  if (words.length < team.split(/\s+/).filter(Boolean).length && saysExactly(text, words.join(" "))) {
     return true;
   }
-  return words.length > 1 && roughlySays(text, words[words.length - 1]);
+  return words.length > 1 && saysExactly(text, words[words.length - 1]);
 }
 
 /**

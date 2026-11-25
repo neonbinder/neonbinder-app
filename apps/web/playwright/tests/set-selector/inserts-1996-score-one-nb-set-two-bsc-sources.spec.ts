@@ -6,8 +6,8 @@
 // 110 cards, a captured publisher's checklist uploaded first) is renamed to a name long enough that
 // every title has to leave something out (NEO-609: a whole team, the number or a first name). The
 // file pairs every card at 100%, so Match Cards sits out (NEO-640): the 110 cards save first, each
-// worth a check, and the walk opens on them. Card by card the tile shows what went ("Left out
-// to fit"), takes titles typed by hand (one typed past 80 is refused in place), and "Shorten the
+// worth a check, and the walk opens on them. Card by card the tile shows what went (NEO-665: the
+// "Left out to fit" list, one purple pill per thing), takes titles typed by hand (one typed past 80 is refused in place), and "Shorten the
 // set name for every card" saves a "Set name in titles" that retitles every card. From the walk
 // that is a regeneration (NEO-645 C7): every title is rebuilt with the set name, the ones typed by
 // hand included. A title that fits only because the set name was shortened, with nothing else
@@ -159,7 +159,11 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   // other card is skipped (Skip writes nothing). Bounded by the checklist's size.
   const titleTile = tidyTile(page, "Listing title");
   const shownTitle = (text: string) => titleTile.getByText(text, { exact: true });
-  const leftOut = titleTile.getByText(/^Left out to fit: /);
+  // NEO-665: what a title left out is a list named "Left out to fit", one pill (listitem) per thing.
+  const leftOut = titleTile.getByRole("list", { name: "Left out to fit", exact: true });
+  const leftOutPills = leftOut.getByRole("listitem");
+  /** A pill's text is the item, plus the sr-only ", " that follows every pill but the last (kept raw by a regex: "Twins, "). */
+  const pill = (item: string) => new RegExp(`^${escapeRe(item)}(,\\s*)?$`);
   const titleBox = (number: number) => titleTile.getByRole("textbox", { name: `Card title for #${number}`, exact: true });
   const editTitle = titleTile.getByRole("button", { name: "Edit title", exact: true });
   /** Type a title by hand and keep it with Enter: the editor closes and the tile shows it. */
@@ -175,17 +179,17 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
     "2": async () => {
       await expect(titleTile).toHaveAccessibleDescription(/To check/);
       await expect(shownTitle(BECKER_BUILT)).toBeVisible();
-      await expect(leftOut).toHaveText(/^Left out to fit: Minnesota Twins, #2$/);
+      await expect(leftOutPills).toHaveText([pill("Minnesota Twins"), pill("#2")]);
     },
     // #3 typed by hand, holding the set's description: "Ryan" and the team stay out.
     "3": async () => {
       await expect(shownTitle(`${LONG_DESCRIPTION} Ryan Klesko`)).toBeVisible();
       await typeTitle(3, KLESKO_OWN(LONG_DESCRIPTION));
     },
-    // #6 fits at exactly 80 and gave up its team alone (nothing after it: no comma).
+    // #6 fits at exactly 80 and gave up its team alone: one pill.
     "6": async () => {
       await expect(shownTitle(THOME_BUILT)).toBeVisible();
-      await expect(leftOut).toHaveText(/^Left out to fit: Cleveland Indians$/);
+      await expect(leftOutPills).toHaveText([pill("Cleveland Indians")]);
     },
     // #8: a title typed past 80 is refused in place (invalid, the pink look, Save title held);
     // then the operator's own, which fits, and Enter keeps it.
@@ -211,8 +215,8 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
     // #12 lost "Darren" and its team, whole (it does not fit even as "Phillies").
     "12": async () => {
       await expect(shownTitle(`${LONG_DESCRIPTION} Daulton #12`)).toBeVisible();
-      await expect(leftOut).toHaveText(/Darren/);
-      await expect(leftOut).toHaveText(/Philadelphia Phillies/);
+      await expect(leftOutPills.filter({ hasText: pill("Darren") })).toHaveCount(1);
+      await expect(leftOutPills.filter({ hasText: pill("Philadelphia Phillies") })).toHaveCount(1);
     },
   };
   const todo = new Set(Object.keys(handlers));
@@ -259,8 +263,8 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(titleTile.getByText("Set name saved. The other cards' titles are updating.", { exact: true })).toBeVisible();
   await expect(box).toBeHidden();
   // #12's STORED title is the set name's now, and nothing is left out of it. It fits only because
-  // the set name was shortened, so it is no blue check: the tile is plain (no "To check") and says
-  // so in a purple note (NEO-645, Jason 2026-11-23). The walk keeps the open card on screen though
+  // the set name was shortened, so it is no blue check: the tile is plain (no "To check"), has no
+  // "Left out to fit" list, and says so in a purple note (NEO-645, Jason 2026-11-23). The walk keeps the open card on screen though
   // it no longer needs a person; STEP P9 reads, last, that its checklist row carries no cut mark.
   await expect(shownTitle(DAULTON_BOXED)).toBeVisible();
   await expect(leftOut).toHaveCount(0);

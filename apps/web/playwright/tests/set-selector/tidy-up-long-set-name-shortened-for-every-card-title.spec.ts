@@ -16,11 +16,13 @@
 // it, its tile is no longer pink and shows the short name without opening for
 // editing. NEO-645 (Jason, 2026-11-23): a title that fits only because the set
 // name was shortened, with nothing else left out, is no blue "cut short" check:
-// the tile stays plain and says "Set name shortened to fit." in a purple note
-// (#901 and #902, still in the walk for their pink Team tile). A third card,
-// #904, carries a 70-character team: even on the short name the team cannot
-// fit, so its title is still cut, and #904 is BLUE ("To check", "Left out to
-// fit: <team>", no purple set-name note). NEO-645 C7, every walk write
+// the tile stays plain and says "Set name shortened to fit." in a purple note,
+// and lists nothing as left out (#901 and #902, still in the walk for their
+// pink Team tile). A third card, #904, carries a 70-character team: even on the
+// short name the team cannot fit, so its title is still cut, and #904 is BLUE
+// ("To check", no purple set-name note, and the team as the one purple pill of
+// the "Left out to fit" list, NEO-665; on a phone the 70-character pill wraps
+// inside the tile). NEO-645 C7, every walk write
 // regenerates the card's title and description, a hand-typed title included. On #901 a title typed in the tile
 // is rebuilt by its team answer; typed again (holding every word, so the
 // NEO-637 rule outside the walk would keep it), a second "Shorten the set name"
@@ -33,6 +35,13 @@
 // #904's "listing title was cut short" mark and the pill reads "1 needs you".
 // The browser's Back/Forward step through the walk's address, and the drawer
 // reads the second card's stored title back.
+//
+// NEO-665, a team is named in a title only by its exact words: the parallel's
+// card #903 carries a team whose one word is the parallel's name plus a plural
+// "s" (a "Prismatic Red" parallel beside the "Reds"). Its title says the
+// parallel's name but has no room for the team, so the walk's Listing title
+// tile lists the team as left out. Before NEO-665 a plural "s" was folded, the
+// parallel's name "said" the team, and the tile listed nothing.
 //
 // The walk's name (NEO-497): an insert other than Base reads as its own name;
 // a parallel (a sub-variant under an insert) carries its insert's name first,
@@ -51,17 +60,22 @@
 // SET-REGISTRY.md). Hand-made, so no marketplace side is resolvable beneath it
 // and every wait is the 7 s budget. Minted names are single tokens from
 // env.ATTEMPT_TOKEN: `tuplongset` + `x` padding + the token (set),
-// `tuphost<token>` (insert), `tupgold<token>` (its parallel) and the set's short
-// names `tupa<token>` / `tups<token>` / `tupb<token>`; the hand-typed titles
-// carry `tuptyped<token>`; #904's team, made in the card form's New team
-// dialog, is `Tuptm<token>` padded with `x` to 70 characters (one token, no
-// Location, so it can only go whole).
+// `tuphost<token>` (insert), `tupred<token>` padded with `x` to 36 characters
+// (its parallel) and the set's short names `tupa<token>` / `tups<token>` /
+// `tupb<token>`; the hand-typed titles carry `tuptyped<token>`; #904's team,
+// made in the card form's New team dialog, is `Tuptm<token>` padded with `x` to
+// 70 characters (one token, no Location, so it can only go whole); #903's team
+// is the parallel's name plus "s" (one token, so the plural rides on a whole
+// one-word team, not a nickname: a two-word team would break the single-token
+// rule).
 //
 // Fixture arithmetic (assessListingTitle, ATTEMPT_TOKEN 1 and 12 characters,
 // workers 0-11): on the short names #901/#902 read "<short> Tup<n><token>
 // #<n> <sport>", 35-58 characters, built from the set-name box with nothing
 // left out (the purple case); #904 with its team is 105-128, and without the
-// team (the only cut) 35-58 (the blue case). Neither parallel name starts with the
+// team (the only cut) 35-58 (the blue case). #903 under the parallel reads
+// "<short> <parallel> Tup903<token> #903" (the box takes the parallel's name
+// after it), 65-77, the sport and the 37-character team cut. Neither parallel name starts with the
 // insert's, so the prefix rule is the only thing that can put the insert's name
 // in the walk's name. R9: drillToCustom for the set stop, then drillToCustomSet
 // to the Insert type; the grouping is the same Group Parallels move the
@@ -118,6 +132,22 @@ async function expectClearAndInside(page: Page, a: Locator, b: Locator, what: st
   }
 }
 
+/** Every one of `items` (a pill) sits inside `container`'s box: wrapped, never running past it. */
+async function expectInside(page: Page, items: Locator, container: Locator, what: string): Promise<void> {
+  const outer = await container.boundingBox();
+  const viewport = page.viewportSize();
+  if (!outer || !viewport) throw new Error(`${what}: the container and the viewport must be measurable`);
+  const count = await items.count();
+  expect(count, `${what}: at least one to measure`).toBeGreaterThan(0);
+  for (let i = 0; i < count; i++) {
+    const box = await items.nth(i).boundingBox();
+    if (!box) throw new Error(`${what}: item ${i} must be measurable`);
+    expect(box.x, `${what}: starts left of its tile`).toBeGreaterThanOrEqual(outer.x);
+    expect(box.x + box.width, `${what}: runs past its tile's right edge`).toBeLessThanOrEqual(outer.x + outer.width);
+    expect(box.x + box.width, `${what}: runs past the viewport's right edge`).toBeLessThanOrEqual(viewport.width);
+  }
+}
+
 /** The open walk's heading and progress bar, by its whole name, laid out clear of each other inside the viewport. */
 async function expectWalkNamed(page: Page, name: string): Promise<void> {
   const walk = tidyWalk(page);
@@ -135,7 +165,9 @@ test(
     const T = env.ATTEMPT_TOKEN;
     const SET = `tuplongset${"x".repeat(100 - "tuplongset".length - T.length)}${T}`;
     const HOST = `tuphost${T}`;
-    const PARALLEL = `tupgold${T}`;
+    // NEO-665: one token; #903's team is this plus a plural "s".
+    const PARALLEL = `tupred${T}`.padEnd(36, "x");
+    const RED_TEAM = `${PARALLEL}s`;
     const FIRST_TRY = `tupa${T}`;
     const SHORT = `tups${T}`;
     const SHORT2 = `tupb${T}`;
@@ -191,16 +223,19 @@ test(
     await expectCardsLeft(page, 3);
     const walk = tidyWalk(page);
     const titleTile = tidyTile(page, "Listing title");
-    // The purple note of a title that fits only on the shortened set name, and the
-    // blue check's own words: a title that fits that way is never "cut short".
+    // The purple note of a title that fits only on the shortened set name, and
+    // (NEO-665) the purple pills of what a title left out: a title that fits that
+    // way leaves nothing out, so it has no "Left out to fit" list.
     const shortenedNote = titleTile.getByRole("note").filter({ hasText: /^Set name shortened to fit\.$/ });
-    const cutShortLine = titleTile.getByText("Auto title was cut short. Rewrite it.", { exact: true });
-    /** The open card's title fits on the short name alone: plain tile, the purple note, no blue check. */
+    const leftOutList = titleTile.getByRole("list", { name: "Left out to fit", exact: true });
+    const leftOutPills = leftOutList.getByRole("listitem");
+    /** A pill's text is the item, plus the sr-only ", " that follows every pill but the last (kept raw by a regex: "Twins, "). */
+    const pill = (item: string) => new RegExp(`^${escapeRe(item)}(,\\s*)?$`);
+    /** The open card's title fits on the short name alone: plain tile, the purple note, nothing left out. */
     const expectFitsOnShortName = async () => {
       await expect(shortenedNote).toBeVisible();
       await expect(titleTile).not.toHaveAccessibleDescription(/To (check|fix)/);
-      await expect(cutShortLine).toHaveCount(0);
-      await expect(titleTile.getByRole("note").filter({ hasText: /^Left out to fit:/ })).toHaveCount(0);
+      await expect(leftOutList).toHaveCount(0);
     };
     /** A title typed by hand in the open card's tile and saved: it fits and holds every word. */
     const typeOwnTitle = async (n: string, setName: string): Promise<string> => {
@@ -303,14 +338,17 @@ test(
     await saveAndNext(page);
 
     // ── #904, retitled by the schedule: its team still does not fit, so it stays BLUE ──
-    const teamLeftOut = titleTile.getByRole("note").filter({ hasText: `Left out to fit: ${TEAM}` });
     await expect(titleTile.getByText(titleWith(SHORT2, "904"))).toBeVisible();
     await expect(titleTile).toHaveAccessibleDescription("To check");
-    await expect(teamLeftOut).toBeVisible();
+    // NEO-665: the team is the list's one pill.
+    await expect(leftOutPills).toHaveText([pill(TEAM)]);
+    // The 70-character pill wraps inside the tile, never past it (a phone is narrower than the
+    // one unbroken line it would take).
+    await expectInside(page, leftOutPills, titleTile, "#904's team pill");
     await expect(shortenedNote).toHaveCount(0);
     await expect(pinkTile(page, "Listing title")).toHaveCount(0);
     await expect(titleTile.getByText(longSet)).toHaveCount(0);
-    await expectAccessible(page, { within: walk, label: "Tidy Up walk, a short-name title that still leaves the team out" });
+    await expectAccessible(page, { within: walk, label: "Tidy Up walk, a short-name title that still leaves the team out (its pill)" });
     // Blue never holds the card, and Save & next does not clear it (B20): its title is still cut,
     // so the walk ends with #904 "still to check", #901 and #902 fixed, nothing skipped.
     await saveAndNext(page);
@@ -350,10 +388,22 @@ test(
     // ── The parallel under the insert: the walk's name puts the insert's name first ──
     await columnOption(page, "Parallels", PARALLEL).click();
     await expect(columnSelection(page, "Parallels", PARALLEL)).toBeVisible();
-    await addCardViaForm(page, { cardNumber: "903", playerName: `Tup903${T}` });
+    await addCardViaForm(page, {
+      cardNumber: "903",
+      playerName: `Tup903${T}`,
+      beforeSubmit: () => createTeamInCardForm(page, RED_TEAM),
+    });
     await expect(needsYouPill(page)).toBeVisible();
     await openTidyWalk(page, { title: tidyUpName({ year, set: SET, variant: `${HOST} ${PARALLEL}` }) });
     await expectWalkNamed(page, tidyUpName({ year, set: SET, variant: `${HOST} ${PARALLEL}` }));
+    // NEO-665: #903's title says the parallel's name ("...red") but has no room for its team
+    // ("...reds"). A team is named only by its exact words, so the team is the tile's one pill.
+    // The shown title (the pill reads the team, so the title's own text is matched whole).
+    const title903 = new RegExp(`^${escapeRe(SHORT2)} ${escapeRe(PARALLEL)} (?!.*${escapeRe(RED_TEAM)}).*#903\\b`);
+    await expect(titleTile.getByText(title903)).toBeVisible();
+    await expect(titleTile).toHaveAccessibleDescription("To check");
+    await expect(leftOutPills).toHaveText([pill(RED_TEAM)]);
+    await expectInside(page, leftOutPills, titleTile, "#903's team pill");
     await saveForLater(page);
   },
 );

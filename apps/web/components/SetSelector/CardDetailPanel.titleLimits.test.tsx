@@ -22,7 +22,7 @@
  *   4. A row whose auto-title was cut short says so.
  */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -162,6 +162,12 @@ beforeEach(() => {
   };
 });
 
+/** The pills of the "Left out to fit" list, in order (NEO-665: one per thing). */
+const leftOutPills = () =>
+  within(screen.getByRole("list", { name: "Left out to fit" }))
+    .getAllByRole("listitem")
+    .map((li) => li.firstChild?.textContent);
+
 describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
   it("counts against the cap and stays silent inside the safe band", () => {
     renderPanel(makeCard({ listingTitle: titleOfLength(40) }));
@@ -300,7 +306,7 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     // NEO-535: subscribed from the start, so the chips and "Left out to fit"
     // read the stored title before any Regenerate.
     expect(screen.getByLabelText("Title built from")).toBeTruthy();
-    expect(screen.getByText(/^Left out to fit: /)).toBeTruthy();
+    expect(screen.getByRole("list", { name: "Left out to fit" })).toBeTruthy();
 
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Regenerate card title"));
@@ -398,11 +404,12 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     });
 
     await waitFor(() =>
-      expect(
-        screen.getByText(
-          "Left out to fit: Seattle Mariners, SP, Image Variation; Wearing sunglasses, /99",
-        ),
-      ).toBeTruthy(),
+      expect(leftOutPills()).toEqual([
+        "Seattle Mariners",
+        "SP",
+        "Image Variation; Wearing sunglasses",
+        "/99",
+      ]),
     );
     expect(screen.queryByText(/stale server list/)).toBeNull();
 
@@ -413,9 +420,10 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
         target: { value: "2024 Topps Chrome Julio Rodriguez #300b SP /99" },
       });
     });
-    expect(
-      screen.getByText("Left out to fit: Seattle Mariners, Image Variation; Wearing sunglasses"),
-    ).toBeTruthy();
+    expect(leftOutPills()).toEqual([
+      "Seattle Mariners",
+      "Image Variation; Wearing sunglasses",
+    ]);
   });
 
   /**
@@ -546,21 +554,20 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     ]);
   });
 
-  it("says so when the stored auto-title was cut short", () => {
-    // No facts in hand yet, so no "Left out to fit" line to say it instead.
+  it("says nothing when the stored auto-title was cut short and nothing can be named (NEO-665)", () => {
+    // No facts in hand yet, so nothing to name: no pills, and no generic line.
     previewResult = undefined;
     renderPanel(
       makeCard({ listingTitle: titleOfLength(78), listingTitleTruncated: true }),
     );
-    expect(screen.getByText("Auto title was cut short. Rewrite it.")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Left out to fit" })).toBeNull();
   });
 
   it("NEO-535: a cut-short title says what was cut instead, and an over-cap one only that it is too long", () => {
     renderPanel(
       makeCard({ listingTitle: titleOfLength(78), listingTitleTruncated: true }),
     );
-    expect(screen.getByText(/^Left out to fit: /)).toBeTruthy();
-    expect(screen.queryByText("Auto title was cut short. Rewrite it.")).toBeNull();
+    expect(screen.getByRole("list", { name: "Left out to fit" })).toBeTruthy();
   });
 
   it("NEO-535: an over-cap title is never also called cut short", () => {
@@ -569,7 +576,6 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
       makeCard({ listingTitle: titleOfLength(90), listingTitleTruncated: true }),
     );
     expect(screen.getByRole("alert").textContent).toContain("10 over the 80-character limit");
-    expect(screen.queryByText("Auto title was cut short. Rewrite it.")).toBeNull();
   });
 
   it("NEO-535: Regenerate asks the server to rebuild the description as well", async () => {

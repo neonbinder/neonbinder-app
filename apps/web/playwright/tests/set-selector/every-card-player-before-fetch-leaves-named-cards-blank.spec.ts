@@ -35,8 +35,8 @@
 //   card", the description's "Cameo: Johnny Bench" line, and the exact card
 //   title the walk's write regenerated (NEO-645 C7): the levels ("Base" while it
 //   fits), the card's name, then the cameo. #10's runs over 80, so "Base" is
-//   the first word cut and the cameo next, and the drawer says "Left out to
-//   fit: Johnny Bench". #4's drawer: Pete Rose as its player (its title names
+//   the first word cut and the cameo next, and the drawer's "Left out to
+//   fit" list holds one pill, Johnny Bench (NEO-665). #4's drawer: Pete Rose as its player (its title names
 //   him, then "& Johnny Bench"; its card name only repeats him, so it adds
 //   nothing), and the cameo.
 // - Printing Plates Black is built from Base (or adopted, built): its #10 has
@@ -125,7 +125,8 @@ const RULED_OUT = [
   // one (Jason, 2026-11-23): "<year> <set> Base <card name> <cameo> #N <team> <sport>", the variant
   // word "Base" kept while it fits and the first word cut; #18's team is "No Team", which a title
   // omits, so #18 keeps "Base" (74). #10's would run to 94: "Base" goes first (89), then the cameo
-  // (76), and the drawer names only the cameo under "Left out to fit" (a label is never listed).
+  // (76), and the drawer's "Left out to fit" list has one pill, the cameo (NEO-665; the cut word
+  // "Base" is a label, never a pill).
   // Computed offline with `assessListingTitle` (agent memory: compute titles with tsx first).
   {
     number: "10",
@@ -311,11 +312,14 @@ test(
       await expect(drawer.getByRole("button", { name: "Add player", exact: true })).toBeVisible();
       await expect(anyPlayerChip(drawer)).toHaveCount(0);
       // The title the walk regenerated, exact: the card's name, then the cameo
-      // while it has room (cut first when over 80, and the note names it).
+      // while it has room (cut first when over 80, and the "Left out to fit"
+      // list names it: one pill per item, NEO-665).
       await expect(cardTitle(drawer)).toHaveValue(title);
-      const leftOutNote = drawer.getByText(/^Left out to fit: /);
-      if (leftOut === undefined) await expect(leftOutNote).toHaveCount(0);
-      else await expect(leftOutNote).toHaveText(`Left out to fit: ${leftOut}`);
+      const leftOutList = drawer.getByRole("list", { name: "Left out to fit", exact: true });
+      // R2: nothing left out = no list, paired with the exact title just above.
+      if (leftOut === undefined) await expect(leftOutList).toHaveCount(0);
+      // Every pill but the last ends in an sr-only ", "; a RegExp matches the raw text.
+      else await expect(leftOutList.getByRole("listitem")).toHaveText([new RegExp(`^${escapeRe(leftOut)}(,\\s*)?$`)]);
       if (number === RULED_OUT[0].number) {
         await expectAccessible(page, { within: drawer, label: "Card drawer, a ruled-out card with no player and a cameo" });
       }

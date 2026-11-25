@@ -31,6 +31,7 @@
 // and the same minted team. Desktop and mobile: one spec; the only branch is
 // the phone's wrapping check (NEO-535), keyed on `isMobile`.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { escapeRe } from "../../support/cards";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { expectNoOverCapLook, expectOverCapLook } from "../../support/theme";
 import {
@@ -71,6 +72,10 @@ test(
       name: new RegExp(`^Card ${num}(, .*)? is worth a check: (.*; )?variation text is over the 65-character limit(; .*)?$`),
     });
     const drawer = page.getByRole("dialog", { name: /^Card #/ });
+    // NEO-665: what a title left out is the "Left out to fit" list, one pill per item. Every
+    // pill but the last ends in an sr-only ", ", and a RegExp is matched against the raw text.
+    const pill = (item: string) => new RegExp(`^${escapeRe(item)}(,\\s*)?$`);
+    const leftOutList = (within: typeof drawer) => within.getByRole("list", { name: "Left out to fit", exact: true });
     // Born with nothing left out, the card's name after the level and before the number.
     const generated = new RegExp(`^2024 Topps ${set} Base Insert ${name} #${num} ${team} Baseball$`);
     const variationText = "Gold Refractor Image Variation Wearing Sunglasses Holding Bat In Dugout";
@@ -233,7 +238,8 @@ test(
     // it was built from, with no Regenerate press ──
     await edit.click();
     await expect(cardName).toBeVisible();
-    await expect(drawer.getByText(`Left out to fit: ${variationText}`)).toBeVisible();
+    // The variation is the one pill (NEO-665).
+    await expect(leftOutList(drawer).getByRole("listitem")).toHaveText([pill(variationText)]);
     const builtFrom = drawer.getByRole("list", { name: "Title built from" });
     await expect(builtFrom.getByRole("listitem").filter({ hasText: `#${num}` })).toBeVisible();
     await expect(builtFrom.getByRole("listitem").filter({ hasText: team })).toBeVisible();
@@ -312,9 +318,9 @@ test(
     const titleBox = titleTile.getByRole("textbox", { name: `Card title for #${num}`, exact: true });
     await expect(titleBox).toHaveCount(0);
     await expect(titleTile.getByRole("button", { name: "Edit title", exact: true })).toBeVisible();
-    // What the stored title left out (NEO-535), read off the tile.
-    const leftOut = titleTile.getByText(`Left out to fit: ${variationText}`, { exact: true });
-    await expect(leftOut).toBeVisible();
+    // What the stored title left out (NEO-535), read off the tile: the variation, its one pill (NEO-665).
+    const leftOutPills = leftOutList(titleTile).getByRole("listitem");
+    await expect(leftOutPills).toHaveText([pill(variationText)]);
     // The variation over 65 gets its trim editor, pink with its note (advice, never invalid).
     const trim = titleTile.getByRole("textbox", { name: "Trim the variation", exact: true });
     const trimNote = titleTile.getByText(/a marketplace that caps this field will reject the value/);
@@ -348,7 +354,7 @@ test(
     await expect(titleBox).not.toHaveAttribute("aria-invalid", "true");
     await expect(titleTile.getByText("Fits now. Enter saves it.", { exact: true })).toBeVisible();
     await expect(overLine).toHaveCount(0);
-    await expect(leftOut).toBeVisible();
+    await expect(leftOutPills).toHaveText([pill(variationText)]);
     // A line break typed or pasted reads as a space (one line, NEO-535), and puts it back over.
     await titleBox.fill(`${stored}\n${variationText}`);
     await expect(titleBox).toHaveValue(`${stored} ${variationText}`);
@@ -379,7 +385,8 @@ test(
     await expect(trim).toHaveValue(trimmed);
     // NEO-645 T4: the walk's write rebuilt the title, the variation in it and nothing left out.
     await expect(titleTile.getByText(retitled(num, name))).toBeVisible();
-    await expect(titleTile.getByText(/^Left out to fit: /)).toHaveCount(0);
+    // Nothing left out, so no "Left out to fit" list (R2: paired with the retitled line just above).
+    await expect(leftOutList(titleTile)).toHaveCount(0);
     // ── Apply to all: the trim offered to the two other cards with the same variation ──
     // The hand-typed title on #103 is no reason to leave it out: only the variation is compared,
     // and the write rebuilds its title like any walk write.
