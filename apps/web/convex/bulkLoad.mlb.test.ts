@@ -960,6 +960,107 @@ describe("teams", () => {
     expect(await allTeams(t)).toHaveLength(2);
   });
 
+  test("sibling teams with their own MLB ids, same league and season, are all created and a rerun creates none", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    await seedLeague(t, sportId, "Arizona Complex League", { level: "minor" });
+    const rows: TeamIn[] = [
+      { key: "a", name: "AZL Dodgers Lasorda", league: "Arizona Complex League", yearsActive: { from: 2024, to: 2024 }, mlbamId: 5001 },
+      { key: "b", name: "AZL Dodgers Mota", league: "Arizona Complex League", yearsActive: { from: 2024, to: 2024 }, mlbamId: 5002 },
+      { key: "c", name: "AZL Dodgers 1", league: "Arizona Complex League", yearsActive: { from: 2024, to: 2024 }, mlbamId: 5003 },
+      { key: "d", name: "AZL Dodgers 2", league: "Arizona Complex League", yearsActive: { from: 2024, to: 2024 }, mlbamId: 5004 },
+    ];
+    const first = await teams(t, rows);
+    expect(first.results.map((r) => r.status)).toEqual(["created", "created", "created", "created"]);
+    expect(await allTeams(t)).toHaveLength(4);
+    const second = await teams(t, rows);
+    expect(second.results.some((r) => r.status === "created")).toBe(false);
+    expect(await allTeams(t)).toHaveLength(4);
+  });
+
+  test("a near candidate that holds the same MLB id under another name does not hold the row", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const acl = await seedLeague(t, sportId, "Arizona Complex League", { level: "minor" });
+    await seedTeam(t, sportId, {
+      name: "ACL Brewers",
+      leagueId: acl,
+      years: { from: 2020, to: 2024 },
+      mlbamId: 406,
+    });
+    const out = await teams(t, [
+      {
+        key: "k",
+        name: "AZL Brewers",
+        league: "Arizona Complex League",
+        yearsActive: { from: 2020, to: 2024 },
+        mlbamId: 406,
+      },
+    ]);
+    expect(out.results[0].status).toBe("created");
+    expect(out.results[0].disagreements).toBeUndefined();
+    expect(await allTeams(t)).toHaveLength(2);
+  });
+
+  test("a near candidate with no MLB id, same league, overlapping years is still held", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const acl = await seedLeague(t, sportId, "Arizona Complex League", { level: "minor" });
+    const nb = await seedTeam(t, sportId, {
+      name: "AZL Brewers",
+      leagueId: acl,
+      years: { from: 2020, to: 2024 },
+    });
+    const out = await teams(t, [
+      {
+        key: "k",
+        name: "ACL Brewers",
+        league: "Arizona Complex League",
+        yearsActive: { from: 2022, to: 2024 },
+        mlbamId: 406,
+      },
+    ]);
+    expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
+    expect(out.results[0].disagreements?.[0]).toMatchObject({ field: "duplicate" });
+    expect(out.results[0].candidates?.map((c) => c.id)).toEqual([nb]);
+    expect(await allTeams(t)).toHaveLength(1);
+  });
+
+  test("six or more id-carrying siblings do not hide an NB-only near row", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const acl = await seedLeague(t, sportId, "Arizona Complex League", { level: "minor" });
+    for (let i = 1; i <= 6; i++) {
+      await seedTeam(t, sportId, {
+        name: `AZL Dodgers Sibling${i}`,
+        leagueId: acl,
+        years: { from: 2024, to: 2024 },
+        mlbamId: 7000 + i,
+      });
+    }
+    const nb = await seedTeam(t, sportId, {
+      name: "AZL Dodgers Lasorda",
+      leagueId: acl,
+      years: { from: 2024, to: 2024 },
+    });
+    const out = await teams(t, [
+      {
+        key: "k",
+        name: "AZL Dodgers Lasorda Squad",
+        league: "Arizona Complex League",
+        yearsActive: { from: 2024, to: 2024 },
+        mlbamId: 7100,
+      },
+    ]);
+    expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
+    expect(out.results[0].candidates?.map((c) => c.id)).toEqual([nb]);
+    expect(await allTeams(t)).toHaveLength(7);
+  });
+
   test("found only under another label: held as a name disagreement; the adopt answer lands and converges", async () => {
     const t = convexTest(schema, modules);
     armed();

@@ -1909,9 +1909,9 @@ async function loadTeams(
        */
       const term = nameTokens(location ?? "").join(" ") || longestToken(name) || "";
       const nearExisting: NonNullable<TeamResult["nearExisting"]> = [];
-      const nearDocs: Doc<"teams">[] = [];
+      let hits: Doc<"teams">[] = [];
       if (term) {
-        const hits = await ctx.db
+        hits = await ctx.db
           .query("teams")
           .withSearchIndex("search_name", (q) =>
             q.search("nameNormalized", term).eq("sportId", sportId),
@@ -1924,7 +1924,6 @@ async function loadTeams(
           NEAR_EXISTING_LIMIT,
         )) {
           const { hit } = named[index];
-          nearDocs.push(hit);
           nearExisting.push({
             id: hit._id,
             name: teamFullName(hit),
@@ -1940,10 +1939,24 @@ async function loadTeams(
        * very likely the same club under another label. Held, nothing written.
        * `decided` (an operator's `create` answer) is "none of these" and skips
        * it, or the answer could never settle.
+       *
+       * Only a row with NO MLB id can disagree with MLB. A row already
+       * carrying one (any id) is MLB's own team: a sibling MLB lists beside
+       * this one, or the same franchise under another name, never an NB row
+       * in conflict. So the hits are filtered to no-id rows first, then ranked
+       * with the same ranker, independent of the informational
+       * `nearExisting` cut above.
        */
       if (mlbamId !== undefined && !decided && leagueId) {
-        const likely = nearDocs.filter(
-          (hit) => hit.leagueId === leagueId && erasOverlap(hit.yearsActive, row.yearsActive),
+        const noIdHits = hits.filter(
+          (hit) =>
+            hit.externalIds?.mlbamId === undefined &&
+            hit.leagueId === leagueId &&
+            erasOverlap(hit.yearsActive, row.yearsActive),
+        );
+        const namedNoId = noIdHits.map((hit) => ({ hit, name: teamFullName(hit) }));
+        const likely = rankTeamCandidates(fullName, namedNoId).map(
+          ({ index }) => namedNoId[index].hit,
         );
         if (likely.length > 0) {
           return {
