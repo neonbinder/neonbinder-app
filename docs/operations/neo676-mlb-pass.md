@@ -10,7 +10,7 @@ roster player leg and its answers file, `neo611-roster-players.md`); NEO-190
 (backup, restore and preview procedures). Players are *created* in a later
 ticket; this pass only links the ones NB already holds.
 **Server half:** `apps/web/convex/bulkLoad.ts`, the note headed "NEO-676" in the
-module header, and the validators of `upsertLeagues`, `upsertTeams`
+module header, and the validators of `upsertLeagues` (`previewLeagues`), `upsertTeams`
 (`previewTeams`) and `upsertPlayers` (`previewPlayers`).
 **Wrapper half:** the MLB fetch, the chunk loop, the answers file and the review
 file live in the private wrapper. This runbook calls that script "the driver".
@@ -56,7 +56,7 @@ Nothing in this document names a deployment, an account or a URL.
    import on that deployment: rows load, nothing throws.
 2. **Prod: back up first.** Take a snapshot (NEO-190 §3). A created league or
    team has no merge path, and a wrong player link has no undo.
-3. **Preview everything.** Run the previews over the whole dataset, leagues,
+3. **Preview everything.** Run the previews (`previewLeagues`, `previewTeams`, `previewPlayers`) over the whole dataset, leagues,
    then MLB clubs, then minor-league clubs (clubs load before affiliates so a
    parent exists), then players. Nothing is armed and nothing is written.
 4. **The operator answers the disagreement file.** The driver writes every
@@ -108,6 +108,7 @@ clubs; a longer list is refused naming the row.
 | Where | Field | Meaning |
 |---|---|---|
 | league | `created` | a new row was made (or would be) |
+| league | `nbName` | the NB row's current name when one matched; the incoming name when created or would-create; `null` when held. Send a team's `league` by this name |
 | league | `id: null`, `created: false`, `disagreements` | held; nothing written |
 | league | `filled` | `mlbamId`, `minorLeagueClasses`, `aliases` written |
 | team | `matchedBy: "mlbamId"` | found by id, era-narrowed |

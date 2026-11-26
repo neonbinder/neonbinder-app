@@ -910,6 +910,256 @@ async function requireSportId(
 // Leagues
 // ---------------------------------------------------------------------------
 
+const leagueRowValidator = v.object({
+  name: v.string(),
+  abbreviation: v.optional(v.string()),
+  // NEO-331: required — a league row cannot exist without a level, and
+  // a curated dataset is exactly the caller that knows it.
+  level: levelValidator,
+  yearsActive: v.optional(yearsValidator),
+  aliases: v.optional(v.array(v.string())),
+  wikidataId: v.optional(v.string()),
+  // NEO-676 — the MLB link pass. A row carrying `mlbamId` is matched by
+  // that id first (see the section note below); `minorLeagueClasses`
+  // is written only on a league whose level is "minor".
+  mlbamId: v.optional(v.number()),
+  minorLeagueClasses: v.optional(minorLeagueClassesValidator),
+});
+
+const leaguesResultValidator = v.object({
+  results: v.array(
+    v.object({
+      name: v.string(),
+      id: v.union(v.id("leagues"), v.null()),
+      created: v.boolean(),
+      /**
+       * NEO-676 — the NB row's current name when a row matched; the incoming
+       * name when the row is (or would be) created; null when held. Lets the
+       * driver send a team's league by NB's name.
+       */
+      nbName: v.union(v.string(), v.null()),
+      /** NEO-676 — absent fields an adopt filled: mlbamId, minorLeagueClasses, aliases. */
+      filled: v.optional(v.array(v.string())),
+      /** NEO-676 — see `disagreementValidator`. A held row has `id: null`, `created: false`. */
+      disagreements: v.optional(v.array(disagreementValidator)),
+    }),
+  ),
+});
+
+type LeagueRowInput = Infer<typeof leagueRowValidator>;
+
+/**
+ * The league load, once, for the write run and the preview. `write: false`
+ * reads and reports only (the way `loadTeams` and `loadRosterPlayers` do).
+ */
+async function loadLeagues(
+  ctx: QueryCtx | MutationCtx,
+  args: { sport: string; leagues: LeagueRowInput[] },
+  write: boolean,
+) {
+  assertChunkSize(args.leagues.length, MAX_LEAGUES_PER_CALL, "leagues");
+  assertNoRepeatedMlbamIds(
+    args.leagues.map((l) => ({ label: l.name, mlbamId: l.mlbamId })),
+  );
+  const sportId = await requireSportId(ctx, args.sport);
+  const mutationCtx = write ? (ctx as MutationCtx) : null;
+
+  const results: {
+    name: string;
+    id: Id<"leagues"> | null;
+    created: boolean;
+    nbName: string | null;
+    filled?: string[];
+    disagreements?: Disagreement[];
+  }[] = [];
+
+  for (const row of args.leagues) {
+    const name = boundedName(row.name, "A league name", row.name);
+    // The admin editor's own bound (16), so the loader cannot store an
+    // abbreviation League Management would refuse to save back.
+    const abbreviation = requireValidLeagueAbbreviation(row.abbreviation);
+    if (row.yearsActive) assertYears(row.yearsActive, "A league span", name);
+    const wikidataId = row.wikidataId ? boundedQid(row.wikidataId, name) : undefined;
+    const mlbamId =
+      row.mlbamId === undefined ? undefined : boundedMlbamId(row.mlbamId, name);
+    const classes = row.minorLeagueClasses
+      ? boundedClasses(row.minorLeagueClasses, name)
+      : undefined;
+    // Bounded the way League Management bounds them, own name dropped.
+    const aliases = row.aliases
+      ? normalizeLeagueAliasList(row.aliases.map(cleanseExternalName), name)
+      : [];
+    const disagreements: Disagreement[] = [];
+
+    // Asked BEFORE the helper runs, because `findOrCreateLeague` does not say
+    // whether it inserted and the script's report is the operator's only view
+    // of what a run did.
+    let before: Doc<"leagues"> | null;
+    if (mlbamId === undefined) {
+      before = await findLeagueByName(ctx, { name, sportId });
+    } else {
+      /*
+       * NEO-676 step 0: the id first, over the sport's leagues (a small
+       * per-sport set; an id inside `externalIds` has no league index). Two
+       * rows holding one id, or two rows answering to one name, are a tie
+       * the operator breaks: `findLeagueByName` returns the first hit and
+       * that is exactly the guess this path must never make.
+       */
+      const rows = await ctx.db
+        .query("leagues")
+        .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+        .collect();
+      const byId = rows.filter((r) => r.externalIds?.mlbamId === mlbamId);
+      let hold: Disagreement | null = null;
+      if (byId.length > 1) {
+        hold = {
+          field: "mlbamId",
+          nb: byId.map((r) => `${r.name} (${r._id})`).join("; "),
+          mlb: String(mlbamId),
+        };
+        before = null;
+      } else if (byId.length === 1) {
+        before = byId[0];
+      } else {
+        const nameKey = normalizeLeagueName(name);
+        const hits = rows.filter((r) => leagueAnswersTo(r, nameKey));
+        if (hits.length > 1) {
+          hold = {
+            field: "name",
+            nb: hits.map((r) => `${r.name} (${r._id})`).join("; "),
+            mlb: name,
+          };
+          before = null;
+        } else {
+          before = hits[0] ?? null;
+          const held = before?.externalIds?.mlbamId;
+          if (before && held !== undefined) {
+            // A different id already sits on the row the name found.
+            hold = { field: "mlbamId", nb: String(held), mlb: String(mlbamId) };
+          }
+        }
+      }
+      if (hold) {
+        results.push({
+          name,
+          id: null,
+          created: false,
+          nbName: null,
+          disagreements: [hold],
+        });
+        continue;
+      }
+    }
+
+    let id: Id<"leagues"> | null = before?._id ?? null;
+    if (mutationCtx && mlbamId !== undefined && before) {
+      /*
+       * NEO-676: the league was found by its id (or by the one name that
+       * answers). Never go back through the name lookup: with two
+       * same-named leagues in the sport it would return the first hit, and
+       * the gap-fills would land on a row this pass never chose. The same
+       * gap-fills `findOrCreateLeague` makes, on the row already in hand.
+       */
+      const gaps: Partial<Doc<"leagues">> = {};
+      if (abbreviation && !before.abbreviation) gaps.abbreviation = abbreviation;
+      if (row.yearsActive && !before.yearsActive) gaps.yearsActive = row.yearsActive;
+      if (wikidataId && !before.externalIds?.wikidataId) {
+        gaps.externalIds = { ...(before.externalIds ?? {}), wikidataId };
+      }
+      if (Object.keys(gaps).length > 0) {
+        await mutationCtx.db.patch(before._id, { ...gaps, lastUpdated: Date.now() });
+      }
+      // Alias gap-fill on a row this pass FOUND — see the doc comment.
+      if (aliases.length > 0 && (before.aliases ?? []).length === 0) {
+        await mutationCtx.db.patch(before._id, { aliases, lastUpdated: Date.now() });
+      }
+    } else if (mutationCtx) {
+      id = await findOrCreateLeague(mutationCtx, {
+        name,
+        ...(abbreviation ? { abbreviation } : {}),
+        sportId,
+        // See the header: no call in this file queues a Wikidata lookup.
+        skipEnrichment: true,
+        level: row.level as LeagueLevel,
+        ...(aliases.length > 0 ? { aliases } : {}),
+        ...(row.yearsActive ? { yearsActive: row.yearsActive } : {}),
+        ...(wikidataId ? { wikidataId } : {}),
+      });
+
+      // Alias gap-fill on a row the helper FOUND — see the doc comment.
+      if (before && aliases.length > 0 && (before.aliases ?? []).length === 0) {
+        await mutationCtx.db.patch(id, { aliases, lastUpdated: Date.now() });
+      }
+    }
+
+    const filled: string[] = [];
+    if (before && mlbamId !== undefined && aliases.length > 0 && (before.aliases ?? []).length === 0) {
+      filled.push("aliases");
+    }
+    if (mlbamId !== undefined || classes) {
+      // The row as it stands now (after the helper's own gap-fills); on a
+      // preview of a create there is no row yet and nothing to compare.
+      const target = write && id ? await ctx.db.get(id) : before;
+      if (target) {
+        const patch: Partial<Doc<"leagues">> = {};
+        if (mlbamId !== undefined && target.externalIds?.mlbamId === undefined) {
+          patch.externalIds = { ...(target.externalIds ?? {}), mlbamId };
+          if (before) filled.push("mlbamId");
+        }
+        // NEO-676: what NB holds outranks MLB's; a difference is reported,
+        // nothing written for it. Only a league this pass found has a
+        // level or span of NB's own to compare.
+        if (before && mlbamId !== undefined) {
+          if (target.level !== row.level) {
+            disagreements.push({ field: "level", nb: target.level, mlb: row.level });
+          }
+          if (
+            target.yearsActive !== undefined &&
+            row.yearsActive &&
+            !yearsWithin(row.yearsActive, target.yearsActive)
+          ) {
+            disagreements.push({
+              field: "yearsActive",
+              nb: describeYears(target.yearsActive),
+              mlb: describeYears(row.yearsActive),
+            });
+          }
+        }
+        // Classes belong to a minor league only; NB's own level decides.
+        if (classes && target.level === "minor") {
+          const held = target.minorLeagueClasses;
+          if (held === undefined || held.length === 0) {
+            patch.minorLeagueClasses = classes;
+            if (before) filled.push("minorLeagueClasses");
+          } else if (describeClasses(held) !== describeClasses(classes)) {
+            disagreements.push({
+              field: "minorLeagueClasses",
+              nb: describeClasses(held),
+              mlb: describeClasses(classes),
+            });
+          }
+        }
+        if (mutationCtx && Object.keys(patch).length > 0) {
+          await mutationCtx.db.patch(target._id, { ...patch, lastUpdated: Date.now() });
+        }
+      }
+    }
+
+    results.push({
+      name,
+      id,
+      created: before === null,
+      // The NB row's own name when one matched; the incoming name when
+      // the row is (or would be) created. Never a marketplace value.
+      nbName: before?.name ?? name,
+      ...(filled.length > 0 ? { filled } : {}),
+      ...(disagreements.length > 0 ? { disagreements } : {}),
+    });
+  }
+
+  return { results };
+}
+
 /**
  * Leagues, keyed by name-or-alias within the sport.
  *
@@ -931,235 +1181,34 @@ export const upsertLeagues = internalMutation({
     confirm: confirmValidator,
     sport: v.string(),
     dryRun: v.optional(v.boolean()),
-    leagues: v.array(
-      v.object({
-        name: v.string(),
-        abbreviation: v.optional(v.string()),
-        // NEO-331: required — a league row cannot exist without a level, and
-        // a curated dataset is exactly the caller that knows it.
-        level: levelValidator,
-        yearsActive: v.optional(yearsValidator),
-        aliases: v.optional(v.array(v.string())),
-        wikidataId: v.optional(v.string()),
-        // NEO-676 — the MLB link pass. A row carrying `mlbamId` is matched by
-        // that id first (see the section note below); `minorLeagueClasses`
-        // is written only on a league whose level is "minor".
-        mlbamId: v.optional(v.number()),
-        minorLeagueClasses: v.optional(minorLeagueClassesValidator),
-      }),
-    ),
+    leagues: v.array(leagueRowValidator),
   },
-  returns: v.object({
-    results: v.array(
-      v.object({
-        name: v.string(),
-        id: v.union(v.id("leagues"), v.null()),
-        created: v.boolean(),
-        /** NEO-676 — absent fields an adopt filled: mlbamId, minorLeagueClasses, aliases. */
-        filled: v.optional(v.array(v.string())),
-        /** NEO-676 — see `disagreementValidator`. A held row has `id: null`, `created: false`. */
-        disagreements: v.optional(v.array(disagreementValidator)),
-      }),
-    ),
-  }),
+  returns: leaguesResultValidator,
   handler: async (ctx, args) => {
     assertBulkLoadArmed(args.confirm);
-    assertChunkSize(args.leagues.length, MAX_LEAGUES_PER_CALL, "leagues");
-    assertNoRepeatedMlbamIds(
-      args.leagues.map((l) => ({ label: l.name, mlbamId: l.mlbamId })),
-    );
-    const sportId = await requireSportId(ctx, args.sport);
-    const write = !args.dryRun;
+    return await loadLeagues(ctx, args, !args.dryRun);
+  },
+});
 
-    const results: {
-      name: string;
-      id: Id<"leagues"> | null;
-      created: boolean;
-      filled?: string[];
-      disagreements?: Disagreement[];
-    }[] = [];
-
-    for (const row of args.leagues) {
-      const name = boundedName(row.name, "A league name", row.name);
-      // The admin editor's own bound (16), so the loader cannot store an
-      // abbreviation League Management would refuse to save back.
-      const abbreviation = requireValidLeagueAbbreviation(row.abbreviation);
-      if (row.yearsActive) assertYears(row.yearsActive, "A league span", name);
-      const wikidataId = row.wikidataId ? boundedQid(row.wikidataId, name) : undefined;
-      const mlbamId =
-        row.mlbamId === undefined ? undefined : boundedMlbamId(row.mlbamId, name);
-      const classes = row.minorLeagueClasses
-        ? boundedClasses(row.minorLeagueClasses, name)
-        : undefined;
-      // Bounded the way League Management bounds them, own name dropped.
-      const aliases = row.aliases
-        ? normalizeLeagueAliasList(row.aliases.map(cleanseExternalName), name)
-        : [];
-      const disagreements: Disagreement[] = [];
-
-      // Asked BEFORE the helper runs, because `findOrCreateLeague` does not say
-      // whether it inserted and the script's report is the operator's only view
-      // of what a run did.
-      let before: Doc<"leagues"> | null;
-      if (mlbamId === undefined) {
-        before = await findLeagueByName(ctx, { name, sportId });
-      } else {
-        /*
-         * NEO-676 step 0: the id first, over the sport's leagues (a small
-         * per-sport set; an id inside `externalIds` has no league index). Two
-         * rows holding one id, or two rows answering to one name, are a tie
-         * the operator breaks: `findLeagueByName` returns the first hit and
-         * that is exactly the guess this path must never make.
-         */
-        const rows = await ctx.db
-          .query("leagues")
-          .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
-          .collect();
-        const byId = rows.filter((r) => r.externalIds?.mlbamId === mlbamId);
-        let hold: Disagreement | null = null;
-        if (byId.length > 1) {
-          hold = {
-            field: "mlbamId",
-            nb: byId.map((r) => `${r.name} (${r._id})`).join("; "),
-            mlb: String(mlbamId),
-          };
-          before = null;
-        } else if (byId.length === 1) {
-          before = byId[0];
-        } else {
-          const nameKey = normalizeLeagueName(name);
-          const hits = rows.filter((r) => leagueAnswersTo(r, nameKey));
-          if (hits.length > 1) {
-            hold = {
-              field: "name",
-              nb: hits.map((r) => `${r.name} (${r._id})`).join("; "),
-              mlb: name,
-            };
-            before = null;
-          } else {
-            before = hits[0] ?? null;
-            const held = before?.externalIds?.mlbamId;
-            if (before && held !== undefined) {
-              // A different id already sits on the row the name found.
-              hold = { field: "mlbamId", nb: String(held), mlb: String(mlbamId) };
-            }
-          }
-        }
-        if (hold) {
-          results.push({
-            name,
-            id: null,
-            created: false,
-            disagreements: [hold],
-          });
-          continue;
-        }
-      }
-
-      let id: Id<"leagues"> | null = before?._id ?? null;
-      if (write && mlbamId !== undefined && before) {
-        /*
-         * NEO-676: the league was found by its id (or by the one name that
-         * answers). Never go back through the name lookup: with two
-         * same-named leagues in the sport it would return the first hit, and
-         * the gap-fills would land on a row this pass never chose. The same
-         * gap-fills `findOrCreateLeague` makes, on the row already in hand.
-         */
-        const gaps: Partial<Doc<"leagues">> = {};
-        if (abbreviation && !before.abbreviation) gaps.abbreviation = abbreviation;
-        if (row.yearsActive && !before.yearsActive) gaps.yearsActive = row.yearsActive;
-        if (wikidataId && !before.externalIds?.wikidataId) {
-          gaps.externalIds = { ...(before.externalIds ?? {}), wikidataId };
-        }
-        if (Object.keys(gaps).length > 0) {
-          await ctx.db.patch(before._id, { ...gaps, lastUpdated: Date.now() });
-        }
-        // Alias gap-fill on a row this pass FOUND — see the doc comment.
-        if (aliases.length > 0 && (before.aliases ?? []).length === 0) {
-          await ctx.db.patch(before._id, { aliases, lastUpdated: Date.now() });
-        }
-      } else if (write) {
-        id = await findOrCreateLeague(ctx, {
-          name,
-          ...(abbreviation ? { abbreviation } : {}),
-          sportId,
-          // See the header: no call in this file queues a Wikidata lookup.
-          skipEnrichment: true,
-          level: row.level as LeagueLevel,
-          ...(aliases.length > 0 ? { aliases } : {}),
-          ...(row.yearsActive ? { yearsActive: row.yearsActive } : {}),
-          ...(wikidataId ? { wikidataId } : {}),
-        });
-
-        // Alias gap-fill on a row the helper FOUND — see the doc comment.
-        if (before && aliases.length > 0 && (before.aliases ?? []).length === 0) {
-          await ctx.db.patch(id, { aliases, lastUpdated: Date.now() });
-        }
-      }
-
-      const filled: string[] = [];
-      if (before && mlbamId !== undefined && aliases.length > 0 && (before.aliases ?? []).length === 0) {
-        filled.push("aliases");
-      }
-      if (mlbamId !== undefined || classes) {
-        // The row as it stands now (after the helper's own gap-fills); on a
-        // preview of a create there is no row yet and nothing to compare.
-        const target = write && id ? await ctx.db.get(id) : before;
-        if (target) {
-          const patch: Partial<Doc<"leagues">> = {};
-          if (mlbamId !== undefined && target.externalIds?.mlbamId === undefined) {
-            patch.externalIds = { ...(target.externalIds ?? {}), mlbamId };
-            if (before) filled.push("mlbamId");
-          }
-          // NEO-676: what NB holds outranks MLB's; a difference is reported,
-          // nothing written for it. Only a league this pass found has a
-          // level or span of NB's own to compare.
-          if (before && mlbamId !== undefined) {
-            if (target.level !== row.level) {
-              disagreements.push({ field: "level", nb: target.level, mlb: row.level });
-            }
-            if (
-              target.yearsActive !== undefined &&
-              row.yearsActive &&
-              !yearsWithin(row.yearsActive, target.yearsActive)
-            ) {
-              disagreements.push({
-                field: "yearsActive",
-                nb: describeYears(target.yearsActive),
-                mlb: describeYears(row.yearsActive),
-              });
-            }
-          }
-          // Classes belong to a minor league only; NB's own level decides.
-          if (classes && target.level === "minor") {
-            const held = target.minorLeagueClasses;
-            if (held === undefined || held.length === 0) {
-              patch.minorLeagueClasses = classes;
-              if (before) filled.push("minorLeagueClasses");
-            } else if (describeClasses(held) !== describeClasses(classes)) {
-              disagreements.push({
-                field: "minorLeagueClasses",
-                nb: describeClasses(held),
-                mlb: describeClasses(classes),
-              });
-            }
-          }
-          if (write && Object.keys(patch).length > 0) {
-            await ctx.db.patch(target._id, { ...patch, lastUpdated: Date.now() });
-          }
-        }
-      }
-
-      results.push({
-        name,
-        id,
-        created: before === null,
-        ...(filled.length > 0 ? { filled } : {}),
-        ...(disagreements.length > 0 ? { disagreements } : {}),
-      });
+/**
+ * The leagues dry run as a QUERY, so it runs on a deployment nobody has armed,
+ * as `previewTeams` and `previewPlayers` do (same reasoning, see
+ * `previewTeams`): arming guards writes, and a preview writes nothing. It
+ * shares `loadLeagues` with `upsertLeagues`, so the two cannot drift; only the
+ * confirm literal is checked.
+ */
+export const previewLeagues = internalQuery({
+  args: {
+    confirm: confirmValidator,
+    sport: v.string(),
+    leagues: v.array(leagueRowValidator),
+  },
+  returns: leaguesResultValidator,
+  handler: async (ctx, args) => {
+    if (args.confirm !== "BULK_LOAD") {
+      throw new ConvexError("Bulk load preview requires confirm: \"BULK_LOAD\".");
     }
-
-    return { results };
+    return await loadLeagues(ctx, args, false);
   },
 });
 

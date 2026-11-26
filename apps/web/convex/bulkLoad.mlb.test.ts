@@ -183,6 +183,8 @@ const teams = (t: T, rows: TeamIn[]) =>
     sport: "Baseball",
     teams: rows,
   });
+const previewLeagues = (t: T, rows: LeagueIn[]) =>
+  t.query(internal.bulkLoad.previewLeagues, { confirm: CONFIRM, sport: "Baseball", leagues: rows });
 const previewTeams = (t: T, rows: TeamIn[]) =>
   t.query(internal.bulkLoad.previewTeams, { confirm: CONFIRM, sport: "Baseball", teams: rows });
 
@@ -299,6 +301,7 @@ describe("leagues", () => {
         name: "International League",
         id,
         created: false,
+        nbName: "International League",
         filled: ["aliases", "mlbamId", "minorLeagueClasses"],
       },
     ]);
@@ -317,7 +320,7 @@ describe("leagues", () => {
       },
     ]);
     expect(again.results).toEqual([
-      { name: "Intl League of Pro Baseball", id, created: false },
+      { name: "Intl League of Pro Baseball", id, created: false, nbName: "International League" },
     ]);
     expect(await allLeagues(t)).toHaveLength(1);
     expect((await league(t, id))?.name).toBe("International League");
@@ -420,6 +423,56 @@ describe("leagues", () => {
     expect(out.results[1]).toMatchObject({ id: null, created: true });
     expect((await league(t, id))?.externalIds).toBeUndefined();
     expect(await allLeagues(t)).toHaveLength(1);
+  });
+
+  test("previewLeagues runs unarmed, writes nothing, and agrees with the write run", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const adopted = await seedLeague(t, sportId, "South Atlantic League", {
+      level: "minor",
+      aliases: ["Sally League"],
+    });
+    const held = await seedLeague(t, sportId, "Texas League", { level: "minor", mlbamId: 104 });
+    const rows: LeagueIn[] = [
+      { name: "Sally League", level: "minor", mlbamId: 5 },
+      { name: "New League", level: "minor", mlbamId: 6 },
+      { name: "Texas League", level: "minor", mlbamId: 999 },
+    ];
+    // Unarmed: the write leg refuses, the preview answers.
+    await expect(leagues(t, rows)).rejects.toThrow(/not armed/);
+    const preview = await previewLeagues(t, rows);
+    expect(await allLeagues(t)).toHaveLength(2);
+    expect((await league(t, adopted))?.externalIds).toBeUndefined();
+    expect(preview.results[0]).toMatchObject({ id: adopted, created: false, nbName: "South Atlantic League" });
+    expect(preview.results[1]).toMatchObject({ id: null, created: true, nbName: "New League" });
+    expect(preview.results[2]).toMatchObject({ id: null, created: false, nbName: null });
+
+    armed();
+    const write = await leagues(t, rows);
+    // Same results; only a created row's id differs (null in the preview).
+    const shape = (rs: typeof write.results) => rs.map(({ id: _id, ...rest }) => rest);
+    expect(shape(write.results)).toEqual(shape(preview.results));
+    expect(write.results[1].id).not.toBeNull();
+    expect(write.results[2].id).toBeNull();
+    expect((await league(t, adopted))?.externalIds?.mlbamId).toBe(5);
+    expect((await league(t, held))?.externalIds?.mlbamId).toBe(104);
+    expect(await allLeagues(t)).toHaveLength(3);
+  });
+
+  test("nbName is NB's name when MLB's differs, on a hit by id and by name", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    await seedLeague(t, sportId, "Pacific Coast League", { level: "minor", mlbamId: 112 });
+    await seedLeague(t, sportId, "Carolina League", { level: "minor", aliases: ["CL"] });
+    const out = await leagues(t, [
+      { name: "PCL", level: "minor", mlbamId: 112 },
+      { name: "CL", level: "minor", mlbamId: 120 },
+    ]);
+    expect(out.results.map((r) => [r.name, r.created, r.nbName])).toEqual([
+      ["PCL", false, "Pacific Coast League"],
+      ["CL", false, "Carolina League"],
+    ]);
   });
 });
 
