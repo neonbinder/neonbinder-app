@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { Checkbox } from "../../../primitives/Checkbox";
 import { wikidataUrl, wikipediaUrl } from "../../../../lib/players/wikidata-id";
 
 /**
@@ -98,20 +99,18 @@ export default function WikidataBlock({
               const label = careerTeamLabel(ct);
               return (
                 <li key={`${ct.name}|${ct.fromYear}|${ct.toYear ?? ""}`}>
-                  <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2 wrap-anywhere">
-                    <input
-                      type="checkbox"
-                      checked={!excludedCareerTeams?.has(ct.name)}
-                      aria-disabled={disabled || undefined}
-                      aria-label={`Include career team ${label}${labelSuffix}`}
-                      onChange={() => {
-                        if (disabled) return;
-                        onToggleCareerTeam?.(ct.name);
-                      }}
-                      className="h-6 w-6 shrink-0 rounded accent-neon-green-text focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
-                    />
-                    <span>{label}</span>
-                  </label>
+                  <Checkbox
+                    className="text-xs text-ink-2 wrap-anywhere"
+                    checked={!excludedCareerTeams?.has(ct.name)}
+                    aria-disabled={disabled || undefined}
+                    aria-label={`Include career team ${label}${labelSuffix}`}
+                    onChange={() => {
+                      if (disabled) return;
+                      onToggleCareerTeam?.(ct.name);
+                    }}
+                  >
+                    {label}
+                  </Checkbox>
                 </li>
               );
             })}

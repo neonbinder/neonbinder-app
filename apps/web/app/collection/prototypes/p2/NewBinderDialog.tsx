@@ -1,4 +1,5 @@
 import { useId, useState, type FormEvent } from "react";
+import { Checkbox } from "@/components/primitives/Checkbox";
 import { Input } from "@/components/primitives/Input";
 import { players, teams, type BinderRule } from "../_shared/data";
 import type { NewBinder } from "../_shared/usePrototypeStore";
@@ -108,12 +109,7 @@ export default function NewBinderDialog({
 
         {kind === "manual" ? (
           <label className={`${CHOICE} mt-4`}>
-            <input
-              type="checkbox"
-              className="mt-0.5 h-4 w-4 accent-[#00C2FF]"
-              checked={pages}
-              onChange={(e) => setPages(e.target.checked)}
-            />
+            <Checkbox className="mt-0.5" checked={pages} onChange={(e) => setPages(e.target.checked)} />
             <span>
               <span className="block font-medium">Give it nine-pocket pages</span>
               <span className="block text-slate-400">

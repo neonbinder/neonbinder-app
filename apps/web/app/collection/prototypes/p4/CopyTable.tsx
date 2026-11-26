@@ -7,6 +7,7 @@ import {
   PencilSquareIcon,
   TagIcon,
 } from "@heroicons/react/24/outline";
+import { Checkbox } from "@/components/primitives/Checkbox";
 import { Input } from "@/components/primitives/Input";
 import { LiveLine } from "@/components/modules/RunLedger";
 import CopyDetailsForm from "../_shared/CopyDetailsForm";
@@ -563,10 +564,8 @@ export default function CopyTable({ store, pile }: { store: PrototypeStore; pile
               <thead className="border-b border-slate-800 bg-slate-900 text-slate-300">
                 <tr>
                   <th scope="col" className="w-8 px-2 py-1.5">
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       aria-label={`Select all ${rows.length} shown`}
-                      className={`h-4 w-4 accent-[#00C2FF] ${RING}`}
                       checked={rows.length > 0 && rows.every((r) => selSet.has(r.copy.id))}
                       ref={(el) => {
                         if (el) el.indeterminate = visibleSelected > 0 && visibleSelected < rows.length;
@@ -785,10 +784,8 @@ function TableRow({
   return (
     <tr className={selected ? "bg-neon-blue/10" : "hover:bg-slate-900/70"}>
       <td className="px-2 py-1 align-top">
-        <input
-          type="checkbox"
+        <Checkbox
           aria-label={`Select ${label}`}
-          className={`h-4 w-4 accent-[#00C2FF] ${RING}`}
           checked={selected}
           onChange={() => {}}
           onClick={onToggle}
@@ -891,10 +888,8 @@ function PhoneRow({
       }`}
     >
       <label className="flex h-11 w-11 shrink-0 items-center justify-center">
-        <input
-          type="checkbox"
+        <Checkbox
           aria-label={`Select ${label}`}
-          className={`h-5 w-5 accent-[#00C2FF] ${RING}`}
           checked={selected}
           onChange={() => {}}
           onClick={onToggle}

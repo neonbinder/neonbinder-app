@@ -14,6 +14,7 @@ import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { Input } from "@/components/primitives";
 import { CopyButton } from "@/components/primitives/CopyButton";
+import { Checkbox } from "@/components/primitives/Checkbox";
 import NeonButton from "@/components/modules/NeonButton";
 import TeamPicker from "@/components/SetSelector/TeamPicker";
 import { SportTag } from "@/components/SetSelector/PlayerPicker";
@@ -2043,17 +2044,15 @@ function PlayerDetail({
             aria-invalid={qidValid ? undefined : true}
           />
 
-          <label
-            className={`flex items-center gap-2 text-sm text-ink-2 ${FIELD_BOX_HEIGHT}`}
-          >
-            <input
-              type="checkbox"
+          <div className={`flex items-center ${FIELD_BOX_HEIGHT}`}>
+            <Checkbox
+              className="text-sm text-ink-2"
               checked={isHallOfFame}
               onChange={(e) => setIsHallOfFame(e.target.checked)}
-              className="h-6 w-6 shrink-0 rounded border-control bg-field text-neon-green-text focus-outline"
-            />
-            Hall of Fame
-          </label>
+            >
+              Hall of Fame
+            </Checkbox>
+          </div>
         </div>
 
         {/* The caption row. One line, always in the same place, whether it is

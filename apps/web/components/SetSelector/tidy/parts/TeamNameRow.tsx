@@ -5,6 +5,7 @@ import type { Id } from "../../../../convex/_generated/dataModel";
 import { eraLabel, teamOptionLabel } from "../../../../lib/teams/team-era";
 import { teamFullName } from "../../../../lib/teams/team-name";
 import NeonButton from "../../../modules/NeonButton";
+import { Checkbox } from "../../../primitives/Checkbox";
 import { TeamMatchSearch } from "../../../entities/TeamMatchSearch";
 import SportSwitch from "../../SportSwitch";
 import type { TidyCardContext, TidyRow } from "../tile-types";
@@ -314,21 +315,19 @@ function UnansweredTeamName({
           }}
         >
           <div className="space-y-0.5">
-            <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2">
-              <input
-                type="checkbox"
-                checked={saveAsAlias}
-                aria-disabled={write.busy || aliasDefaultPending || undefined}
-                aria-label={`Remember “${name.printed}” as a name for this team`}
-                onChange={(e) => {
-                  if (write.busy || aliasDefaultPending) return;
-                  setAliasChoice(e.target.checked);
-                }}
-                className="h-6 w-6 shrink-0 rounded accent-neon-green-text focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
-              />
-              <span>{`Remember “${name.printed}” as a name for this team`}</span>
-            </label>
-            <p className="pl-8 text-xs text-ink-3">
+            <Checkbox
+              className="text-xs text-ink-2"
+              checked={saveAsAlias}
+              aria-disabled={write.busy || aliasDefaultPending || undefined}
+              aria-label={`Remember “${name.printed}” as a name for this team`}
+              onChange={(e) => {
+                if (write.busy || aliasDefaultPending) return;
+                setAliasChoice(e.target.checked);
+              }}
+            >
+              {`Remember “${name.printed}” as a name for this team`}
+            </Checkbox>
+            <p className="pl-6 text-xs text-ink-3">
               Kicks in when you link. Next time this name shows up, it goes straight to that team.
             </p>
           </div>

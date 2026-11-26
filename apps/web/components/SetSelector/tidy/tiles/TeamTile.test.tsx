@@ -269,7 +269,7 @@ describe("TeamTile", () => {
       queryResults["teams.nearMatches"] = [];
       renderTile();
       const box = screen.getByRole("checkbox", { name: "Remember “Padres” as a name for this team" }) as HTMLInputElement;
-      expect(box.className).toContain("h-6");
+      expect(box.className).toContain("h-4");
       expect(box.closest("label")?.className).toContain("min-h-6");
       mutation("tidyNames.answerName").mockReturnValueOnce(new Promise(() => {}));
       await click(screen.getByRole("button", { name: "Not a team" }));

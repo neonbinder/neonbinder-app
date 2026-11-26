@@ -598,7 +598,7 @@ describe("PlayerTile", () => {
     queryResults["players.nearMatches"] = [];
     renderTile({ ctx: context({ names: [printedName({ row: nameRow({ sportId: "sport-2" }) })] }) });
     const box = screen.getByRole("checkbox", { name: /^Also add / }) as HTMLInputElement;
-    expect(box.className).toContain("h-6");
+    expect(box.className).toContain("h-4");
     expect(box.closest("label")?.className).toContain("min-h-6");
     mutation("tidyNames.answerName").mockReturnValueOnce(new Promise(() => {}));
     await act(async () =>
@@ -745,7 +745,7 @@ describe("PlayerTile: remember the printed name as a name for the picked player 
     renderTile();
     const box = screen.getByRole("checkbox", { name: REMEMBER }) as HTMLInputElement;
     expect(box.checked).toBe(true);
-    expect(box.className).toContain("h-6");
+    expect(box.className).toContain("h-4");
     await act(async () => fireEvent.click(screen.getByRole("button", { name: /^Link to Jackson Merrill Jr\./ })));
     expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
       cardId: CARD,

@@ -123,6 +123,7 @@ const jsxA11yHouseRules = {
           "PlayerPicker",
           "TeamPicker",
           "Switch",
+          "Checkbox",
         ],
         depth: 5,
       },

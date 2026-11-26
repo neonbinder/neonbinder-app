@@ -27,6 +27,7 @@ import type { TidyWrite } from "./tidy-write";
 import { useReopenedFocus } from "./use-reopened-focus";
 import { useSportValue } from "./use-sport-value";
 import WikidataBlock from "./WikidataBlock";
+import { Checkbox } from "../../../primitives/Checkbox";
 
 type Ctx = NonNullable<TidyCardContext>;
 export type ContextName = Ctx["names"][number];
@@ -494,26 +495,24 @@ function UnansweredPlayerName({
     wrap.focus({ preventScroll: true });
   }, [aliasBoxShown, wrapRef]);
   const aliasBox = (
-    <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2">
-      <input
-        type="checkbox"
-        checked={saveAsAlias}
-        aria-disabled={write.busy || undefined}
-        aria-label={`Remember “${name.printed}” as a name for this player`}
-        onFocus={() => {
-          aliasBoxFocused.current = true;
-        }}
-        onBlur={(e) => {
-          if (e.relatedTarget) aliasBoxFocused.current = false;
-        }}
-        onChange={(e) => {
-          if (write.busy) return;
-          setSaveAsAlias(e.target.checked);
-        }}
-        className="h-6 w-6 shrink-0 rounded accent-neon-green-text focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
-      />
-      <span className="min-w-0 wrap-anywhere">{`Remember “${name.printed}” as a name for this player`}</span>
-    </label>
+    <Checkbox
+      className="text-xs text-ink-2 wrap-anywhere"
+      checked={saveAsAlias}
+      aria-disabled={write.busy || undefined}
+      aria-label={`Remember “${name.printed}” as a name for this player`}
+      onFocus={() => {
+        aliasBoxFocused.current = true;
+      }}
+      onBlur={(e) => {
+        if (e.relatedTarget) aliasBoxFocused.current = false;
+      }}
+      onChange={(e) => {
+        if (write.busy) return;
+        setSaveAsAlias(e.target.checked);
+      }}
+    >
+      {`Remember “${name.printed}” as a name for this player`}
+    </Checkbox>
   );
 
   // One filled button per tile (the walk's own rule: the best answer leads,
@@ -606,20 +605,18 @@ function UnansweredPlayerName({
       )}
 
       {crossSport && (
-        <label className="flex min-h-6 items-center gap-2 text-xs text-ink-2">
-          <input
-            type="checkbox"
-            checked={addSetSport}
-            aria-disabled={write.busy || undefined}
-            onChange={(e) => {
-              if (write.busy) return;
-              setAddSetSport(e.target.checked);
-            }}
-            aria-label={`Also add ${setSportValue ?? "the set's sport"} to their sports${suffix}`}
-            className="h-6 w-6 shrink-0 rounded accent-neon-green-text focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
-          />
-          <span>{`Also add ${setSportValue ?? "the set's sport"} to their sports`}</span>
-        </label>
+        <Checkbox
+          className="text-xs text-ink-2"
+          checked={addSetSport}
+          aria-disabled={write.busy || undefined}
+          onChange={(e) => {
+            if (write.busy) return;
+            setAddSetSport(e.target.checked);
+          }}
+          aria-label={`Also add ${setSportValue ?? "the set's sport"} to their sports${suffix}`}
+        >
+          {`Also add ${setSportValue ?? "the set's sport"} to their sports`}
+        </Checkbox>
       )}
 
       {linkOpen ? (

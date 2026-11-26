@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -7,6 +7,7 @@ import {
   type ExpectedFeature,
 } from "../../convex/features/expectedFeatures";
 import { FeatureValueControl } from "./FeatureValueControl";
+import { Checkbox } from "../primitives/Checkbox";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 
 /**
@@ -170,6 +171,7 @@ function CardFeatureRow({
   const label = feat.label;
   const [boolBusy, setBoolBusy] = useState(false);
   const [boolError, setBoolError] = useState<string | null>(null);
+  const errorId = useId();
   // Unique per-field marker class so Maestro's inputText targets THIS field's
   // input rather than the FIRST card-feature input sharing the className (see
   // useFieldTestClass). Mirrors SetFeatureRow — without it, typing into any
@@ -207,27 +209,28 @@ function CardFeatureRow({
       }
     };
     return (
-      <label
-        className="flex flex-row items-center gap-2 p-1.5 rounded border text-xs border-rule-strong bg-raised-deep/30"
+      <div
+        role="group"
+        className="flex flex-row flex-wrap items-center gap-x-2 p-1.5 rounded border text-xs border-rule-strong bg-raised-deep/30"
         aria-label={`Feature ${label}`}
       >
-        <input
-          type="checkbox"
+        <Checkbox
           checked={cardIsRookie === true}
           disabled={boolBusy}
           onChange={(e) => void handleToggle(e.target.checked)}
           aria-label={`Value for ${label}`}
-          className="accent-neon-green-text"
-        />
-        <span className="text-[10px] uppercase tracking-wide text-ink-3">
-          {label}
-        </span>
+          aria-describedby={boolError ? errorId : undefined}
+        >
+          <span className="text-[10px] uppercase tracking-wide text-ink-3">
+            {label}
+          </span>
+        </Checkbox>
         {boolError && (
-          <span className="text-[10px] text-neon-pink-text" role="alert">
+          <span id={errorId} className="text-[10px] text-neon-pink-text" role="alert">
             {boolError}
           </span>
         )}
-      </label>
+      </div>
     );
   }
 

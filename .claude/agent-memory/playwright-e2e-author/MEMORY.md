@@ -189,4 +189,5 @@
 - [NEO-672 swap pills](patterns_neo672_career_swap_pills.md) — "Swap <gap> for" list; on-card "/" fixture; toast axe; mobile; throw plant: seed first
 - [Player alias box](patterns_player_alias_read_back_and_remember_box.md) — NEO-671 remember box, Aliases read-back; Possible matches via hand-made sport + Josh/Joshua
 - [sr-only is visible to PW](patterns_sr_only_counts_as_visible_and_caret_proof.md) — 1x1 box passes toBeVisible; caret proof = Backspace, no End
+- [Label text is the target](patterns_label_text_is_the_target_and_its_plant.md) — click title text, assert role; plant = label onClick preventDefault; plant --fresh
 - [Drawer toast lost to a build](patterns_drawer_toast_lost_to_a_build_hold.md) — save releases a build: toast ~80 ms; prove by read-back; titles door waits
