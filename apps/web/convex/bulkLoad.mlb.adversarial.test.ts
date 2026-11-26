@@ -12,6 +12,8 @@ import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
 import { MAX_PARENT_CLUBS } from "./lib/parentClubs";
+import { MAX_MINOR_LEAGUE_CLASSES } from "./lib/leagueClass";
+import { TEAM_ERA_SCAN_LIMIT } from "./lib/teamRow";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -143,6 +145,7 @@ const scheduled = (t: T) =>
 
 type LeagueIn = {
   name: string;
+  abbreviation?: string;
   level: "major" | "minor" | "college" | "international" | "independent" | "other";
   aliases?: string[];
   mlbamId?: number;
@@ -255,6 +258,108 @@ describe("leagues: never overwrite, always converge", () => {
   });
 });
 
+describe("leagues: found by id stays found by id", () => {
+  test("two same-named leagues: the id holder takes the gap-fills, the other is untouched", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    // Inserted first, so a name lookup would return it.
+    const decoy = await seedLeague(t, sportId, "Pacific Coast League", { level: "minor" });
+    const holder = await seedLeague(t, sportId, "Pacific Coast League", { level: "minor", mlbamId: 112 });
+    const decoyBefore = await league(t, decoy);
+    const out = await leagues(t, [
+      {
+        name: "Pacific Coast League",
+        abbreviation: "PCL",
+        level: "minor",
+        mlbamId: 112,
+        aliases: ["Coast"],
+        yearsActive: { from: 1903 },
+      },
+    ]);
+    expect(out.results[0].id).toBe(holder);
+    const held = await league(t, holder);
+    expect(held?.abbreviation).toBe("PCL");
+    expect(held?.yearsActive).toEqual({ from: 1903 });
+    expect(held?.aliases).toEqual(["Coast"]);
+    expect(await league(t, decoy)).toEqual(decoyBefore);
+    expect(await allLeagues(t)).toHaveLength(2);
+  });
+
+  test("a league NB holds at another level is a field conflict: reported, nothing written, id still fills", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const id = await seedLeague(t, sportId, "Texas League", { level: "minor" });
+    const out = await leagues(t, [{ name: "Texas League", level: "major", mlbamId: 104 }]);
+    expect(out.results[0].id).toBe(id);
+    expect(out.results[0].disagreements).toEqual([{ field: "level", nb: "minor", mlb: "major" }]);
+    const after = await league(t, id);
+    expect(after?.level).toBe("minor");
+    expect(after?.externalIds).toEqual({ mlbamId: 104 });
+  });
+
+  test("MLB seasons outside the league's span are reported; NB's years are not widened", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const id = await t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "Texas League",
+        nameNormalized: "texas league",
+        sportId,
+        level: "minor",
+        yearsActive: { from: 1990, to: 2000 },
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+    const out = await leagues(t, [
+      { name: "Texas League", level: "minor", mlbamId: 104, yearsActive: { from: 1985, to: 2005 } },
+    ]);
+    expect(out.results[0].disagreements).toEqual([
+      { field: "yearsActive", nb: "1990-2000", mlb: "1985-2005" },
+    ]);
+    expect((await league(t, id))?.yearsActive).toEqual({ from: 1990, to: 2000 });
+    // Inside the span: no disagreement.
+    const again = await leagues(t, [
+      { name: "Texas League", level: "minor", mlbamId: 104, yearsActive: { from: 1991, to: 1999 } },
+    ]);
+    expect(again.results[0].disagreements).toBeUndefined();
+  });
+
+  test("a call that sends one MLB id twice is refused, preview and write, naming both rows", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    await seedSport(t);
+    const rows: LeagueIn[] = [
+      { name: "League A", level: "minor", mlbamId: 200 },
+      { name: "League B", level: "minor", mlbamId: 200 },
+    ];
+    await expect(leagues(t, rows)).rejects.toThrow(/League A.*League B/);
+    await expect(leagues(t, rows, true)).rejects.toThrow(/League A.*League B/);
+    expect(await allLeagues(t)).toEqual([]);
+  });
+
+  test("more league classes than the cap is refused naming the row", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    await seedSport(t);
+    const classes = Array.from({ length: MAX_MINOR_LEAGUE_CLASSES + 1 }, (_, i) => ({
+      class: "aaa" as const,
+      fromYear: 1900 + i,
+      toYear: 1900 + i,
+    }));
+    await expect(
+      leagues(t, [{ name: "Big League", level: "minor", mlbamId: 9, minorLeagueClasses: classes }]),
+    ).rejects.toThrow(/Big League.*limit is 64/);
+    // At the cap it is accepted.
+    const out = await leagues(t, [
+      { name: "Big League", level: "minor", mlbamId: 9, minorLeagueClasses: classes.slice(0, MAX_MINOR_LEAGUE_CLASSES) },
+    ]);
+    expect(out.results[0].created).toBe(true);
+  });
+});
+
 describe("teams: id stealing and era routing", () => {
   test("a decision adopt onto a row holding a different id holds it, nothing written", async () => {
     const t = convexTest(schema, modules);
@@ -270,10 +375,9 @@ describe("teams: id stealing and era routing", () => {
     expect(await snap(t)).toEqual(before);
   });
 
-  // KNOWN BUG (reported): the decision-replay step runs before step 1b, so an
-  // {adopt} onto a bare row writes an id that another era row already holds for
-  // overlapping seasons; every later by-id lookup is then a tie.
-  test.fails("a decision adopt of an id onto a row whose seasons overlap another holder of that id does not mint a second holder", async () => {
+  // The id is read before the decision replay, so an {adopt} onto a bare row
+  // cannot write an id another era row already holds for overlapping seasons.
+  test("a decision adopt of an id onto a row whose seasons overlap another holder of that id does not mint a second holder", async () => {
     const t = convexTest(schema, modules);
     armed();
     const sportId = await seedSport(t);
@@ -289,6 +393,96 @@ describe("teams: id stealing and era routing", () => {
     const holders = (await allTeams(t)).filter((x) => x.externalIds?.mlbamId === 119);
     expect(holders.map((x) => x._id)).toEqual([holder]);
     expect(out.results[0].status).toBe("ambiguous");
+  });
+
+  test("a replayed adopt onto the row the id already places lands", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const holder = await seedTeam(t, sportId, {
+      location: "Los Angeles", name: "Dodgers", years: { from: 1958 }, mlbamId: 119,
+    });
+    const out = await teams(t, [
+      { key: "k", location: "Los Angeles", name: "Dodgers", yearsActive: { from: 1958 }, mlbamId: 119, decision: { adopt: holder } },
+    ]);
+    expect(out.results[0]).toMatchObject({ id: holder, status: "adopted" });
+  });
+
+  test("a replayed adopt while two era rows hold the id for those seasons is held", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    await seedTeam(t, sportId, { location: "Brooklyn", name: "Dodgers", years: { from: 1901, to: 1957 }, mlbamId: 119 });
+    await seedTeam(t, sportId, { location: "Los Angeles", name: "Dodgers", years: { from: 1958 }, mlbamId: 119 });
+    const bare = await seedTeam(t, sportId, { location: "Los Angeles", name: "Dodgers" });
+    const before = await snap(t);
+    const out = await teams(t, [
+      { key: "k", location: "Los Angeles", name: "Dodgers", yearsActive: { from: 1950, to: 1970 }, mlbamId: 119, decision: { adopt: bare } },
+    ]);
+    expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
+    expect(out.results[0].disagreements?.[0].field).toBe("mlbamId");
+    expect(await snap(t)).toEqual(before);
+  });
+
+  test("a replayed {create:true} onto a season an id already places is held, nothing written", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const holder = await seedTeam(t, sportId, {
+      location: "Los Angeles", name: "Dodgers", years: { from: 1958 }, mlbamId: 119,
+    });
+    const before = await snap(t);
+    const out = await teams(t, [
+      { key: "k", location: "Los Angeles", name: "Dodgers", yearsActive: { from: 1958 }, mlbamId: 119, decision: { create: true } },
+    ]);
+    expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
+    expect(out.results[0].candidates?.map((c) => c.id)).toEqual([holder]);
+    expect(out.results[0].disagreements?.[0].field).toBe("mlbamId");
+    expect(await snap(t)).toEqual(before);
+  });
+
+  test("a replayed {create:true} for an era the id does not place still lands", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    await seedTeam(t, sportId, { location: "Los Angeles", name: "Dodgers", years: { from: 1958 }, mlbamId: 119 });
+    const out = await teams(t, [
+      { key: "k", location: "Brooklyn", name: "Dodgers", yearsActive: { from: 1901, to: 1957 }, mlbamId: 119, decision: { create: true } },
+    ]);
+    expect(out.results[0]).toMatchObject({ status: "created" });
+    expect((await allTeams(t)).filter((x) => x.externalIds?.mlbamId === 119)).toHaveLength(2);
+  });
+
+  test("an id scan that comes back full is a tie: held, never a pick over a window", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    // Sixteen single-season rows hold one id; the seventeenth season would
+    // overlap none of the rows read, so a pick over the window would create.
+    for (let i = 0; i < TEAM_ERA_SCAN_LIMIT; i++) {
+      await seedTeam(t, sportId, {
+        location: `Town ${i}`, name: "Club", years: { from: 1900 + i, to: 1900 + i }, mlbamId: 700,
+      });
+    }
+    const before = await snap(t);
+    const out = await teams(t, [
+      { key: "k", location: "Newtown", name: "Club", yearsActive: { from: 2020 }, mlbamId: 700 },
+    ]);
+    expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
+    expect(out.results[0].disagreements?.[0].field).toBe("mlbamId");
+    expect(await snap(t)).toEqual(before);
+    // One row fewer and the scan is not full: the same row now creates.
+    const t2 = convexTest(schema, modules);
+    const sport2 = await seedSport(t2);
+    for (let i = 0; i < TEAM_ERA_SCAN_LIMIT - 1; i++) {
+      await seedTeam(t2, sport2, {
+        location: `Town ${i}`, name: "Club", years: { from: 1900 + i, to: 1900 + i }, mlbamId: 700,
+      });
+    }
+    const ok = await teams(t2, [
+      { key: "k", location: "Newtown", name: "Club", yearsActive: { from: 2020 }, mlbamId: 700 },
+    ]);
+    expect(ok.results[0].status).toBe("created");
   });
 
   test("seasons straddling two eras of one id are a tie: held, neither row touched", async () => {
@@ -463,14 +657,27 @@ describe("players: link-or-create adversaries", () => {
     expect((await allPlayers(t)).filter((p) => p.externalIds?.mlbamId === 669257)).toEqual([]);
   });
 
-  test("two keys with one id create one player", async () => {
+  test("a call that sends one MLB id twice is refused, preview and write, naming both keys", async () => {
     const t = convexTest(schema, modules);
     armed();
     await seedSport(t);
-    await players(t, await epoch(), [
+    const e = await epoch();
+    const rows: PlayerIn[] = [
       { key: "a", name: "Shohei Ohtani", mlbamId: 660271 },
       { key: "b", name: "Shohei Ohtani", mlbamId: 660271 },
-    ]);
+    ];
+    await expect(players(t, e, rows)).rejects.toThrow(/"a".*"b"/);
+    await expect(previewPlayers(t, e, rows)).rejects.toThrow(/"a".*"b"/);
+    expect(await allPlayers(t)).toEqual([]);
+  });
+
+  test("the same id in two calls lands on one player", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    await seedSport(t);
+    const e = await epoch();
+    await players(t, e, [{ key: "a", name: "Shohei Ohtani", mlbamId: 660271 }]);
+    await players(t, e, [{ key: "b", name: "Shohei Ohtani", mlbamId: 660271 }]);
     expect((await allPlayers(t)).filter((p) => p.externalIds?.mlbamId === 660271)).toHaveLength(1);
   });
 

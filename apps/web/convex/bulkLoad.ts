@@ -254,6 +254,7 @@ import {
 import { isMlbamId } from "./lib/mlbamId";
 import { isBirthDate } from "./lib/birthDate";
 import {
+  MAX_MINOR_LEAGUE_CLASSES,
   minorLeagueClassesValidator,
   type MinorLeagueClassEntry,
 } from "./lib/leagueClass";
@@ -716,6 +717,28 @@ function boundedMlbamId(raw: number, key: string): number {
   return raw;
 }
 
+/**
+ * One MLB id on two rows of one call is the driver's bug (two MLB people never
+ * share an id): the second row would find the first's new row by that id and
+ * the pair would report as one. Refused up front, naming both rows. Not used
+ * for teams: one club id spans every era row of the franchise.
+ */
+function assertNoRepeatedMlbamIds(
+  rows: ReadonlyArray<{ label: string; mlbamId: number | undefined }>,
+): void {
+  const seen = new Map<number, string>();
+  for (const { label, mlbamId } of rows) {
+    if (mlbamId === undefined) continue;
+    const first = seen.get(mlbamId);
+    if (first !== undefined) {
+      throw new ConvexError(
+        `The MLB id ${mlbamId} is on both "${first}" and "${label}" in this call.`,
+      );
+    }
+    seen.set(mlbamId, label);
+  }
+}
+
 /** A birth date, or the call is refused; checked against the row's own birth year. */
 function boundedBirthDate(
   raw: string,
@@ -769,6 +792,11 @@ function boundedClasses(
   raw: ReadonlyArray<MinorLeagueClassEntry>,
   key: string,
 ): MinorLeagueClassEntry[] {
+  if (raw.length > MAX_MINOR_LEAGUE_CLASSES) {
+    throw new ConvexError(
+      `"${key}" has ${raw.length} league classes; the limit is ${MAX_MINOR_LEAGUE_CLASSES}.`,
+    );
+  }
   for (const entry of raw) {
     assertYears(
       { from: entry.fromYear, ...(entry.toYear !== undefined ? { to: entry.toYear } : {}) },
@@ -937,6 +965,9 @@ export const upsertLeagues = internalMutation({
   handler: async (ctx, args) => {
     assertBulkLoadArmed(args.confirm);
     assertChunkSize(args.leagues.length, MAX_LEAGUES_PER_CALL, "leagues");
+    assertNoRepeatedMlbamIds(
+      args.leagues.map((l) => ({ label: l.name, mlbamId: l.mlbamId })),
+    );
     const sportId = await requireSportId(ctx, args.sport);
     const write = !args.dryRun;
 
@@ -1026,11 +1057,30 @@ export const upsertLeagues = internalMutation({
       }
 
       let id: Id<"leagues"> | null = before?._id ?? null;
-      if (write) {
+      if (write && mlbamId !== undefined && before) {
+        /*
+         * NEO-676: the league was found by its id (or by the one name that
+         * answers). Never go back through the name lookup: with two
+         * same-named leagues in the sport it would return the first hit, and
+         * the gap-fills would land on a row this pass never chose. The same
+         * gap-fills `findOrCreateLeague` makes, on the row already in hand.
+         */
+        const gaps: Partial<Doc<"leagues">> = {};
+        if (abbreviation && !before.abbreviation) gaps.abbreviation = abbreviation;
+        if (row.yearsActive && !before.yearsActive) gaps.yearsActive = row.yearsActive;
+        if (wikidataId && !before.externalIds?.wikidataId) {
+          gaps.externalIds = { ...(before.externalIds ?? {}), wikidataId };
+        }
+        if (Object.keys(gaps).length > 0) {
+          await ctx.db.patch(before._id, { ...gaps, lastUpdated: Date.now() });
+        }
+        // Alias gap-fill on a row this pass FOUND — see the doc comment.
+        if (aliases.length > 0 && (before.aliases ?? []).length === 0) {
+          await ctx.db.patch(before._id, { aliases, lastUpdated: Date.now() });
+        }
+      } else if (write) {
         id = await findOrCreateLeague(ctx, {
-          // An id match may carry a different name than the API's; the helper
-          // finds a row by name, so hand it the row's own.
-          name: mlbamId !== undefined && before ? before.name : name,
+          name,
           ...(abbreviation ? { abbreviation } : {}),
           sportId,
           // See the header: no call in this file queues a Wikidata lookup.
@@ -1060,6 +1110,25 @@ export const upsertLeagues = internalMutation({
           if (mlbamId !== undefined && target.externalIds?.mlbamId === undefined) {
             patch.externalIds = { ...(target.externalIds ?? {}), mlbamId };
             if (before) filled.push("mlbamId");
+          }
+          // NEO-676: what NB holds outranks MLB's; a difference is reported,
+          // nothing written for it. Only a league this pass found has a
+          // level or span of NB's own to compare.
+          if (before && mlbamId !== undefined) {
+            if (target.level !== row.level) {
+              disagreements.push({ field: "level", nb: target.level, mlb: row.level });
+            }
+            if (
+              target.yearsActive !== undefined &&
+              row.yearsActive &&
+              !yearsWithin(row.yearsActive, target.yearsActive)
+            ) {
+              disagreements.push({
+                field: "yearsActive",
+                nb: describeYears(target.yearsActive),
+                mlb: describeYears(row.yearsActive),
+              });
+            }
           }
           // Classes belong to a minor league only; NB's own level decides.
           if (classes && target.level === "minor") {
@@ -1840,6 +1909,55 @@ async function loadTeams(
       extra: Pick<TeamResult, "candidates" | "aliasOwnedBy">,
     ): TeamResult => ({ key, id: null, status: "ambiguous", ...extra });
 
+    // ---- 0. NEO-676: the MLB id, narrowed to the era -----------------------
+
+    /*
+     * An MLB club id spans every NB era row of that franchise (the Dodgers'
+     * Brooklyn and Los Angeles rows share 119), so the id alone is not a row:
+     * it is the candidates, and the era this row's seasons fall in picks one.
+     * Exactly one era overlapping is the answer; two covering the same season
+     * is a tie, held for the operator — never `.first()`. None overlapping
+     * means this is an era NB has not got, and the name steps below decide
+     * whether it is one NB knows under another name or a new row.
+     *
+     * Read BEFORE the decision replay: a replayed answer is still a claim
+     * about which row holds the id, and an `adopt` onto a row while another
+     * era row holds the id for these seasons would mint a second holder.
+     */
+    let idMatch: EraMatch = { kind: "none" };
+    // The scan came back full: more rows may hold this id than were read, so
+    // it is a tie — never a pick over a window.
+    let idScanFull = false;
+    if (mlbamId !== undefined) {
+      const scanned = await ctx.db
+        .query("teams")
+        .withIndex("by_mlbam_id", (q) => q.eq("externalIds.mlbamId", mlbamId))
+        .take(TEAM_ERA_SCAN_LIMIT);
+      ops += 1;
+      idScanFull = scanned.length >= TEAM_ERA_SCAN_LIMIT;
+      const byId = scanned.filter((team) => team.sportId === sportId);
+      idMatch = idScanFull
+        ? { kind: "several", teams: byId }
+        : eraMatch(byId, row.yearsActive);
+    }
+    const heldOnId = (teamsOnId: Doc<"teams">[]): TeamResult => ({
+      key,
+      id: null,
+      status: "ambiguous",
+      candidates: teamsOnId.map(candidateOf),
+      disagreements: [
+        {
+          field: "mlbamId",
+          nb: idScanFull
+            ? `${TEAM_ERA_SCAN_LIMIT} or more teams hold this id`
+            : teamsOnId
+                .map((t) => `${teamFullName(t)} ${describeYears(t.yearsActive)}`)
+                .join("; "),
+          mlb: `${mlbamId} ${describeYears(row.yearsActive)}`,
+        },
+      ],
+    });
+
     // ---- 1. decision replay ----------------------------------------------
 
     /**
@@ -1875,6 +1993,16 @@ async function loadTeams(
             `one of its aliases.`,
         );
       }
+      // NEO-676: the id says another row is this era of the club, or says
+      // nothing certain; an answer that disagrees is held, not written.
+      if (idMatch.kind === "several") {
+        results.push(heldOnId(idMatch.teams));
+        continue;
+      }
+      if (idMatch.kind === "one" && idMatch.team._id !== chosen._id) {
+        results.push(heldOnId([idMatch.team]));
+        continue;
+      }
       results.push(await adopt(chosen, { matchedBy: "decision" }, ownersExcept(chosen._id)));
       continue;
     }
@@ -1882,46 +2010,24 @@ async function loadTeams(
     // "none of these is the one I mean". It is also the one decision that
     // does NOT converge on a replay; see the header.
     if (row.decision && "create" in row.decision) {
+      // NEO-676: a row the id already places is not a new one.
+      if (idMatch.kind === "several") {
+        results.push(heldOnId(idMatch.teams));
+        continue;
+      }
+      if (idMatch.kind === "one") {
+        results.push(heldOnId([idMatch.team]));
+        continue;
+      }
       results.push(await create(ownersExcept(null), true));
       continue;
     }
 
-    // ---- 1b. NEO-676: by MLB id, narrowed to the era ----------------------
+    // ---- 1b. NEO-676: by MLB id (read in step 0) --------------------------
 
-    /*
-     * An MLB club id spans every NB era row of that franchise (the Dodgers'
-     * Brooklyn and Los Angeles rows share 119), so the id alone is not a row:
-     * it is the candidates, and the era this row's seasons fall in picks one.
-     * Exactly one era overlapping is the answer; two covering the same season
-     * is a tie, held for the operator — never `.first()`. None overlapping
-     * means this is an era NB has not got, and the name steps below decide
-     * whether it is one NB knows under another name or a new row.
-     */
     if (mlbamId !== undefined) {
-      const byId = (
-        await ctx.db
-          .query("teams")
-          .withIndex("by_mlbam_id", (q) => q.eq("externalIds.mlbamId", mlbamId))
-          .take(TEAM_ERA_SCAN_LIMIT)
-      ).filter((team) => team.sportId === sportId);
-      ops += 1;
-      const idMatch = eraMatch(byId, row.yearsActive);
       if (idMatch.kind === "several") {
-        results.push({
-          key,
-          id: null,
-          status: "ambiguous",
-          candidates: idMatch.teams.map(candidateOf),
-          disagreements: [
-            {
-              field: "mlbamId",
-              nb: idMatch.teams
-                .map((t) => `${teamFullName(t)} ${describeYears(t.yearsActive)}`)
-                .join("; "),
-              mlb: `${mlbamId} ${describeYears(row.yearsActive)}`,
-            },
-          ],
-        });
+        results.push(heldOnId(idMatch.teams));
         continue;
       }
       if (idMatch.kind === "one") {
@@ -3341,6 +3447,9 @@ async function loadRosterPlayers(
     }
     keysSeen.add(key);
   }
+  assertNoRepeatedMlbamIds(
+    args.players.map((p) => ({ label: p.key, mlbamId: p.mlbamId })),
+  );
 
   let ops = 0;
   const sportId = await requireSportId(ctx, args.sport);

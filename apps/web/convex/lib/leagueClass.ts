@@ -21,6 +21,13 @@ export const MINOR_LEAGUE_CLASSES = [
   "rookie",
 ] as const;
 
+/**
+ * The most class stretches one league row may carry. A league holds a handful
+ * of classes over its history; the bulk loader refuses a list past this so a
+ * runaway dataset cannot grow one document without bound.
+ */
+export const MAX_MINOR_LEAGUE_CLASSES = 64;
+
 export type MinorLeagueClass = (typeof MINOR_LEAGUE_CLASSES)[number];
 
 export const minorLeagueClassValidator = v.union(

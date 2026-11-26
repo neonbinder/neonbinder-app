@@ -37,12 +37,13 @@ Nothing in this document names a deployment, an account or a URL.
   Players are linked only: the driver sends `{ adopt }` answers and never a
   create.
 - **Humans see disagreements only.** A result's `disagreements` lists each place
-  NB and MLB differ, as `{ field, nb, mlb }`. A *field* conflict (league, span,
+  NB and MLB differ, as `{ field, nb, mlb }`. A *field* conflict (league, level, span,
   class, parent club, birth date) is left as it is and the rest of the row
   lands. An *identity* conflict holds the whole row (status `ambiguous`, nothing
   written): a different id already on the row, the id held by another row, a
   birth year that contradicts an id match, two rows answering to one league
-  name, two rows covering one season, a team found only under another label,
+  name, two rows covering one season (or an id held by sixteen or more teams,
+  which is more than one read returns), a team found only under another label,
   or a probable duplicate.
 - **Schedules nothing.** No enrichment, no lookups.
 
@@ -59,16 +60,38 @@ Nothing in this document names a deployment, an account or a URL.
    then MLB clubs, then minor-league clubs (clubs load before affiliates so a
    parent exists), then players. Nothing is armed and nothing is written.
 4. **The operator answers the disagreement file.** The driver writes every
-   `ambiguous` result and every `disagreements` entry to one review file. Each
-   identity conflict is answered with `{ adopt: <id> }` (this row is that one),
-   or for a team `{ create: true }` (none of those). Field conflicts need no
-   answer; they are the list to fix by hand in the admin screens if wrong.
-   Answers are pinned in the answers file and replayed on every rerun.
+   `ambiguous` result and every `disagreements` entry to one review file. A row
+   is for review when its `status` is `"ambiguous"` **or** its `disagreements`
+   list is non-empty; a landed row can carry disagreements, so the status alone
+   misses them. Each identity conflict is answered with `{ adopt: <id> }` (this
+   row is that one), or for a team `{ create: true }` (none of those). Field
+   conflicts need no answer; they are the list to fix by hand in the admin
+   screens if wrong. Answers are pinned in the answers file and replayed on every
+   rerun.
+   - **A create is replayed as an adopt.** When a write creates a row (a team
+     the operator answered `{ create: true }`, or any row the id and name
+     steps did not place), the driver records the returned id in the answers
+     file and replays it as `{ adopt: <that id> }`, never as `{ create: true }`.
+     The server holds a replayed `{ create: true }` whose id and seasons already
+     place a row, and holds an `{ adopt }` that disagrees with the id, so a stale
+     answer cannot make a second holder of an id.
+   - **Ids are unique within a call, and the driver checks across calls.** A
+     call that repeats an `mlbamId` across its leagues, or across its players, is
+     refused naming both rows (teams are exempt: one club id spans every era
+     row of a franchise). Before the first write the driver checks that no
+     `mlbamId` repeats anywhere in the whole dataset for leagues, or for players,
+     since the server only sees one chunk at a time. A repeated id is a fault in
+     the fetch, to fix before arming.
 5. **Arm**, run the write legs in the same order, chunk by chunk, resuming from
    `nextKey`. Take one `loadStartedAt` before the first player call and reuse it.
+   The player link pass sends `stints: []` on every row: this pass links people
+   and writes no stint.
 6. **Disarm and check.** Remove `ALLOW_BULK_LOAD` and prove it is gone.
 7. **Rerun.** Run the whole pass again with the answers file: zero creates, zero
-   fills. Anything else is a row to look at.
+   fills. Anything else is a row to look at. Every create from the first run is
+   now an `{ adopt: <recorded id> }` (step 4), so a rerun never takes the
+   create path; a row reported as created on the rerun means the answers file
+   lost an id.
 
 ## 2. Chunking and resuming
 
@@ -77,6 +100,8 @@ its operation budget stops between rows with `hasMore` and `nextKey`: resume fro
 `nextKey`. Players: at most 100 per call, same resume contract. An MLB id on a
 row costs one extra read, and a row with a league or parent clubs one more per
 distinct league or parent; the budget counts them.
+A league row may carry at most 64 class stretches, as a team at most 64 parent
+clubs; a longer list is refused naming the row.
 
 ## 3. Reading a result
 
