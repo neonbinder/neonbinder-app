@@ -75,3 +75,10 @@ the old top-5 held is still held. But when id-carrying siblings fill the
 `.take(10)` (a common token like "dodgers"), the old code held on them; the new
 code creates. Same cap, opposite failure direction. Remedy if it matters: a
 league filter field on the search index, so the take is spent in-league.
+
+Closed in round 6: the hold reads its own `search_name` take with an added
+`leagueId` filter field (other callers filter by sport or nothing, so unaffected;
+read is mode-independent, so preview and write charge the same op). Residual:
+in-league id-carrying siblings can still fill the take (much narrower). Note
+`teams.ts` warns that a narrower search filter on a SUBSCRIBED query delays
+invalidation; harmless in a mutation/preview, a finding in a `useQuery` path.
