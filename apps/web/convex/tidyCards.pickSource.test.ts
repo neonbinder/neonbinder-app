@@ -3,9 +3,9 @@
  * this one".
  *
  * Until a value is chosen the disagreeing field holds NOTHING. Choosing resolves
- * each name the way the commit does: EXACTLY ONE NB match links (a primary-name
- * match: an alias-only or tied match is a question, never an adoption); anything
- * else stays a pending name on the card. Nothing is stored about the pick
+ * each name the way the commit does: EXACTLY ONE NB match links (the one player
+ * who answers to the name, by his own name or an alias, NEO-680; a tied match is
+ * a question, never an adoption); anything else stays a pending name on the card. Nothing is stored about the pick
  * (NEO-656: "once you pick a source, the card keeps only the result"): the
  * disagreement's entry is REMOVED from the card, and a Change while the card is
  * open works from the `offered` values the walk kept.
@@ -25,6 +25,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { MAX_APPLY_CARDS, MAX_PICK_NAMES } from "./tidyCards";
+import { syncPlayerAliases } from "./players";
 import { deriveCardAttention } from "./features/cardAttention";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import {
@@ -80,6 +81,18 @@ async function setup(t: T) {
       printCard(ctx, w, { number: n, extra: { sourceDisagreements: entries, ...extra } });
     return { w, judge, open: await card("1", [playersEntry()]) };
   });
+}
+
+/** A player who answers to `aliases` as well as his own name (the alias index rows included). */
+async function addAliased(
+  ctx: Parameters<Parameters<T["run"]>[0]>[0],
+  w: Parameters<typeof addPlayer>[1],
+  name: string,
+  aliases: string[],
+) {
+  const id = await addPlayer(ctx, w, name, undefined, { aliases });
+  await syncPlayerAliases(ctx, { playerId: id });
+  return id;
 }
 
 const card = (t: T, id: Id<"cardChecklist">) => t.run((ctx) => ctx.db.get(id));
@@ -143,15 +156,55 @@ describe("pickSourceValue — each name resolves the way the commit does", () =>
     expect((await card(t, open))!.pendingPlayerNames).toEqual([SOTO]);
   });
 
-  test("a player known only by an ALIAS is not adopted by name", async () => {
+  test("a player known only by an ALIAS links when he is the only one who answers to it (NEO-680)", async () => {
+    const t = newT();
+    const { w, open } = await setup(t);
+    const soto = await t.run((ctx) => addAliased(ctx, w, "Juan Carlos Soto", [SOTO]));
+    await pick(t, open, [SOTO]);
+    const c = (await card(t, open))!;
+    expect(c.playerIds).toEqual([soto]);
+    // The card keeps the name it printed; the alias is not rewritten into it.
+    expect(c.playerLinks).toEqual([{ playerId: soto, nameOnCard: SOTO }]);
+    expect(c.pendingPlayerNames).toBeUndefined();
+  });
+
+  test("two players who answer to the same alias are a question: the name stays pending (NEO-680)", async () => {
     const t = newT();
     const { w, open } = await setup(t);
     await t.run(async (ctx) => {
-      await addPlayer(ctx, w, "Juan Carlos Soto", undefined, { aliases: [SOTO] });
+      await addAliased(ctx, w, "Juan Carlos Soto", [SOTO]);
+      await addAliased(ctx, w, "Juan Soto Sr", [SOTO]);
     });
     await pick(t, open, [SOTO]);
-    expect((await card(t, open))!.playerIds).toBeUndefined();
-    expect((await card(t, open))!.pendingPlayerNames).toEqual([SOTO]);
+    const c = (await card(t, open))!;
+    expect(c.playerIds).toBeUndefined();
+    expect(c.pendingPlayerNames).toEqual([SOTO]);
+  });
+
+  test("a lone alias and a lone own name both link on one card, and no player name is left to ask (the #PDPA-KP shape)", async () => {
+    const t = newT();
+    const { w, judge } = await setup(t);
+    const soto = await t.run((ctx) => addAliased(ctx, w, "Juan Carlos Soto", [SOTO]));
+    const open = await t.run((ctx) =>
+      printCard(ctx, w, {
+        number: "9",
+        extra: {
+          sourceDisagreements: [playersEntry([JUDGE, SOTO], [SOTO])],
+          teamOnCardIds: [w.padres],
+        },
+      }),
+    );
+    await pick(t, open, [JUDGE, SOTO]);
+    const c = (await card(t, open))!;
+    expect(c.playerIds).toEqual([judge, soto]);
+    expect(c.playerLinks).toEqual([
+      { playerId: judge, nameOnCard: JUDGE },
+      { playerId: soto, nameOnCard: SOTO },
+    ]);
+    expect(c.pendingPlayerNames).toBeUndefined();
+    const attention = deriveCardAttention(c);
+    expect(attention.items.some((i) => i.kind === "playerName")).toBe(false);
+    expect(attention.level).toBe("none");
   });
 
   test("a name once ruled out is matched like any other: one exact match links (nothing remembers the ruling, B10)", async () => {

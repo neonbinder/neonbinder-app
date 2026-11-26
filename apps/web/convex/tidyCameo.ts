@@ -23,10 +23,11 @@
  * client shows it from `cardContext.cameoOffer` and the mutation re-reads it,
  * so a stale tab can never write what the server would not offer.
  *
- * "Exactly one NB player" is main's exact-match rule (`resolveName` in
- * `tidyPickSource`, the loader's): exactly ONE player answers to the name and
- * its own PRIMARY name is the name (an alias-only or tied match is a question,
- * never a player here).
+ * "Exactly one NB player" for THIS offer is the player's own PRIMARY name:
+ * exactly ONE player answers to the name and its own name is the name (an
+ * alias-only or tied match offers nothing). The pick itself (`resolveName` in
+ * `tidyPickSource`) links a lone alias match too (NEO-680); the cameo offer
+ * keeps its own-name-only rule.
  * "Not a player" is the strict reading: a name nobody answers to (no primary,
  * sport or alias match). A name that might be a player
  * (an alias match, a tie, an unanswered lookup that found one) offers nothing.

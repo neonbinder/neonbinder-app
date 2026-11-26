@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../convex/_generated/api", () => ({
   api: {
-    tidyCards: { cardContext: "cardContext", saveCard: "saveCard" },
+    tidyCards: { cardContext: "cardContext", saveCard: "saveCard", linkOnOpen: "linkOnOpen" },
     selectorOptions: { updateCard: "updateCard", tidyLeafFacts: "tidyLeafFacts" },
     adapters: { wikidata: { lookupTidyName: "lookupTidyName" } },
     drillPath: { resolveDrillPath: "resolveDrillPath" },
@@ -24,6 +24,7 @@ const { convexQuery } = vi.hoisted(() => ({ convexQuery: vi.fn(async (): Promise
 
 const saveCard = vi.fn();
 const updateCard = vi.fn();
+const linkOnOpen = vi.fn(async (_args: unknown): Promise<null> => null);
 const tidyLeafFacts = vi.fn(async (): Promise<unknown> => ({ gateItems: [] }));
 const lookupTidyName = vi.fn(async (): Promise<unknown> => ({ status: "ready" }));
 
@@ -46,7 +47,13 @@ vi.mock("convex/react", () => ({
     return undefined;
   },
   useMutation: (ref: string) =>
-    ref === "saveCard" ? saveCard : ref === "updateCard" ? updateCard : vi.fn(),
+    ref === "saveCard"
+      ? saveCard
+      : ref === "updateCard"
+        ? updateCard
+        : ref === "linkOnOpen"
+          ? linkOnOpen
+          : vi.fn(),
   useAction: (ref: string) =>
     ref === "tidyLeafFacts" ? tidyLeafFacts : ref === "lookupTidyName" ? lookupTidyName : vi.fn(),
   useConvex: () => ({ query: convexQuery }),
@@ -261,6 +268,7 @@ beforeEach(() => {
   saveCard.mockResolvedValue({ keys: [] });
   tidyLeafFacts.mockClear();
   lookupTidyName.mockClear();
+  linkOnOpen.mockClear();
   playerLevel = "plain";
   playerControl = "button";
   playerControlLate = false;
@@ -1347,6 +1355,13 @@ describe("NEO-656: the walk reads live data and keeps nothing", () => {
       "a|team|Angels",
       "b|player|Shohei Ohtani",
     ]);
+  });
+
+  it("link on open (NEO-680): the open card's waiting player names go to the server once, the next card's do not", async () => {
+    mount([pink("a", "1", { pendingPlayerNames: ["Mike Trout"] }), pink("b", "2", { pendingPlayerNames: ["Shohei Ohtani"] })]);
+    await screen.findByTestId("tile-player");
+    await waitFor(() => expect(linkOnOpen).toHaveBeenCalledTimes(1));
+    expect(linkOnOpen).toHaveBeenCalledWith({ cardId: "a" });
   });
 
   it("a lookup that errors never blocks the walk or Skip", async () => {

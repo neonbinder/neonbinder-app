@@ -456,26 +456,6 @@ describe("PlayerTile", () => {
     expect(screen.getByRole("button", { name: "Add as new player anyway" })).toBeTruthy();
   });
 
-  it("a single exact hit through a saved alias is the lead link, not 'new to NeonBinder' (NEO-680)", async () => {
-    queryResults["players.nearMatches"] = [
-      { _id: "player-1", name: "Hye-Seong Kim", confidence: "exact", matchedAlias: "Jackson Merrill", birthYear: 1999 },
-    ];
-    renderTile();
-    expect(screen.queryByText("“Jackson Merrill” is new to NeonBinder.")).toBeNull();
-    expect(screen.queryByText("Possible matches")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Add as new player" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Add as new player anyway" })).toBeTruthy();
-    // The alias is already stored: the link sends no saveAsAlias flag.
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Link to Hye-Seong Kim" })));
-    expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
-      cardId: CARD,
-      kind: "player",
-      name: "Jackson Merrill",
-      sportId: SPORT,
-      answer: { kind: "linkPlayer", playerId: "player-1" },
-    });
-  });
-
   it("a linked name is plain and Edit clears the answer; no 'Linked for you' note is ever shown", async () => {
     renderTile({
       row: card({ playerIds: ["player-1"] }),
@@ -506,6 +486,38 @@ describe("PlayerTile", () => {
       sportId: SPORT,
       answer: { kind: "clear" },
     });
+  });
+
+  it("a name linked through a saved alias carries one purple note, the tile stays plain, and Edit holds the name back from linking again (NEO-680)", async () => {
+    renderTile({
+      row: card({ playerIds: ["player-1"] }),
+      items: [],
+      ctx: context({
+        names: [
+          printedName({
+            printed: "Hye-Seong Kim",
+            pending: false,
+            row: nameRow({ answer: { kind: "linkPlayer", playerId: "player-1" } }),
+          }),
+        ],
+        players: [
+          {
+            playerId: "player-1",
+            name: "Kim Ha-Seong",
+            nameOnCard: "Hye-Seong Kim",
+            linkedByAlias: "Hye-Seong Kim",
+            sportId: SPORT,
+            stints: [],
+            stintsMore: false,
+          },
+        ],
+      }),
+    });
+    expect(screen.getAllByRole("note").map((n) => n.textContent)).toEqual(["Linked by alias"]);
+    expect(screen.getByRole("group", { name: "Player" }).getAttribute("data-tidy-level")).toBe("plain");
+    expect(memory.heldBackNames(CARD, "player")).toEqual([]);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Edit Kim Ha-Seong" })));
+    expect(memory.heldBackNames(CARD, "player")).toEqual(["Hye-Seong Kim"]);
   });
 
   it("a link the card keeps no printed name for has no note, and Edit changes this card only", async () => {
@@ -1008,12 +1020,6 @@ describe("PlayerTile: one filled button per tile, and long labels wrap (NEO-645 
     expect(filledNames()).toEqual(["Link to Kendry Morales"]);
   });
 
-  it("a single exact hit through a saved alias leads too (NEO-680)", () => {
-    queryResults["players.nearMatches"] = [{ ...exact, name: "Kendry Morales Sr.", matchedAlias: "Kendry Morales" }];
-    renderOne(morales());
-    expect(filledNames()).toEqual(["Link to Kendry Morales Sr."]);
-  });
-
   it("the suggestion's button is described by the reason line under it, and nothing else is", () => {
     queryResults["players.nearMatches"] = [];
     renderOne(morales(setHistory));
@@ -1133,6 +1139,14 @@ describe("PlayerTile: answers live on the card, the lookup in the walk's memory 
       answer: { kind: "clear" },
     });
     expect(memory.answersOn(CARD, "player")).toEqual([]);
+  });
+
+  it("Edit on a ruled-out name holds it back from the link on open for the sitting (NEO-680)", async () => {
+    memory.rememberAnswer(CARD, "player", "Jackson Merrill", { kind: "notEntity", printed: "Jackson Merrill" });
+    renderTile({ row: card(), items: [], ctx: context() });
+    expect(memory.heldBackNames(CARD, "player")).toEqual([]);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Edit Jackson Merrill" })));
+    expect(memory.heldBackNames(CARD, "player")).toEqual(["Jackson Merrill"]);
   });
 
   it("Edit on a ruled-out name hands focus to the first control of the row it re-opens, not to <body> or another tile (A3)", async () => {

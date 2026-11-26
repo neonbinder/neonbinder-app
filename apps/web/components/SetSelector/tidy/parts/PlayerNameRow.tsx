@@ -15,7 +15,7 @@ import NameFragmentPanel, {
 } from "../../NameFragmentPanel";
 import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../../../../lib/players/name-limits";
 import type { TidyCardContext, TidyRow } from "../tile-types";
-import { WRAP_LABEL_CLASS } from "../TidyTile";
+import { TidyNote, WRAP_LABEL_CLASS } from "../TidyTile";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import { useNameLookup, useWalkMemory } from "../walk-memory";
@@ -116,8 +116,10 @@ export default function PlayerNameRow({
   if (!name.pending) {
     // The re-opened name gets the facts a pending one has (its own sport, its
     // set-history pick): `reopenName` asks for them once the write has landed.
-    const clear = () =>
-      memory.reopenName("player", name.printed, () =>
+    const clear = () => {
+      // NEO-680: taken back by the operator, so opening the card never links it again.
+      memory.holdBackFromLink(row._id, "player", name.printed);
+      return memory.reopenName("player", name.printed, () =>
         write.run(
           () =>
             answerName({
@@ -130,6 +132,7 @@ export default function PlayerNameRow({
           "Couldn't change that answer. Try again.",
         ),
       );
+    };
     return (
       <div ref={wrapRef} role="group" aria-label={`Player ${name.printed}`} className="grid gap-1.5">
         <EditLine
@@ -139,6 +142,8 @@ export default function PlayerNameRow({
         >
           <PlayerSummary player={linked} fallbackName={name.printed} />
         </EditLine>
+        {/* NEO-680: informational only; a purple note never makes a stop. */}
+        {linked?.linkedByAlias && <TidyNote>Linked by alias</TidyNote>}
         {name.playerId && (
           <NameApplyToAll
             cardId={row._id}
@@ -188,6 +193,8 @@ export function RuledOutPlayerRow({
   const memory = useWalkMemory();
   const answerName = useMutation(api.tidyNames.answerName);
   const clear = async () => {
+    // NEO-680: an Edit is never undone by the link on open.
+    memory.holdBackFromLink(row._id, "player", printed);
     memory.oweFocus(row._id, "player", printed);
     const ok = await write.run(
       () =>
@@ -316,7 +323,7 @@ function UnansweredPlayerName({
 
   const matches: NearMatch[] | undefined = nearMatches;
   const exactRows = (matches ?? []).filter((m) => m.confidence === "exact");
-  const exactSingle = exactRows.length === 1 ? exactRows[0] : null;
+  const exactSingle = exactRows.length === 1 && !exactRows[0].matchedAlias ? exactRows[0] : null;
 
   // NEO-254: the players already filed under this exact name. The lookup's own
   // list when it has one, else the live exact rows when there is more than one.

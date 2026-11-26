@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useAction } from "convex/react";
+import { useAction, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
@@ -93,6 +93,14 @@ export class WalkMemory {
   /** Keys the operator asked to look up in full ("Add anyway"). */
   private fullKeys = new Set<string>();
   private answers = new Map<string, OpenAnswer>();
+  /**
+   * NEO-680: `cardId|kind|key` -> printed spelling, for each linked name the
+   * operator took back with Edit. The walk links a waiting name by itself when
+   * it opens a card; these are sent along so it never links one of them again
+   * in this sitting. Kept past `leaveCard` (a card opened again is still this
+   * sitting); in memory only, nothing stored.
+   */
+  private heldBack = new Map<string, string>();
   private picks = new Map<string, KeptPick>();
   /** `cardId|playerId` for each player made on an open card (NEO-657's prefilled stint). */
   private madePlayers = new Set<string>();
@@ -291,6 +299,15 @@ export class WalkMemory {
   forgetAnswer(cardId: string, kind: "player" | "team", printed: string): void {
     if (this.answers.delete(`${cardId}|${nameKeyOf(kind, printed)}`)) this.bump();
   }
+  /** Edit on a linked player name: it is not linked by itself again this sitting. */
+  holdBackFromLink(cardId: string, kind: "player" | "team", printed: string): void {
+    this.heldBack.set(`${cardId}|${nameKeyOf(kind, printed)}`, printed);
+  }
+  /** The names (as printed) of `cardId` held back from linking. */
+  heldBackNames(cardId: string, kind: "player" | "team"): string[] {
+    const prefix = `${cardId}|${kind}|`;
+    return [...this.heldBack.entries()].filter(([key]) => key.startsWith(prefix)).map(([, name]) => name);
+  }
   /** What was answered on this card, in the order it was answered. */
   answersOn(cardId: string, kind: "player" | "team"): OpenAnswer[] {
     const prefix = `${cardId}|${kind}|`;
@@ -398,6 +415,44 @@ export function useLeafFacts(memory: WalkMemory, leafId: Id<"selectorOptions">) 
   useEffect(() => {
     memory.loadFacts(() => ref.current({ selectorOptionId: leafId }));
   }, [memory, leafId]);
+}
+
+/**
+ * NEO-680: when the walk opens a card, each player name still waiting on it
+ * that exactly one player answers to links by itself (`tidyCards.linkOnOpen`).
+ * One call per open of a card, however often the card re-renders; the server
+ * re-reads the card and does nothing when nothing waits or nothing resolves.
+ * The names the operator took back with Edit this sitting go along as `skip`,
+ * so an Edit is never undone. A failed call holds nothing back (missing data is
+ * not a claim): the names simply stay waiting.
+ */
+export function useLinkOnOpen(
+  memory: WalkMemory,
+  card: { _id: Id<"cardChecklist">; pendingPlayerNames?: readonly string[] } | undefined,
+) {
+  const linkOnOpen = useMutation(api.tidyCards.linkOnOpen);
+  const waiting = card?.pendingPlayerNames;
+  const latest = useRef({ linkOnOpen, waiting });
+  useEffect(() => {
+    latest.current = { linkOnOpen, waiting };
+  });
+  const openedRef = useRef<string | null>(null);
+  const cardId = card?._id;
+  useEffect(() => {
+    if (!cardId) {
+      openedRef.current = null;
+      return;
+    }
+    if (openedRef.current === cardId) return;
+    openedRef.current = cardId;
+    const names = latest.current.waiting ?? [];
+    if (names.length === 0) return;
+    const waitingKeys = new Set(names.map((n) => normalizeEntityName(n.trim())));
+    const skip = memory
+      .heldBackNames(cardId, "player")
+      .filter((n) => waitingKeys.has(normalizeEntityName(n.trim())));
+    latest.current.linkOnOpen({ cardId, ...(skip.length > 0 ? { skip } : {}) }).catch(() => {});
+  }, [memory, cardId]);
 }
 
 /** A pending name on a card, as the lookup hooks take it. */

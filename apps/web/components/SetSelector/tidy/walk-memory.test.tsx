@@ -21,8 +21,10 @@ vi.mock("../../../convex/_generated/api", () => {
   return { api: path([]) };
 });
 const actions: Record<string, ReturnType<typeof vi.fn>> = {};
+const mutations: Record<string, ReturnType<typeof vi.fn>> = {};
 vi.mock("convex/react", () => ({
   useAction: (ref: unknown) => (actions[String(ref)] ??= vi.fn(() => new Promise(() => {}))),
+  useMutation: (ref: unknown) => (mutations[String(ref)] ??= vi.fn(() => Promise.resolve(null))),
 }));
 
 import {
@@ -33,6 +35,7 @@ import {
   pendingNamesOf,
   useCardNameLookups,
   useLeafFacts,
+  useLinkOnOpen,
   useNameLookup,
   useWalkMemory,
   type LeafFacts,
@@ -58,6 +61,7 @@ let setItem: ReturnType<typeof vi.spyOn>;
 let localSet: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   for (const k of Object.keys(actions)) delete actions[k];
+  for (const k of Object.keys(mutations)) delete mutations[k];
   setItem = vi.spyOn(Storage.prototype, "setItem");
   localSet = setItem;
 });
@@ -525,5 +529,74 @@ describe("pendingNamesOf", () => {
       { kind: "team", name: "Padres" },
     ]);
     expect(pendingNamesOf({})).toEqual([]);
+  });
+});
+
+describe("useLinkOnOpen (NEO-680)", () => {
+  type Card = { _id: never; pendingPlayerNames?: readonly string[] };
+  const row = (id: string, waiting?: string[]): Card => ({ _id: id as never, pendingPlayerNames: waiting });
+  const linkOnOpen = () => mutations["tidyCards.linkOnOpen"];
+
+  it("asks once when a card with waiting names opens, however often it re-renders", async () => {
+    const m = new WalkMemory();
+    const { rerender } = renderHook(({ card }) => useLinkOnOpen(m, card), {
+      initialProps: { card: row("c1", ["Hye-Seong Kim"]) },
+    });
+    await flush();
+    expect(linkOnOpen()).toHaveBeenCalledTimes(1);
+    expect(linkOnOpen()).toHaveBeenCalledWith({ cardId: "c1" });
+    rerender({ card: row("c1", ["Hye-Seong Kim"]) });
+    rerender({ card: row("c1", []) });
+    await flush();
+    expect(linkOnOpen()).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not ask for a card with nothing waiting, or with no card open", async () => {
+    const m = new WalkMemory();
+    const { rerender } = renderHook(({ card }) => useLinkOnOpen(m, card), {
+      initialProps: { card: undefined as Card | undefined },
+    });
+    rerender({ card: row("c1", []) });
+    rerender({ card: row("c2") });
+    await flush();
+    expect(linkOnOpen()?.mock.calls ?? []).toEqual([]);
+  });
+
+  it("asks again when the card is opened again, and sends the names the operator took back (never re-linked)", async () => {
+    const m = new WalkMemory();
+    const { rerender } = renderHook(({ card }) => useLinkOnOpen(m, card), {
+      initialProps: { card: row("c1", ["Hye-Seong Kim"]) as Card | undefined },
+    });
+    await flush();
+    m.holdBackFromLink("c1", "player", "Hye-Seong Kim");
+    // Edit put the name back to waiting; the card stays open: no second call.
+    rerender({ card: row("c1", ["Hye-Seong Kim"]) });
+    await flush();
+    expect(linkOnOpen()).toHaveBeenCalledTimes(1);
+    // The walk moves on and comes back: the card is opened again, holding the name back.
+    rerender({ card: row("c2", ["Juan Soto"]) });
+    rerender({ card: row("c1", ["Hye-Seong Kim", "Juan Soto"]) });
+    await flush();
+    expect(linkOnOpen()).toHaveBeenCalledTimes(3);
+    expect(linkOnOpen()).toHaveBeenLastCalledWith({ cardId: "c1", skip: ["Hye-Seong Kim"] });
+  });
+
+  it("holds back only names this card still waits on, and leaving the card keeps the hold for the sitting", async () => {
+    const m = new WalkMemory();
+    m.holdBackFromLink("c1", "player", "Hye-Seong Kim");
+    m.holdBackFromLink("c1", "player", "Gone From Card");
+    m.holdBackFromLink("c2", "player", "Other Card");
+    m.leaveCard("c1");
+    renderHook(() => useLinkOnOpen(m, row("c1", ["hye-seong KIM", "Juan Soto"])));
+    await flush();
+    expect(linkOnOpen()).toHaveBeenCalledWith({ cardId: "c1", skip: ["Hye-Seong Kim"] });
+  });
+
+  it("a failed call is swallowed: the names simply stay waiting", async () => {
+    const m = new WalkMemory();
+    mutations["tidyCards.linkOnOpen"] = vi.fn(() => Promise.reject(new Error("offline")));
+    renderHook(() => useLinkOnOpen(m, row("c1", ["Hye-Seong Kim"])));
+    await flush();
+    expect(linkOnOpen()).toHaveBeenCalledTimes(1);
   });
 });

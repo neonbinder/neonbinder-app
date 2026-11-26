@@ -47,6 +47,7 @@ import {
   pendingNamesOf,
   useCardNameLookups,
   useLeafFacts,
+  useLinkOnOpen,
   useWalkMemory,
   useWalkMemoryStore,
   WalkMemoryProvider,
@@ -326,6 +327,8 @@ function WalkDialog({
       card ? [{ id: card._id, names: pendingNamesOf(card) }] : [],
     ),
   );
+  // NEO-680: a waiting name that exactly one player answers to links by itself.
+  useLinkOnOpen(memory, current);
   // What the walk held for a card goes when the walk leaves it.
   useEffect(() => {
     if (!currentId) return;
