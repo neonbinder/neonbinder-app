@@ -341,8 +341,8 @@ Crisp, solid and few. One neon fill per decision. Every action button is `NeonBu
 ### Checkboxes
 - **One primitive:** `components/primitives/Checkbox.tsx`. Never a raw `<input type="checkbox">` and never a native-sized or `accent-*` box.
 - **Box:** 16px, `rounded`, `control` border on a `field` fill; checked, `selection` fill and border with a `surface` tick. The tick follows the input's own state (`peer-checked`), so controlled and uncontrolled use both show it. Indeterminate (a caller sets `el.indeterminate` through the ref, as native) takes the same fill with a `surface` dash in place of the tick; no prop.
-- **Row:** the whole row is one `<label>` at least 24px tall (WCAG 2.5.8), so the text toggles the box while the box stays small. Rich labels go in as `children`; set the row's type on the Checkbox (`className="text-xs text-ink-2"`). A box with no label is the bare box, for a caller that already wraps it in its own label.
-- **Off:** native `disabled` or `aria-disabled` dims the row to 60% with a not-allowed cursor. `aria-disabled` keeps the box focusable; the caller's `onChange` ignores the change. Focus is the `focus-outline`.
+- **Row:** the whole row is one `<label>` at least 24px tall (WCAG 2.5.8), so the text toggles the box while the box stays small. Rich labels go in as `children`; set the row's type on the Checkbox (`className="text-xs text-ink-2"`). A box with no label is the bare box, for a caller that already wraps it in its own label; its hit area grows to 24px with `.hit-area-24` on the input (a pseudo-element, so no nested label) and it dims to 60% when off.
+- **Off:** native `disabled` or `aria-disabled` dims the row to 60% with a not-allowed cursor. `aria-disabled` keeps the box focusable; the caller's `onChange` ignores the change. Focus is the `focus-outline`. In forced-colors mode the border, tick and dash draw in `CanvasText`.
 
 ### Lists and pickers
 - **Tile rows** (the set picker's columns): `bg-row border-row-rule hover:bg-row-hover`. White tiles with a visible edge in light, never a heavy grey tile.

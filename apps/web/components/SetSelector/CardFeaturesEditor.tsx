@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -171,6 +171,7 @@ function CardFeatureRow({
   const label = feat.label;
   const [boolBusy, setBoolBusy] = useState(false);
   const [boolError, setBoolError] = useState<string | null>(null);
+  const errorId = useId();
   // Unique per-field marker class so Maestro's inputText targets THIS field's
   // input rather than the FIRST card-feature input sharing the className (see
   // useFieldTestClass). Mirrors SetFeatureRow — without it, typing into any
@@ -209,7 +210,8 @@ function CardFeatureRow({
     };
     return (
       <div
-        className="flex flex-row items-center p-1.5 rounded border text-xs border-rule-strong bg-raised-deep/30"
+        role="group"
+        className="flex flex-row flex-wrap items-center gap-x-2 p-1.5 rounded border text-xs border-rule-strong bg-raised-deep/30"
         aria-label={`Feature ${label}`}
       >
         <Checkbox
@@ -217,16 +219,17 @@ function CardFeatureRow({
           disabled={boolBusy}
           onChange={(e) => void handleToggle(e.target.checked)}
           aria-label={`Value for ${label}`}
+          aria-describedby={boolError ? errorId : undefined}
         >
           <span className="text-[10px] uppercase tracking-wide text-ink-3">
             {label}
           </span>
-          {boolError && (
-            <span className="ml-2 text-[10px] text-neon-pink-text" role="alert">
-              {boolError}
-            </span>
-          )}
         </Checkbox>
+        {boolError && (
+          <span id={errorId} className="text-[10px] text-neon-pink-text" role="alert">
+            {boolError}
+          </span>
+        )}
       </div>
     );
   }

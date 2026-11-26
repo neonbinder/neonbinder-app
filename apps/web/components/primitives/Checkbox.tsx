@@ -23,9 +23,12 @@ export interface CheckboxProps
 function Box({
   inputRef,
   inputProps,
+  hitArea = false,
 }: {
   inputRef: React.ForwardedRef<HTMLInputElement>;
   inputProps: React.InputHTMLAttributes<HTMLInputElement>;
+  /** Grow the input's own hit area to 24px (the bare box, which has no row). */
+  hitArea?: boolean;
 }) {
   return (
     <span className="relative inline-flex h-4 w-4 shrink-0">
@@ -33,13 +36,13 @@ function Box({
         ref={inputRef}
         type="checkbox"
         {...inputProps}
-        className="peer h-4 w-4 cursor-pointer appearance-none rounded border border-control bg-field checked:border-selection checked:bg-selection indeterminate:border-selection indeterminate:bg-selection focus-outline disabled:cursor-not-allowed aria-disabled:cursor-not-allowed"
+        className={`peer ${hitArea ? "hit-area-24 " : ""}h-4 w-4 cursor-pointer appearance-none rounded border border-control bg-field checked:border-selection checked:bg-selection indeterminate:border-selection indeterminate:bg-selection focus-outline disabled:cursor-not-allowed aria-disabled:cursor-not-allowed forced-colors:border-[color:CanvasText]`}
       />
       {/* The tick shows when checked and not indeterminate; the dash shows
           when `el.indeterminate` is set, whatever `checked` says (native). */}
       <svg
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 h-4 w-4 text-surface opacity-0 peer-[:checked:not(:indeterminate)]:opacity-100"
+        className="pointer-events-none absolute inset-0 h-4 w-4 text-surface opacity-0 peer-[:checked:not(:indeterminate)]:opacity-100 forced-colors:text-[color:CanvasText]"
         fill="currentColor"
         viewBox="0 0 20 20"
       >
@@ -51,7 +54,7 @@ function Box({
       </svg>
       <svg
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 h-4 w-4 text-surface opacity-0 peer-indeterminate:opacity-100"
+        className="pointer-events-none absolute inset-0 h-4 w-4 text-surface opacity-0 peer-indeterminate:opacity-100 forced-colors:text-[color:CanvasText]"
         fill="currentColor"
         viewBox="0 0 20 20"
       >
@@ -67,6 +70,9 @@ function Box({
  * The tick shows for controlled and uncontrolled use alike. A caller sets
  * `indeterminate` natively through the ref (`el.indeterminate = true`) and the
  * box draws a dash in place of the tick.
+ *
+ * Forced colors (Windows high contrast): the border and the tick/dash draw in
+ * `CanvasText`, since the fill is dropped.
  *
  * Disabled: pass `disabled` (native) or `aria-disabled` (the box stays
  * focusable; the caller's `onChange` must ignore the change). Both dim the
@@ -95,10 +101,16 @@ export const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
 
     if (!hasText && !hasChildren && !showDescription) {
       return (
-        <span className={`inline-flex ${className}`}>
+        <span
+          className={`inline-flex has-[input:disabled]:opacity-60 has-[input[aria-disabled=true]]:opacity-60 ${className}`}
+        >
+          {/* The 24px hit area is a ::before on the input itself (`.hit-area-24`,
+              globals.css): a click on it is a click on the input, so no extra
+              <label> (callers often wrap the bare box in their own). */}
           <Box
             inputRef={ref}
             inputProps={{ ...props, "aria-describedby": ariaDescribedBy }}
+            hitArea
           />
         </span>
       );
