@@ -2,7 +2,8 @@
 // Add a player by hand, create two teams from the career editor, swap the held
 // team for the other through "Change team" (NEO-617: a stint holds ONE team),
 // record two stints at that team out of order, edit the pending stint with
-// Enter, save, reload: both stints survive in year order.
+// Enter, tick Hall of Fame by its label text (NEO-682), save, reload: both
+// stints survive in year order and the tick stuck.
 //
 // The player is a REAL person whose Baseball lookup the enrichment recording
 // holds as a no-match (support/recorded-names.ts): the add makes no live
@@ -135,7 +136,15 @@ test(
     await expect(earlier).toBeVisible();
     const stints = page.getByRole("list", { name: "Career history" }).getByRole("listitem");
     await expect(stints).toHaveCount(2);
-    await expectAccessible(page, { label: "Player Management, career history" });
+
+    // NEO-682: Hall of Fame is ticked by clicking its label text, not the 16px
+    // box (the whole row is the target). The Save below must keep it, and the
+    // axe check covers the form with the box ticked.
+    const hallOfFame = page.getByRole("checkbox", { name: "Hall of Fame", exact: true });
+    await expect(hallOfFame).not.toBeChecked(); // a hand-added player starts unticked
+    await page.getByText("Hall of Fame", { exact: true }).click();
+    await expect(hallOfFame).toBeChecked();
+    await expectAccessible(page, { label: "Player Management, career history, Hall of Fame ticked" });
     await expect(stints.nth(0)).toContainText(`${team} · 2001–2005`);
     await expect(stints.nth(1)).toContainText(`${team} · 2010–2012`);
 
@@ -153,5 +162,7 @@ test(
     await expect(reloaded).toHaveCount(2);
     await expect(reloaded.nth(0)).toContainText(`${team} · 2001–2005`);
     await expect(reloaded.nth(1)).toContainText(`${team} · 2010–2012`);
+    // The Hall of Fame tick was saved with the stints.
+    await expect(page.getByRole("checkbox", { name: "Hall of Fame", exact: true })).toBeChecked();
   },
 );
