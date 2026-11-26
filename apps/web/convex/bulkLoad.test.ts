@@ -840,8 +840,8 @@ describe("upsertLeagues", () => {
       ],
     });
     expect(preview.results).toEqual([
-      { name: "ABL", id: created.results[0].id, created: false },
-      { name: "Australian Baseball League (1989-1999)", id: null, created: true },
+      { name: "ABL", id: created.results[0].id, created: false, nbName: "Australian Baseball League" },
+      { name: "Australian Baseball League (1989-1999)", id: null, created: true, nbName: "Australian Baseball League (1989-1999)" },
     ]);
   });
 
