@@ -16,6 +16,7 @@ import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
 import { Checkbox } from "../primitives/Checkbox";
+import PublisherChecklistLinks from "./PublisherChecklistLinks";
 import { checklistClaimParts, checklistClaimText, CLAIM_JOINER } from "../../lib/checklists/prospect-team-text";
 import { inertBackground } from "@/lib/dom/inert-background";
 import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
@@ -121,10 +122,10 @@ import {
  *
  * ## Keyboard
  *
- * Opens on the paste box. Tab: paste box → Choose a file → Cancel → Use this
- * checklist. Ctrl/Cmd+Enter in the paste box uses the checklist; Escape
- * cancels from anywhere in the dialog. Focus goes back to the button that
- * opened it.
+ * Opens on the paste box. Tab: paste box → Choose a file → the publishers'
+ * checklist-page links (NEO-597) → Cancel → Use this checklist. Ctrl/Cmd+Enter
+ * in the paste box uses the checklist; Escape cancels from anywhere in the
+ * dialog. Focus goes back to the button that opened it.
  */
 
 /** What the section holds once the operator uses a checklist. */
@@ -575,6 +576,7 @@ export default function PublishedChecklistDialog({
                     .xlsx, .pdf, .csv, .tsv or .txt — it stays on your computer
                   </span>
                 </div>
+                <PublisherChecklistLinks />
                 {/* Keyed on the tone, so the role never flips on a mounted
                     node: an error mounts a fresh alert (announced as it
                     appears), while idle and "Read list.csv" share one status

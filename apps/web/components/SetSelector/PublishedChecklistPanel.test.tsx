@@ -144,6 +144,20 @@ describe("PublishedChecklistPanel — no checklist yet", () => {
     expect(within(region).queryByRole("status")).toBeNull();
   });
 
+  it("links to Topps' and Panini's checklist pages inside the panel, in a new tab (NEO-597)", () => {
+    renderPanel();
+    const region = screen.getByRole("region", { name: "Official checklist" });
+    for (const [name, href] of [
+      ["Topps Checklists (opens in new tab)", "https://www.topps.com/pages/checklists"],
+      ["Panini Checklists (opens in new tab)", "https://www.paniniamerica.net/checklist.html"],
+    ]) {
+      const link = within(region).getByRole("link", { name });
+      expect(link.getAttribute("href")).toBe(href);
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    }
+  });
+
   it("shows a file the reader refuses as an alert in the panel, and opens no preview", async () => {
     renderPanel();
     const xls = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
@@ -460,6 +474,12 @@ describe("PublishedChecklistPanel — a checklist on the set", () => {
       byteSize: 1,
       finishedAt: Date.UTC(2026, 10, 11, 18),
     };
+  });
+
+  it("keeps both publisher links beside Replace (NEO-597)", () => {
+    renderPanel();
+    const region = screen.getByRole("region", { name: "Official checklist" });
+    expect(within(region).getAllByRole("link").map((l) => l.getAttribute("target"))).toEqual(["_blank", "_blank"]);
   });
 
   it("shows the file, its size, Replace, a paste door and Remove", () => {

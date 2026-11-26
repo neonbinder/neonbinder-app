@@ -56,6 +56,20 @@ describe("PublishedChecklistDialog", () => {
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
   });
 
+  it("offers both publishers' checklist pages beside the file picker, in a new tab (NEO-597)", () => {
+    open();
+    const dialog = screen.getByRole("dialog", { name: "Official checklist" });
+    for (const [name, href] of [
+      ["Topps Checklists (opens in new tab)", "https://www.topps.com/pages/checklists"],
+      ["Panini Checklists (opens in new tab)", "https://www.paniniamerica.net/checklist.html"],
+    ]) {
+      const link = within(dialog).getByRole("link", { name });
+      expect(link.getAttribute("href")).toBe(href);
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    }
+  });
+
   it("previews exactly what the parser reads, with the row count", async () => {
     open();
     await paste(PASTE);

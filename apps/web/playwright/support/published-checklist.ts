@@ -733,6 +733,38 @@ export function setChecklistPanel(page: Page): Locator {
 }
 
 /**
+ * NEO-597: the publishers' own checklist pages, in the order a reader meets them. The addresses
+ * are written here, not read from the product's list, so a wrong address in the product fails.
+ */
+const PUBLISHER_CHECKLIST_LINKS = [
+  { name: "Topps Checklists (opens in new tab)", href: "https://www.topps.com/pages/checklists" },
+  { name: "Panini Checklists (opens in new tab)", href: "https://www.paniniamerica.net/checklist.html" },
+] as const;
+
+/**
+ * NEO-597: the two links out to the publishers' checklist pages, Topps then Panini, each by its
+ * exact name, its address, and opening in a new tab with no opener. Shown in the Official
+ * checklist panel and the leaf's "Official checklist" dialog; pass whichever holds them.
+ *
+ * The links are only read, never pressed or followed: a spec must not visit an outside site.
+ *
+ * Contract: ENTRY `scope` on screen. EXIT nothing changed. Each assertion takes the standard 7 s.
+ */
+export async function expectPublisherChecklistLinks(scope: Locator): Promise<void> {
+  // Exactly these two, in this reading order: the set of links named "<publisher> Checklists (opens
+  // in new tab)" is read whole, then each by its exact name.
+  const links = scope.getByRole("link", { name: / Checklists \(opens in new tab\)$/ });
+  await expect(links).toHaveCount(PUBLISHER_CHECKLIST_LINKS.length);
+  for (const [index, { name, href }] of PUBLISHER_CHECKLIST_LINKS.entries()) {
+    await expect(links.nth(index)).toHaveAccessibleName(name);
+    const link = scope.getByRole("link", { name, exact: true });
+    await expect(link).toHaveAttribute("href", href);
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  }
+}
+
+/**
  * NEO-496 — the `finally` of a sole-writer spec that stores a checklist on a SET filed under the
  * year's All Brands view, run only when the body went red with the checklist still saved: a fresh
  * drill back to the set, its attributes open, and the checklist removed through the UI, so the

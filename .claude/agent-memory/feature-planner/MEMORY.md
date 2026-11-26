@@ -78,6 +78,7 @@
 - [Existing-player questions are card steps](existing-player-questions-are-card-steps-not-review-rows.md) — no review row for a resolved name; client-state step like Teams/checklist; prospects + empty careers flood a career-year rule (NEO-574)
 - [Fake code deploys only from main](fake-service-code-deploys-only-from-main.md) — fake capability merges before the PR whose E2E calls it; browser-facing steps go on a /testing SPA route
 - [Set team default: copy-down vs lookup](set-team-default-copy-down-vs-lookup.md) — teamIds copied down + cascaded; NEO-528 defaults looked up; never mix for one attribute
+- [Publisher checklist sites refuse automated fetch](publisher-checklist-sites-refuse-automated-fetch.md) — Panini 403s curl+headless, no CORS; test access first; blocked = link-out + upload (NEO-597)
 - [PDF checklist geometry is in pdf.js items](pdf-checklist-geometry-lives-in-pdfjs-items.md) — cell-gap merge hides column splits; one straddling item = overflowed cell; Title Case headings via fontName
 - [Qualified team claims settle before they become strings](qualified-team-claims-settle-before-they-become-strings.md) — commit resolves team strings unrestricted; settle a league-limited claim at fetch with a same-row check, or hold it off `teams`
 - [Card pairing is names-first, two matchers](card-pairing-is-names-first-two-matchers.md) — BSC/SL step 1a-1c + matchPublishedChecklist; number kinds never partition name passes (Onyx 0 of 56)

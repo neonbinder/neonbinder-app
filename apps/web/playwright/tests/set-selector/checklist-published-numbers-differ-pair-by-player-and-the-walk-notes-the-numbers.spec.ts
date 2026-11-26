@@ -84,6 +84,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
 import {
   CHECKLISTS,
+  expectPublisherChecklistLinks,
   checklistFacts,
   checklistRows,
   type ChecklistRow,
@@ -582,6 +583,10 @@ test(
     await openAttributesPanel(page);
     const panel = page.getByRole("region", { name: "Official checklist" });
     await expect(panel.getByText(/^Got the official checklist\?/)).toBeVisible();
+    // NEO-597: the panel links to both publishers' own checklist pages. They are only read, never
+    // followed: a spec must not visit an outside site.
+    await expectPublisherChecklistLinks(panel);
+    await expectAccessible(page, { within: panel, label: "Official checklist, none on the set, with the publisher links" });
     await panel.getByLabel("Upload checklist").setInputFiles({
       name: "2026-donruss-baseball-checklist.xlsx",
       mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
