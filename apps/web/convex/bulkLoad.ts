@@ -138,8 +138,10 @@
  *    franchise; two eras covering the season are a tie, none overlapping falls
  *    through to the name steps. A holder counts only if it answers to the
  *    incoming name (NB keeps one row per name, MLB one id across renames); one
- *    that does not is another name's row and is ignored. Leagues: a scan of
- *    the sport's leagues.
+ *    that does not is another name's row and is ignored, and so is one that
+ *    answers only through an alias while another row's own name is the
+ *    incoming name and overlaps its era. Leagues: a scan of the sport's
+ *    leagues.
  *    A rerun therefore converges with no answers file.
  *  - **Adopt writes only empty fields**, plus the alias union: the id; a team's
  *    league, years, missing parent-club years and (as an alias) the API name
@@ -2071,6 +2073,26 @@ async function loadTeams(
         // Through `eraMatch`, not built by hand, so its undated-rival guard
         // still holds the one that overlaps only because it is undated.
         if (narrowed.length === 1) idMatch = eraMatch(narrowed, row.yearsActive);
+      }
+      /*
+       * A holder that answers only through one of its aliases never beats a
+       * row whose OWN name is the incoming name: "California Angels" carrying
+       * the alias "Los Angeles Angels" would otherwise absorb the row that
+       * IS "Los Angeles Angels" (and hold a pinned `adopt` of it forever).
+       * When such a row overlaps the era, the id match is none and the name
+       * step below adopts that row and fills the id.
+       */
+      if (idMatch.kind === "one") {
+        const holder = idMatch.team;
+        if (holder.nameNormalized !== fields.nameNormalized) {
+          const exact = await findTeamsByExactName(ctx, sportId, fullName);
+          ops += 1;
+          const ownRow = exact.some(
+            (team) =>
+              team._id !== holder._id && erasOverlap(team.yearsActive, row.yearsActive),
+          );
+          if (ownRow) idMatch = { kind: "none" };
+        }
       }
     }
     const heldOnId = (teamsOnId: Doc<"teams">[]): TeamResult => ({

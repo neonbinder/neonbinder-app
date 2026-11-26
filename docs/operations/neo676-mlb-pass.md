@@ -40,7 +40,9 @@ Nothing in this document names a deployment, an account or a URL.
   NB and MLB differ, as `{ field, nb, mlb }`. A *field* conflict (league, level, span,
   class, parent club, birth date) is left as it is and the rest of the row
   lands. An *identity* conflict holds the whole row (status `ambiguous`, nothing
-  written): a different id already on the row, the id held by another row, a
+  written): a different id already on the row, the id held by another row (only when
+  that other row answers to the incoming name; a holder that does not is ignored,
+  and the loader adopts or creates the row of the incoming name), a
   birth year that contradicts an id match, two rows answering to one league
   name, a league found only by name whose level differs from MLB's or whose
   span never overlaps it (MLB's three "American Association"s are different

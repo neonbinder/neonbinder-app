@@ -606,12 +606,19 @@ describe("teams", () => {
       mlbamId: 139,
     };
     const first = await teams(t, [row]);
-    expect(first.results[0]).toMatchObject({ id, status: "adopted", matchedBy: "mlbamId" });
+    expect(first.results[0]).toMatchObject({
+      id,
+      status: "adopted",
+      matchedBy: "mlbamId",
+      aliasesAdded: 1,
+    });
     expect(first.results[0].disagreements).toBeUndefined();
-    expect((await team(t, id))?.name).toBe("Devil Rays");
+    const adopted = await team(t, id);
+    expect(adopted?.name).toBe("Devil Rays");
+    expect(adopted?.aliases).toEqual(["Tampa Bay Rays"]);
 
     const again = await teams(t, [row]);
-    expect(again.results[0]).toMatchObject({ id, status: "adopted", filled: [] });
+    expect(again.results[0]).toMatchObject({ id, status: "adopted", filled: [], aliasesAdded: 0 });
     expect(await allTeams(t)).toHaveLength(1);
   });
 
@@ -679,6 +686,47 @@ describe("teams", () => {
       ["adopted", anaheim, "decision"],
     ]);
     expect(await allTeams(t)).toHaveLength(3);
+  });
+
+  test("an id-holder that answers only through an alias never beats the row whose own name is the incoming name", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const ca = await seedTeam(t, sportId, {
+      location: "California",
+      name: "Angels",
+      years: { from: 1965, to: 1996 },
+      aliases: ["Los Angeles Angels"],
+    });
+    const la = await seedTeam(t, sportId, { location: "Los Angeles", name: "Angels", years: { from: 1961 } });
+    const rows: TeamIn[] = [
+      { key: "ca", location: "California", name: "Angels", yearsActive: { from: 1965, to: 1996 }, mlbamId: 108 },
+      { key: "la", location: "Los Angeles", name: "Angels", yearsActive: { from: 1961 }, mlbamId: 108 },
+    ];
+    const first = await teams(t, rows);
+    expect(first.results.map((r) => [r.status, r.id])).toEqual([
+      ["adopted", ca],
+      ["adopted", la],
+    ]);
+    expect((await team(t, ca))?.externalIds?.mlbamId).toBe(108);
+    expect((await team(t, la))?.externalIds?.mlbamId).toBe(108);
+    expect(await allTeams(t)).toHaveLength(2);
+
+    // Pinned answers, and a plain rerun, land each on its own row.
+    const pinned = await teams(t, [
+      { ...rows[0], decision: { adopt: ca } },
+      { ...rows[1], decision: { adopt: la } },
+    ]);
+    expect(pinned.results.map((r) => [r.status, r.id])).toEqual([
+      ["adopted", ca],
+      ["adopted", la],
+    ]);
+    const again = await teams(t, rows);
+    expect(again.results.map((r) => [r.status, r.id])).toEqual([
+      ["adopted", ca],
+      ["adopted", la],
+    ]);
+    expect(await allTeams(t)).toHaveLength(2);
   });
 
   test("era rows share one id: the season picks the row, an uncovered era is created", async () => {

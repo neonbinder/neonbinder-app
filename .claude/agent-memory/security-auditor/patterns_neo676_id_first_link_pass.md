@@ -40,3 +40,14 @@ Conditions that held in the delta: team `{adopt}`/`{create:true}` replay reads
 the id step first and holds; per-call repeated-id refusal on leagues and
 players (preview and write share the loader); preview query shares the loader
 and validators, writes gated on a MutationCtx handle.
+
+**Rule 6 (delta round 2) — "the id-holder must answer to the name" is only as
+strong as its weakest answering leg.** Filtering id-holders by name OR alias
+still lets a holder that answers only through a stored alias (a cross-era
+former name, e.g. Wikidata-style aliases on a franchise row) win over a
+non-holder row whose PRIMARY name is exact: row order decides which era gets
+the id first, then the other era's dataset row adopts it by id, and a pinned
+`adopt` of the exact-name row is held by the id guard (stuck). Probe: seed an
+exact-name row without the id plus an alias-answering holder, run both rows in
+one call, then pin the right answer. Ask for an exact-name lookup before an
+alias-only id match is accepted.
