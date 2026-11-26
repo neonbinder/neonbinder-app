@@ -58,7 +58,7 @@ describe("linkOnOpen", () => {
       const kim = await addAliased(ctx, w, "Kim Ha-Seong", [KIM]);
       return { id: await printCard(ctx, w, { number: "1", pendingPlayerNames: [KIM] }), kim };
     });
-    await open(t, id);
+    expect(await open(t, id)).toEqual([{ printed: KIM, player: "Kim Ha-Seong" }]);
     const c = (await card(t, id))!;
     expect(c.playerIds).toEqual([kim]);
     expect(c.playerLinks).toEqual([{ playerId: kim, nameOnCard: KIM }]);
@@ -95,7 +95,7 @@ describe("linkOnOpen", () => {
       await addAliased(ctx, w, "Kim Ha Seong Sr", [KIM]);
       return printCard(ctx, w, { number: "3", pendingPlayerNames: [KIM, "Nobody Atall"] });
     });
-    await open(t, id);
+    expect(await open(t, id)).toBeNull();
     const c = (await card(t, id))!;
     expect(c.playerIds).toBeUndefined();
     expect(c.pendingPlayerNames).toEqual([KIM, "Nobody Atall"]);

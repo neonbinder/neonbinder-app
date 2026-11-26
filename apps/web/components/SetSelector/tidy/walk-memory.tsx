@@ -424,17 +424,20 @@ export function useLeafFacts(memory: WalkMemory, leafId: Id<"selectorOptions">) 
  * re-reads the card and does nothing when nothing waits or nothing resolves.
  * The names the operator took back with Edit this sitting go along as `skip`,
  * so an Edit is never undone. A failed call holds nothing back (missing data is
- * not a claim): the names simply stay waiting.
+ * not a claim): the names simply stay waiting. When names did link, `onLinked`
+ * says so (one sentence for a screen reader) while the walk still sits on that
+ * card: the row the operator may be on has just been replaced by its answer.
  */
 export function useLinkOnOpen(
   memory: WalkMemory,
   card: { _id: Id<"cardChecklist">; pendingPlayerNames?: readonly string[] } | undefined,
+  onLinked: (message: string) => void,
 ) {
   const linkOnOpen = useMutation(api.tidyCards.linkOnOpen);
   const waiting = card?.pendingPlayerNames;
-  const latest = useRef({ linkOnOpen, waiting });
+  const latest = useRef({ linkOnOpen, waiting, onLinked });
   useEffect(() => {
-    latest.current = { linkOnOpen, waiting };
+    latest.current = { linkOnOpen, waiting, onLinked };
   });
   const openedRef = useRef<string | null>(null);
   const cardId = card?._id;
@@ -451,7 +454,15 @@ export function useLinkOnOpen(
     const skip = memory
       .heldBackNames(cardId, "player")
       .filter((n) => waitingKeys.has(normalizeEntityName(n.trim())));
-    latest.current.linkOnOpen({ cardId, ...(skip.length > 0 ? { skip } : {}) }).catch(() => {});
+    latest.current
+      .linkOnOpen({ cardId, ...(skip.length > 0 ? { skip } : {}) })
+      .then((linked) => {
+        if (!linked || linked.length === 0 || openedRef.current !== cardId) return;
+        latest.current.onLinked(
+          linked.map((l) => `Linked ${l.printed} to ${l.player}.`).join(" "),
+        );
+      })
+      .catch(() => {});
   }, [memory, cardId]);
 }
 

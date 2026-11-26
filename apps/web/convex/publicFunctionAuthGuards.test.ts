@@ -58,6 +58,7 @@ import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { Id } from "./_generated/dataModel";
 import { insertTestCard } from "../lib/testing/card-row";
+import { syncPlayerAliases } from "./players";
 import { addPlayer, printCard, seedTidyWorld } from "../lib/testing/tidy-world";
 
 // NEO-315: the placeholder download mints sign with a storage client. A fake one
@@ -1227,7 +1228,13 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
         ],
       });
       const playerId = await addPlayer(ctx, w, "Sam Veteran");
-      return { w, cardId, playerId };
+      // The one player the card's waiting name answers to (by an alias), so
+      // `tidyCards.linkOnOpen` has something an admin call would link.
+      const aliasHolderId = await addPlayer(ctx, w, "Newguy Rookie Jr", undefined, {
+        aliases: ["Rookie Newguy"],
+      });
+      await syncPlayerAliases(ctx, { playerId: aliasHolderId });
+      return { w, cardId, playerId, aliasHolderId };
     });
     return { t, ...seeded };
   }
@@ -1307,6 +1314,10 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
       (c, as) => as().mutation(api.tidyCards.saveCard, { cardId: c.cardId, gaps: [] }),
     ],
     [
+      "tidyCards.linkOnOpen",
+      (c, as) => as().mutation(api.tidyCards.linkOnOpen, { cardId: c.cardId }),
+    ],
+    [
       "tidyNames.answerOfferedName",
       (c, as) =>
         as().action(api.tidyNames.answerOfferedName, {
@@ -1342,6 +1353,18 @@ describe("NEO-645 — a refused Tidy Up write persists nothing", () => {
 
     expect(await snapshot(c.t, c.w.base)).toEqual(before);
     expect(await scheduledCount(c.t)).toBe(0);
+  });
+
+  test("the linkOnOpen row is not vacuous: an admin call links the waiting name", async () => {
+    const c = await world();
+    const before = await snapshot(c.t, c.w.base);
+
+    const linked = await c.t.withIdentity(ADMIN).mutation(api.tidyCards.linkOnOpen, { cardId: c.cardId });
+
+    expect(linked).toEqual([{ printed: "Rookie Newguy", player: "Newguy Rookie Jr" }]);
+    expect(await snapshot(c.t, c.w.base)).not.toEqual(before);
+    const card = await c.t.run((ctx) => ctx.db.get(c.cardId));
+    expect(card?.playerIds).toEqual([c.aliasHolderId]);
   });
 
   test.each(calls)("%s refuses a non-admin and writes nothing", async (_name, call) => {

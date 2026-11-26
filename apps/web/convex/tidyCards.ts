@@ -507,6 +507,8 @@ const LINK_ON_OPEN_MAX_SKIP = MAX_CARD_PLAYERS;
  * - Resolved by `tidyPickSource.resolveName`, written by the one name writer:
  *   one player in the card's sport answering to the name links; none, or two or
  *   more, leaves the name waiting.
+ * - Returns the names it linked (`printed` as the card has it, `player` as NB
+ *   names him), so the walk can say so; null when nothing was linked.
  * - Idempotent: a card with nothing waiting, or nothing that resolves, is not
  *   written, and a second call finds the names already linked.
  * - A card that is gone is a no-op.
@@ -516,7 +518,7 @@ export const linkOnOpen = mutation({
     cardId: v.id("cardChecklist"),
     skip: v.optional(v.array(v.string())),
   },
-  returns: v.null(),
+  returns: v.union(v.null(), v.array(v.object({ printed: v.string(), player: v.string() }))),
   handler: async (ctx, args) => {
     const userId = await requireAdmin(ctx);
     const skip = args.skip ?? [];
@@ -528,12 +530,12 @@ export const linkOnOpen = mutation({
     }
     const card = await ctx.db.get(args.cardId);
     if (!card || (card.pendingPlayerNames ?? []).length === 0) return null;
-    await linkWaitingPlayerNames(ctx, card, {
+    const linked = await linkWaitingPlayerNames(ctx, card, {
       userId,
       cache: newNameWriteCache(ctx),
       skip: new Set(skip.map((name) => normalizeEntityName(name))),
     });
-    return null;
+    return linked.length > 0 ? linked : null;
   },
 });
 

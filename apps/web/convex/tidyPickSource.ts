@@ -216,15 +216,16 @@ export async function resolveName(
  * team fill follow as for any link. `skip` holds name keys the operator has
  * taken back this sitting (Edit); it only narrows what is linked. A name no one
  * answers to, or two players do, stays waiting, and a card with nothing to link
- * is not written. Returns whether the card was written.
+ * is not written. Returns the names it linked (the name as printed, and the
+ * player it now links to); empty when the card was not written.
  */
 export async function linkWaitingPlayerNames(
   ctx: MutationCtx,
   card: Doc<"cardChecklist">,
   args: { userId: string; cache: NameWriteCache; skip: ReadonlySet<string> },
-): Promise<boolean> {
+): Promise<{ printed: string; player: string }[]> {
   let fields = nameFieldsOf(card);
-  let linked = false;
+  const linked: { printed: string; player: string }[] = [];
   for (const printed of card.pendingPlayerNames ?? []) {
     const key = normalizeEntityName(printed);
     if (args.skip.has(key)) continue;
@@ -240,10 +241,11 @@ export async function linkWaitingPlayerNames(
     );
     if (plan.status === "changed") {
       fields = plan.fields;
-      linked = true;
+      const player = await ctx.db.get(resolved.playerId);
+      linked.push({ printed, player: player?.name ?? printed });
     }
   }
-  if (linked) await writeNameChange(ctx, card, fields, args.cache, args.userId);
+  if (linked.length > 0) await writeNameChange(ctx, card, fields, args.cache, args.userId);
   return linked;
 }
 

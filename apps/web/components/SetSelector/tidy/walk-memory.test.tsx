@@ -536,10 +536,12 @@ describe("useLinkOnOpen (NEO-680)", () => {
   type Card = { _id: never; pendingPlayerNames?: readonly string[] };
   const row = (id: string, waiting?: string[]): Card => ({ _id: id as never, pendingPlayerNames: waiting });
   const linkOnOpen = () => mutations["tidyCards.linkOnOpen"];
+  const onLinked = vi.fn();
+  beforeEach(() => onLinked.mockClear());
 
   it("asks once when a card with waiting names opens, however often it re-renders", async () => {
     const m = new WalkMemory();
-    const { rerender } = renderHook(({ card }) => useLinkOnOpen(m, card), {
+    const { rerender } = renderHook(({ card }) => useLinkOnOpen(m, card, onLinked), {
       initialProps: { card: row("c1", ["Hye-Seong Kim"]) },
     });
     await flush();
@@ -553,7 +555,7 @@ describe("useLinkOnOpen (NEO-680)", () => {
 
   it("does not ask for a card with nothing waiting, or with no card open", async () => {
     const m = new WalkMemory();
-    const { rerender } = renderHook(({ card }) => useLinkOnOpen(m, card), {
+    const { rerender } = renderHook(({ card }) => useLinkOnOpen(m, card, onLinked), {
       initialProps: { card: undefined as Card | undefined },
     });
     rerender({ card: row("c1", []) });
@@ -564,7 +566,7 @@ describe("useLinkOnOpen (NEO-680)", () => {
 
   it("asks again when the card is opened again, and sends the names the operator took back (never re-linked)", async () => {
     const m = new WalkMemory();
-    const { rerender } = renderHook(({ card }) => useLinkOnOpen(m, card), {
+    const { rerender } = renderHook(({ card }) => useLinkOnOpen(m, card, onLinked), {
       initialProps: { card: row("c1", ["Hye-Seong Kim"]) as Card | undefined },
     });
     await flush();
@@ -587,7 +589,7 @@ describe("useLinkOnOpen (NEO-680)", () => {
     m.holdBackFromLink("c1", "player", "Gone From Card");
     m.holdBackFromLink("c2", "player", "Other Card");
     m.leaveCard("c1");
-    renderHook(() => useLinkOnOpen(m, row("c1", ["hye-seong KIM", "Juan Soto"])));
+    renderHook(() => useLinkOnOpen(m, row("c1", ["hye-seong KIM", "Juan Soto"]), onLinked));
     await flush();
     expect(linkOnOpen()).toHaveBeenCalledWith({ cardId: "c1", skip: ["Hye-Seong Kim"] });
   });
@@ -595,8 +597,38 @@ describe("useLinkOnOpen (NEO-680)", () => {
   it("a failed call is swallowed: the names simply stay waiting", async () => {
     const m = new WalkMemory();
     mutations["tidyCards.linkOnOpen"] = vi.fn(() => Promise.reject(new Error("offline")));
-    renderHook(() => useLinkOnOpen(m, row("c1", ["Hye-Seong Kim"])));
+    renderHook(() => useLinkOnOpen(m, row("c1", ["Hye-Seong Kim"]), onLinked));
     await flush();
     expect(linkOnOpen()).toHaveBeenCalledTimes(1);
+  });
+
+  it("says what it linked once the call returns, and says nothing when nothing linked", async () => {
+    const m = new WalkMemory();
+    mutations["tidyCards.linkOnOpen"] = vi.fn(() =>
+      Promise.resolve([{ printed: "Hyeseong Kim", player: "Hye-Seong Kim" }]),
+    );
+    renderHook(() => useLinkOnOpen(m, row("c1", ["Hyeseong Kim"]), onLinked));
+    await flush();
+    expect(onLinked).toHaveBeenCalledTimes(1);
+    expect(onLinked).toHaveBeenCalledWith("Linked Hyeseong Kim to Hye-Seong Kim.");
+
+    onLinked.mockClear();
+    mutations["tidyCards.linkOnOpen"] = vi.fn(() => Promise.resolve(null));
+    renderHook(() => useLinkOnOpen(m, row("c9", ["Nobody"]), onLinked));
+    await flush();
+    expect(onLinked).not.toHaveBeenCalled();
+  });
+
+  it("says nothing when the walk has left the card before the call returns", async () => {
+    const m = new WalkMemory();
+    let finish: (v: unknown) => void = () => {};
+    mutations["tidyCards.linkOnOpen"] = vi.fn(() => new Promise((r) => (finish = r)));
+    const { rerender } = renderHook(({ card }) => useLinkOnOpen(m, card, onLinked), {
+      initialProps: { card: row("c1", ["Hyeseong Kim"]) as Card | undefined },
+    });
+    rerender({ card: row("c2") });
+    finish([{ printed: "Hyeseong Kim", player: "Hye-Seong Kim" }]);
+    await flush();
+    expect(onLinked).not.toHaveBeenCalled();
   });
 });
