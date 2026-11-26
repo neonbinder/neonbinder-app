@@ -34,7 +34,8 @@
 // Expected outcome in REMAP mode (target has Baseball, not Curling), by row:
 //   leagues       L1 Baseball keep · L2 Curling drop
 //   franchises    F1 Baseball keep · F2 Curling drop
-//   teams         T1 keep · T2 keep, leagueId(L2) + franchiseId(F2) blanked · T3 Curling drop
+//   teams         T1 keep, parentClubs [T3] removed and omitted · T2 keep, leagueId(L2) + franchiseId(F2)
+//                 blanked, parentClubs [T3, T1] -> [T1] · T3 Curling drop
 //   teamAliases   A1→T1 keep · A2→T3 Curling drop by sport · A3 Baseball→T3 drop as dependant
 //   players       P1 keep, teamYears T3 entry removed, alsoSportIds [Curling] omitted,
 //                 createdByUserId stripped at build · P2 Curling drop ·
@@ -186,8 +187,8 @@ export function fixtureTables({ emptyTables = [] } = {}) {
       { _id: F2, _creationTime: ct(), name: "Fixture Stones", nameNormalized: "fixture stones", sportId: S2, lastUpdated: 1 },
     ],
     teams: [
-      { _id: T1, _creationTime: ct(), name: "Fixture Nine", nameNormalized: "fixture nine", sportId: S1, leagueId: L1, franchiseId: F1, location: "Fixture City", lastUpdated: 1 },
-      { _id: T2, _creationTime: ct(), name: "Cross Sport Nine", nameNormalized: "cross nine sport", sportId: S1, leagueId: L2, franchiseId: F2, lastUpdated: 1 },
+      { _id: T1, _creationTime: ct(), name: "Fixture Nine", nameNormalized: "fixture nine", sportId: S1, leagueId: L1, franchiseId: F1, location: "Fixture City", parentClubs: [{ parentTeamId: T3, fromYear: 1980, toYear: 1989 }], lastUpdated: 1 },
+      { _id: T2, _creationTime: ct(), name: "Cross Sport Nine", nameNormalized: "cross nine sport", sportId: S1, leagueId: L2, franchiseId: F2, parentClubs: [{ parentTeamId: T3, fromYear: 1990, toYear: 1999 }, { parentTeamId: T1, fromYear: 2000 }], lastUpdated: 1 },
       { _id: T3, _creationTime: ct(), name: "Fixture Stones", nameNormalized: "fixture stones", sportId: S2, leagueId: L2, franchiseId: F2, lastUpdated: 1 },
     ],
     teamAliases: [

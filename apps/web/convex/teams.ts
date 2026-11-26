@@ -28,6 +28,7 @@ import { longestToken, nameTokens, rankTeamCandidates } from "./lib/entityNearMa
 // lib/players/wikidata-id.ts. Named for players only because that is where the
 // id first appeared; the shape is the same for every Wikidata entity.
 import { isWikidataQid } from "../lib/players/wikidata-id";
+import { parentClubsValidator } from "./lib/parentClubs";
 // NEO-253: shared with players, leagues and the browser-side review wizard.
 import {
   entityNameQueryReadings,
@@ -151,9 +152,14 @@ const teamDocValidator = v.object({
     name: v.string(),
     url: v.string(),
   }))),
+  // NEO-676: the MLB-club affiliations; see schema.ts. STRICT validator, so a
+  // row carrying one must be named here or every teams screen throws.
+  parentClubs: v.optional(parentClubsValidator),
   externalIds: v.optional(v.object({
     wikidataId: v.optional(v.string()),
     espnId: v.optional(v.string()),
+    // NEO-676: MLB's own club id; linkage only.
+    mlbamId: v.optional(v.number()),
   })),
   lastUpdated: v.number(),
 });
@@ -977,7 +983,7 @@ function sanitizeTeamEnrichment(
 ): {
   yearsActive?: { from: number; to?: number };
   colors?: { primary?: string; secondary?: string };
-  externalIds?: { wikidataId?: string; espnId?: string };
+  externalIds?: { wikidataId?: string; espnId?: string; mlbamId?: number };
 } {
   if (!enrichment) return {};
   const out: ReturnType<typeof sanitizeTeamEnrichment> = {};
@@ -1506,7 +1512,7 @@ export const applyEnrichmentInternal = internalMutation({
       nameNormalized?: string;
       yearsActive?: { from: number; to?: number };
       colors?: { primary?: string; secondary?: string };
-      externalIds?: { wikidataId?: string; espnId?: string };
+      externalIds?: { wikidataId?: string; espnId?: string; mlbamId?: number };
       lastUpdated: number;
     } = { lastUpdated: Date.now() };
 

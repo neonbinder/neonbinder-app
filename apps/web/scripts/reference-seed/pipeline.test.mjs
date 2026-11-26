@@ -265,6 +265,7 @@ const FIELD_TARGET = {
   leagueId: "leagues",
   franchiseId: "franchises",
   teamId: "teams",
+  parentTeamId: "teams",
   playerId: "players",
 };
 const lastSegment = (p) => p.replace(/\[\]/g, "").split(".").pop();
@@ -414,6 +415,19 @@ describe("transform, sports: remap", () => {
     expect(kept.franchiseId).toBeDefined();
     expect(out.report.repairs["teams.leagueId blanked (league dropped)"]).toBe(1);
     expect(out.report.repairs["teams.franchiseId blanked (franchise dropped)"]).toBe(1);
+  });
+
+  test("removes a parent club whose team was dropped, and omits the field once none is left (NEO-676)", () => {
+    const t1 = byName("teams")["Fixture Nine"];
+    expect(t1).not.toHaveProperty("parentClubs");
+    const t2 = byName("teams")["Cross Sport Nine"];
+    expect(t2.parentClubs).toHaveLength(1);
+    expect(t2.parentClubs[0]).toMatchObject({ fromYear: 2000 });
+    expect(decodeId(t2.parentClubs[0].parentTeamId).internal).toEqual(decodeId(byName("teams")["Fixture Nine"]._id).internal);
+    expect(out.report.repairs).toMatchObject({
+      "teams.parentClubs entries removed (parent team dropped)": 2,
+      "teams.parentClubs omitted (became empty)": 1,
+    });
   });
 
   test("prunes a player's dropped team, drops an unmatched also-sport and keeps the matched one", () => {

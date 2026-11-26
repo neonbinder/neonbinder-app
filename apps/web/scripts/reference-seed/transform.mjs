@@ -172,11 +172,20 @@ export function transformBundle(bundle, target, { sports: mode }) {
     const repairs = (report.repairs = {
       "teams.leagueId blanked (league dropped)": 0,
       "teams.franchiseId blanked (franchise dropped)": 0,
+      "teams.parentClubs entries removed (parent team dropped)": 0,
+      "teams.parentClubs omitted (became empty)": 0,
       "players.teamYears entries removed (team dropped)": 0,
       "players.teamYears omitted (became empty)": 0,
       "players.alsoSportIds elements dropped (sport unmatched)": 0,
       "players.alsoSportIds omitted (became empty)": 0,
     });
+
+    // A team is dropped only by its sport, so which ones are is known before any
+    // team row is visited. `teams.parentClubs` points at other TEAM rows, which
+    // may come later in the same table than the row naming them.
+    const droppedTeamIds = new Set(
+      (bundle.tables.teams ?? []).filter((t) => !sportMap.get(t[SPORT_ID_FIELD])).map((t) => t._id),
+    );
 
     for (const table of TABLES) {
       const st = (report.rows[table] = { bundle: 0, kept: 0, droppedBySport: {}, droppedAsDependant: 0 });
@@ -205,6 +214,18 @@ export function transformBundle(bundle, target, { sports: mode }) {
           if (row.franchiseId && isDropped("franchises", row.franchiseId)) {
             delete row.franchiseId;
             repairs["teams.franchiseId blanked (franchise dropped)"]++;
+          }
+          // NEO-676: an affiliation whose parent team was dropped is removed,
+          // the way `players.teamYears` loses a dropped team; none left, the
+          // field is omitted rather than left as `[]`.
+          if (Array.isArray(row.parentClubs)) {
+            const before = row.parentClubs.length;
+            row.parentClubs = row.parentClubs.filter((pc) => !droppedTeamIds.has(pc.parentTeamId));
+            repairs["teams.parentClubs entries removed (parent team dropped)"] += before - row.parentClubs.length;
+            if (row.parentClubs.length === 0 && before > 0) {
+              delete row.parentClubs;
+              repairs["teams.parentClubs omitted (became empty)"]++;
+            }
           }
         }
         if (table === "players" && Array.isArray(row.teamYears)) {
