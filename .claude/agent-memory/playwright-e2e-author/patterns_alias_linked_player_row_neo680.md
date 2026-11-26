@@ -41,3 +41,15 @@ Related: [[patterns-player-alias-read-back-and-remember-box]]
   (drop `skip` in `useLinkOnOpen`): red at the read-back, not in the walk.
 - Plants: `useLinkOnOpen(memory, undefined, onAnswered)` → red at `Edit <holder>`. Fresh-only:
   `seed` before each `plant --expect`.
+
+## Helpers must tolerate link on open (merge-group red, desktop shard)
+- Link on open answers a Player row in the BACKGROUND, any time after the card opens (often while
+  the row still says "Checking for players by that name…"). A helper that takes a row through the
+  "Not a player" filter (`openPlayerRows(page).first()`) and then waits on its buttons sees the
+  row drop out of the filter and times out on "offers an answer": a race, not a slow step.
+- Pattern (tidy-walk.ts `nextPlayerRowName` / `playerRow`): read row NAMES off every Player group
+  (answered rows keep their `Player <printed>` group), re-locate by exact name, and settle into
+  ONE state: `edit.or(pick).or(create).or(anyway)`; Edit up = answered, press nothing, don't count
+  it (setup.spec asserts `players === 0` on the Future Stars insert).
+- Residual window: a row seen offering an answer can still be linked between the check and the
+  click (ms). No perceivable "link on open done" signal exists to close it.

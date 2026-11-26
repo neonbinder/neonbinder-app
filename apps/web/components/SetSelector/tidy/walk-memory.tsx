@@ -101,6 +101,12 @@ export class WalkMemory {
    * sitting); in memory only, nothing stored.
    */
   private heldBack = new Map<string, string>();
+  /**
+   * NEO-680: the cards whose link-on-open call is in flight. A waiting Player
+   * row holds ("Checking for players by that name…") until it settles, so no
+   * answer can be given a moment before the name links by itself.
+   */
+  private linkingOnOpen = new Set<string>();
   private picks = new Map<string, KeptPick>();
   /** `cardId|playerId` for each player made on an open card (NEO-657's prefilled stint). */
   private madePlayers = new Set<string>();
@@ -124,6 +130,20 @@ export class WalkMemory {
   private bump() {
     this.version += 1;
     for (const listener of [...this.listeners]) listener();
+  }
+
+  // ── link on open ─────────────────────────────────────────────────────────
+  beginLinkOnOpen(cardId: string): void {
+    if (this.linkingOnOpen.has(cardId)) return;
+    this.linkingOnOpen.add(cardId);
+    this.bump();
+  }
+  /** Called when the call settles, whatever the outcome: a failure releases the hold. */
+  endLinkOnOpen(cardId: string): void {
+    if (this.linkingOnOpen.delete(cardId)) this.bump();
+  }
+  isLinkingOnOpen(cardId: string): boolean {
+    return this.linkingOnOpen.has(cardId);
   }
 
   // ── leaf facts ────────────────────────────────────────────────────────────
@@ -424,7 +444,9 @@ export function useLeafFacts(memory: WalkMemory, leafId: Id<"selectorOptions">) 
  * re-reads the card and does nothing when nothing waits or nothing resolves.
  * The names the operator took back with Edit this sitting go along as `skip`,
  * so an Edit is never undone. A failed call holds nothing back (missing data is
- * not a claim): the names simply stay waiting. When names did link, `onLinked`
+ * not a claim): the names simply stay waiting. While the call is in flight the
+ * card's Player rows hold (`memory.isLinkingOnOpen`), and any outcome releases
+ * them. When names did link, `onLinked`
  * says so (one sentence for a screen reader) while the walk still sits on that
  * card: the row the operator may be on has just been replaced by its answer.
  */
@@ -454,6 +476,8 @@ export function useLinkOnOpen(
     const skip = memory
       .heldBackNames(cardId, "player")
       .filter((n) => waitingKeys.has(normalizeEntityName(n.trim())));
+    // The rows hold while the call is in flight; any outcome releases them.
+    memory.beginLinkOnOpen(cardId);
     latest.current
       .linkOnOpen({ cardId, ...(skip.length > 0 ? { skip } : {}) })
       .then((linked) => {
@@ -462,7 +486,8 @@ export function useLinkOnOpen(
           linked.map((l) => `Linked ${l.printed} to ${l.player}.`).join(" "),
         );
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => memory.endLinkOnOpen(cardId));
   }, [memory, cardId]);
 }
 

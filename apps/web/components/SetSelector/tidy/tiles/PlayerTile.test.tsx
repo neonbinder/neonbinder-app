@@ -273,6 +273,35 @@ describe("PlayerTile", () => {
     expect(screen.getByRole("button", { name: "Add as new player" }).getAttribute("aria-disabled")).toBeNull();
   });
 
+  it("holds the row while the card's link-on-open call is in flight, then gives the buttons back (NEO-680)", async () => {
+    queryResults["players.nearMatches"] = [];
+    memory.beginLinkOnOpen(CARD);
+    renderTile();
+    expect(screen.getByText("Checking for players by that name…").getAttribute("role")).toBe("status");
+    expect(screen.queryByText("“Jackson Merrill” is new to NeonBinder.")).toBeNull();
+    const add = screen.getByRole("button", { name: "Add as new player" });
+    expect(add.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => fireEvent.click(add));
+    expect(mutation("tidyNames.createPlayer")).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Not a player (checklist, team card, stadium)" })));
+    expect(mutation("tidyNames.answerName")).not.toHaveBeenCalled();
+
+    act(() => memory.endLinkOnOpen(CARD));
+    expect(screen.queryByText("Checking for players by that name…")).toBeNull();
+    expect(screen.getByText("“Jackson Merrill” is new to NeonBinder.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add as new player" }).getAttribute("aria-disabled")).toBeNull();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Add as new player" })));
+    expect(mutation("tidyNames.createPlayer")).toHaveBeenCalledTimes(1);
+  });
+
+  it("a link-on-open call for another card holds nothing here (NEO-680)", () => {
+    queryResults["players.nearMatches"] = [];
+    memory.beginLinkOnOpen("card-other");
+    renderTile();
+    expect(screen.queryByText("Checking for players by that name…")).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as new player" }).getAttribute("aria-disabled")).toBeNull();
+  });
+
   it("'Add as new player' creates the player from this card's printed name", async () => {
     queryResults["players.nearMatches"] = [];
     renderTile();

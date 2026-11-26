@@ -619,6 +619,42 @@ describe("useLinkOnOpen (NEO-680)", () => {
     expect(onLinked).not.toHaveBeenCalled();
   });
 
+  it("holds the card while the call is in flight, and lets go after it resolves (NEO-680)", async () => {
+    const m = new WalkMemory();
+    let finish: (v: unknown) => void = () => {};
+    mutations["tidyCards.linkOnOpen"] = vi.fn(() => new Promise((r) => (finish = r)));
+    renderHook(() => useLinkOnOpen(m, row("c1", ["Hyeseong Kim"]), onLinked));
+    expect(m.isLinkingOnOpen("c1")).toBe(true);
+    expect(m.isLinkingOnOpen("c2")).toBe(false);
+    finish(null);
+    await flush();
+    expect(m.isLinkingOnOpen("c1")).toBe(false);
+  });
+
+  it("lets go after the call rejects (NEO-680)", async () => {
+    const m = new WalkMemory();
+    let fail: (e: unknown) => void = () => {};
+    mutations["tidyCards.linkOnOpen"] = vi.fn(() => new Promise((_r, rej) => (fail = rej)));
+    renderHook(() => useLinkOnOpen(m, row("c1", ["Hyeseong Kim"]), onLinked));
+    expect(m.isLinkingOnOpen("c1")).toBe(true);
+    fail(new Error("offline"));
+    await flush();
+    expect(m.isLinkingOnOpen("c1")).toBe(false);
+  });
+
+  it("holds nothing when no call is made: no waiting names, or the card already opened (NEO-680)", async () => {
+    const m = new WalkMemory();
+    const { rerender } = renderHook(({ card }) => useLinkOnOpen(m, card, onLinked), {
+      initialProps: { card: row("c1") as Card | undefined },
+    });
+    expect(m.isLinkingOnOpen("c1")).toBe(false);
+    rerender({ card: row("c2", ["Hyeseong Kim"]) });
+    await flush();
+    expect(m.isLinkingOnOpen("c2")).toBe(false);
+    rerender({ card: row("c2", ["Hyeseong Kim"]) });
+    expect(m.isLinkingOnOpen("c2")).toBe(false);
+  });
+
   it("says nothing when the walk has left the card before the call returns", async () => {
     const m = new WalkMemory();
     let finish: (v: unknown) => void = () => {};

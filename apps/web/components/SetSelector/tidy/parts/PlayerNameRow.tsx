@@ -261,9 +261,13 @@ function UnansweredPlayerName({
   const memory = useWalkMemory();
   // Edit on a ruled-out name re-opens this row: focus lands on its first control.
   useReopenedFocus(memory, row._id, "player", name.printed, wrapRef);
+  // NEO-680: the card's link-on-open call is still in flight, so this name may
+  // be about to link by itself: no answer is offered until it settles.
+  const linking = memory.isLinkingOnOpen(row._id);
 
   /** A write that ANSWERS the name: on success the walk moves focus on. */
   const answer = async (fn: () => Promise<unknown>, fallback: string): Promise<boolean> => {
+    if (linking) return false;
     const ok = await write.run(fn, fallback);
     if (ok) answered();
     return ok;
@@ -372,8 +376,9 @@ function UnansweredPlayerName({
   // history picks, so it is one of them (a failed one is not: Try again is
   // offered and the rest still decide).
   const checking =
-    rowSportId !== undefined &&
-    (nearMatches === undefined || fragmentCheck === undefined || lookupStatus === "pending");
+    linking ||
+    (rowSportId !== undefined &&
+      (nearMatches === undefined || fragmentCheck === undefined || lookupStatus === "pending"));
 
   // A player the lookup itself offered may be in another sport: the server
   // takes the link without the sport check only for those (`offered`).
@@ -479,7 +484,7 @@ function UnansweredPlayerName({
   };
 
   const printedOn = printedOnText(printedOnOf(leafCards, "player", name.printed));
-  const disabled = write.busy ? true : undefined;
+  const disabled = write.busy || linking ? true : undefined;
   // The reason line under the suggestion, and the id the suggestion's button
   // is described by while that line is on screen.
   const reasonId = useId();
@@ -571,7 +576,7 @@ function UnansweredPlayerName({
       {/* Mounted for the whole life of the row, so the sentence is a change to a
           live region that is already in the page. */}
       <p role="status" className="text-xs italic text-ink-3 empty:hidden">
-        {creating && !linkOpen && checking
+        {(creating || linking) && !linkOpen && checking
           ? "Checking for players by that name…"
           : lookupFailed && !linkOpen
             ? "Couldn't look this one up."
