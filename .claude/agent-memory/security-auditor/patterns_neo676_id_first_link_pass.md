@@ -66,3 +66,12 @@ Both closed in round 4: the downgrade records the set-aside holder and a replaye
 `create` holds on it; exact-name rows carrying a different id are excluded from
 "own row". Pattern: when a step downgrades a match kind, carry the downgraded
 candidate forward so non-idempotent replays can still hold on it.
+
+**Rule 8 (delta round 5) — narrowing a hold's candidate set AFTER a saturated
+take flips the cap from fail-closed to fail-open.** The probable-duplicate hold
+now filters search hits to rows with no MLB id. Proof it is a pure narrowing:
+the team ranker admits per candidate (sort only is relative), so any no-id row
+the old top-5 held is still held. But when id-carrying siblings fill the
+`.take(10)` (a common token like "dodgers"), the old code held on them; the new
+code creates. Same cap, opposite failure direction. Remedy if it matters: a
+league filter field on the search index, so the take is spent in-league.
