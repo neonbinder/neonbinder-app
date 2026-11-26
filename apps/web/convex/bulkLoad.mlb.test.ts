@@ -585,7 +585,7 @@ describe("teams", () => {
     expect(await scheduled(t)).toEqual([]);
   });
 
-  test("step 0 converges with no answers: a renamed club is found by id and its name joins the aliases", async () => {
+  test("step 0 converges with no answers: a renamed club that answers to the name by alias is found by id", async () => {
     const t = convexTest(schema, modules);
     armed();
     const sportId = await seedSport(t);
@@ -595,25 +595,90 @@ describe("teams", () => {
       years: { from: 1998 },
       mlbamId: 139,
     });
-    const first = await teams(t, [
-      { key: "k", location: "Tampa Bay", name: "Rays", yearsActive: { from: 2008 }, mlbamId: 139 },
-    ]);
-    expect(first.results[0]).toMatchObject({
-      id,
-      status: "adopted",
-      matchedBy: "mlbamId",
-      aliasesAdded: 1,
-    });
+    // NEO-676 — the id-holder must answer to the incoming name: here the row's
+    // name is one of the dataset row's own aliases.
+    const row: TeamIn = {
+      key: "k",
+      location: "Tampa Bay",
+      name: "Rays",
+      aliases: ["Tampa Bay Devil Rays"],
+      yearsActive: { from: 2008 },
+      mlbamId: 139,
+    };
+    const first = await teams(t, [row]);
+    expect(first.results[0]).toMatchObject({ id, status: "adopted", matchedBy: "mlbamId" });
     expect(first.results[0].disagreements).toBeUndefined();
-    const row = await team(t, id);
-    expect(row?.name).toBe("Devil Rays");
-    expect(row?.aliases).toEqual(["Tampa Bay Rays"]);
+    expect((await team(t, id))?.name).toBe("Devil Rays");
 
-    const again = await teams(t, [
+    const again = await teams(t, [row]);
+    expect(again.results[0]).toMatchObject({ id, status: "adopted", filled: [] });
+    expect(await allTeams(t)).toHaveLength(1);
+  });
+
+  test("an id-holder that does not answer to the incoming name is ignored: no row of that name creates an era row with the id", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const id = await seedTeam(t, sportId, {
+      location: "Tampa Bay",
+      name: "Devil Rays",
+      years: { from: 1998 },
+      mlbamId: 139,
+    });
+    const before = await team(t, id);
+    const out = await teams(t, [
       { key: "k", location: "Tampa Bay", name: "Rays", yearsActive: { from: 2008 }, mlbamId: 139 },
     ]);
-    expect(again.results[0]).toMatchObject({ id, status: "adopted", filled: [], aliasesAdded: 0 });
-    expect(await allTeams(t)).toHaveLength(1);
+    expect(out.results[0].status).toBe("created");
+    expect(out.results[0].id).not.toBe(id);
+    expect((await team(t, out.results[0].id!))?.externalIds?.mlbamId).toBe(139);
+    // The id-holder is untouched.
+    expect(await team(t, id)).toEqual(before);
+    expect(await allTeams(t)).toHaveLength(2);
+  });
+
+  test("a rename NB keeps as one row per name: each name adopts its own row and takes the shared id, and a pinned rerun lands the same", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    // NB's one row per name, none holding the id yet (the rehearsal shape).
+    const la = await seedTeam(t, sportId, { location: "Los Angeles", name: "Angels", years: { from: 1961 } });
+    const ca = await seedTeam(t, sportId, { location: "California", name: "Angels", years: { from: 1966, to: 1996 } });
+    const anaheim = await seedTeam(t, sportId, { location: "Anaheim", name: "Angels", years: { from: 1997, to: 2004 } });
+    const rows: TeamIn[] = [
+      { key: "la", location: "Los Angeles", name: "Angels", yearsActive: { from: 1961 }, mlbamId: 108 },
+      { key: "ca", location: "California", name: "Angels", yearsActive: { from: 1966, to: 1996 }, mlbamId: 108 },
+      { key: "an", location: "Anaheim", name: "Angels", yearsActive: { from: 1997, to: 2004 }, mlbamId: 108 },
+    ];
+    const first = await teams(t, rows);
+    expect(first.results.map((r) => [r.status, r.id])).toEqual([
+      ["adopted", la],
+      ["adopted", ca],
+      ["adopted", anaheim],
+    ]);
+    for (const id of [la, ca, anaheim]) {
+      expect((await team(t, id))?.externalIds?.mlbamId).toBe(108);
+    }
+    expect(await allTeams(t)).toHaveLength(3);
+
+    // A rerun by id, then with every answer pinned: each lands on its own row.
+    const again = await teams(t, rows);
+    expect(again.results.map((r) => [r.status, r.id, r.matchedBy])).toEqual([
+      ["adopted", la, "mlbamId"],
+      ["adopted", ca, "mlbamId"],
+      ["adopted", anaheim, "mlbamId"],
+    ]);
+    const pinned = await teams(t, [
+      { ...rows[0], decision: { adopt: la } },
+      { ...rows[1], decision: { adopt: ca } },
+      { ...rows[2], decision: { adopt: anaheim } },
+    ]);
+    expect(pinned.results.map((r) => [r.status, r.id, r.matchedBy])).toEqual([
+      ["adopted", la, "decision"],
+      ["adopted", ca, "decision"],
+      ["adopted", anaheim, "decision"],
+    ]);
+    expect(await allTeams(t)).toHaveLength(3);
   });
 
   test("era rows share one id: the season picks the row, an uncovered era is created", async () => {
@@ -656,8 +721,13 @@ describe("teams", () => {
     const sportId = await seedSport(t);
     const a = await seedTeam(t, sportId, { location: "A", name: "One", years: { from: 1990 }, mlbamId: 77 });
     const b = await seedTeam(t, sportId, { location: "B", name: "Two", years: { from: 2000 }, mlbamId: 77 });
+    // Both holders answer to the incoming name (each name is one of its
+    // aliases) and both cover 2005, so the name cannot pick either.
     const out = await teams(t, [
-      { key: "k", location: "C", name: "Three", yearsActive: { from: 2005 }, mlbamId: 77 },
+      {
+        key: "k", location: "C", name: "Three", aliases: ["A One", "B Two"],
+        yearsActive: { from: 2005 }, mlbamId: 77,
+      },
     ]);
     expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
     expect(out.results[0].disagreements?.[0].field).toBe("mlbamId");

@@ -136,7 +136,10 @@
  *    are a tie). Teams: `by_mlbam_id`, narrowed by the era the row's seasons
  *    fall in (`eraMatch`), because one MLB id spans every NB era row of a
  *    franchise; two eras covering the season are a tie, none overlapping falls
- *    through to the name steps. Leagues: a scan of the sport's leagues.
+ *    through to the name steps. A holder counts only if it answers to the
+ *    incoming name (NB keeps one row per name, MLB one id across renames); one
+ *    that does not is another name's row and is ignored. Leagues: a scan of
+ *    the sport's leagues.
  *    A rerun therefore converges with no answers file.
  *  - **Adopt writes only empty fields**, plus the alias union: the id; a team's
  *    league, years, missing parent-club years and (as an alias) the API name
@@ -2023,18 +2026,33 @@ async function loadTeams(
       ops += 1;
       idScanFull = scanned.length >= TEAM_ERA_SCAN_LIMIT;
       const byId = scanned.filter((team) => team.sportId === sportId);
+      /*
+       * An id says "this is that club", not "this is that NB row": NB keeps one
+       * row per name (dated to its earliest year) while MLB keeps one id across
+       * every rename, so id 108 sits on "Los Angeles Angels" and the row for
+       * "California Angels" 1966-96 overlaps it. An id-holder is a candidate
+       * only when it answers to the incoming name (its primary name, or one
+       * of the incoming aliases; or the incoming name is one of its aliases).
+       * One that does not is another name's row: ignored here, so the name
+       * steps below decide (adopt a row of this name, fill the id; a name hit
+       * holding a different id is a hold; no hit creates the era row).
+       */
+      const answers = (team: Doc<"teams">): boolean =>
+        team.nameNormalized === fields.nameNormalized ||
+        (team.aliases ?? []).some(
+          (alias) => normalizeTeamName(alias) === fields.nameNormalized,
+        ) ||
+        aliases.some((alias) => normalizeTeamName(alias) === team.nameNormalized);
+      const answering = byId.filter(answers);
       idMatch = idScanFull
         ? { kind: "several", teams: byId }
-        : eraMatch(byId, row.yearsActive);
+        : eraMatch(answering, row.yearsActive);
       /*
-       * One MLB id can return to an earlier name (id 108 is "Los Angeles
-       * Angels" 1961-64 and 2005-, so NB's one row for that name, dated to its
-       * earliest year, overlaps the California and Anaheim rows holding the
-       * same id). Overlapping eras are then not a tie when the row's own name
-       * picks exactly one of them: exact name first, then alias, the same
-       * legs the name steps below use. Zero or still several stays held. A
-       * full scan stays held, and so does the undated-rival guard in
-       * `eraMatch` (one candidate, not several).
+       * Several id-holders answering to the name that overlap are not a tie
+       * when the row's own name picks exactly one of them: exact name first,
+       * then alias, the same legs the name steps below use. Zero or still
+       * several stays held. A full scan stays held, and so does the
+       * undated-rival guard in `eraMatch` (one candidate, not several).
        */
       if (idMatch.kind === "several" && !idScanFull && idMatch.teams.length > 1) {
         const byPrimary = idMatch.teams.filter(

@@ -485,16 +485,16 @@ describe("teams: id stealing and era routing", () => {
     expect(ok.results[0].status).toBe("created");
   });
 
-  test("seasons straddling two eras of one id are a tie: held, neither row touched", async () => {
+  test("seasons straddling two eras of one id that both answer to the name are a tie: held, neither row touched", async () => {
     const t = convexTest(schema, modules);
     armed();
     const sportId = await seedSport(t);
-    await seedTeam(t, sportId, { location: "Brooklyn", name: "Dodgers", years: { from: 1901, to: 1957 }, mlbamId: 119 });
-    await seedTeam(t, sportId, { location: "Los Angeles", name: "Dodgers", years: { from: 1958 }, mlbamId: 119 });
+    // Two era rows of one name (NB keeps the Jets twice): the name cannot pick.
+    await seedTeam(t, sportId, { location: "Los Angeles", name: "Dodgers", years: { from: 1958, to: 1969 }, mlbamId: 119 });
+    await seedTeam(t, sportId, { location: "Los Angeles", name: "Dodgers", years: { from: 1965 }, mlbamId: 119 });
     const before = await snap(t);
     const out = await teams(t, [
-      // A name that is neither era's: the years straddle both and the name cannot pick.
-      { key: "k", location: "Chavez Ravine", name: "Dodgers", yearsActive: { from: 1950, to: 1970 }, mlbamId: 119 },
+      { key: "k", location: "Los Angeles", name: "Dodgers", yearsActive: { from: 1960, to: 1970 }, mlbamId: 119 },
     ]);
     expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
     expect(out.results[0].disagreements?.[0].field).toBe("mlbamId");
@@ -554,7 +554,7 @@ describe("teams: id stealing and era routing", () => {
       expect(await snap(t)).toEqual(before);
     });
 
-    test("a row whose name matches none of the overlapping eras is held", async () => {
+    test("a row whose name matches none of the overlapping eras creates its own era row with the id; the holders are untouched", async () => {
       const t = convexTest(schema, modules);
       armed();
       await angels(t);
@@ -562,9 +562,11 @@ describe("teams: id stealing and era routing", () => {
       const out = await teams(t, [
         { key: "k", location: "Orange County", name: "Angels", yearsActive: { from: 1961 }, mlbamId: 108 },
       ]);
-      expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
-      expect(out.results[0].disagreements?.[0].field).toBe("mlbamId");
-      expect(await snap(t)).toEqual(before);
+      expect(out.results[0].status).toBe("created");
+      const rows = await allTeams(t);
+      expect(rows).toHaveLength(4);
+      expect(rows.find((r) => r._id === out.results[0].id)?.externalIds?.mlbamId).toBe(108);
+      expect(rows.filter((r) => r._id !== out.results[0].id)).toEqual(before.teams);
     });
   });
 
