@@ -3167,7 +3167,11 @@ export default defineSchema({
     // that reason.
     .searchIndex("search_name", {
       searchField: "nameNormalized",
-      filterFields: ["sportId"],
+      // `leagueId` serves `loadTeams`' probable-duplicate hold (NEO-676), which
+      // must read one league's rows so id-carrying teams elsewhere cannot crowd
+      // the cap. Optional field, so no migration; callers that filter by
+      // `sportId` alone are unaffected.
+      filterFields: ["sportId", "leagueId"],
     }),
 
   /**

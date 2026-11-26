@@ -1061,6 +1061,41 @@ describe("teams", () => {
     expect(await allTeams(t)).toHaveLength(7);
   });
 
+  test("id-carrying rows in other leagues cannot crowd an NB-only near row out of the hold", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const acl = await seedLeague(t, sportId, "Arizona Complex League", { level: "minor" });
+    const other = await seedLeague(t, sportId, "Texas League", { level: "minor" });
+    // More id-carrying "Dodgers" rows elsewhere than the sport-wide read's cap.
+    for (let i = 1; i <= 12; i++) {
+      await seedTeam(t, sportId, {
+        name: `Dodgers Affiliate${i}`,
+        leagueId: other,
+        years: { from: 2024, to: 2024 },
+        mlbamId: 8000 + i,
+      });
+    }
+    const nb = await seedTeam(t, sportId, {
+      name: "AZL Dodgers Lasorda",
+      leagueId: acl,
+      years: { from: 2024, to: 2024 },
+    });
+    const out = await teams(t, [
+      {
+        key: "k",
+        name: "AZL Dodgers Lasorda Squad",
+        league: "Arizona Complex League",
+        yearsActive: { from: 2024, to: 2024 },
+        mlbamId: 8100,
+      },
+    ]);
+    expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
+    expect(out.results[0].disagreements?.[0]).toMatchObject({ field: "duplicate" });
+    expect(out.results[0].candidates?.map((c) => c.id)).toEqual([nb]);
+    expect(await allTeams(t)).toHaveLength(13);
+  });
+
   test("found only under another label: held as a name disagreement; the adopt answer lands and converges", async () => {
     const t = convexTest(schema, modules);
     armed();

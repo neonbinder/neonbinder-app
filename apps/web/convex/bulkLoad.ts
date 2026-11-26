@@ -1943,15 +1943,30 @@ async function loadTeams(
        * Only a row with NO MLB id can disagree with MLB. A row already
        * carrying one (any id) is MLB's own team: a sibling MLB lists beside
        * this one, or the same franchise under another name, never an NB row
-       * in conflict. So the hits are filtered to no-id rows first, then ranked
-       * with the same ranker, independent of the informational
-       * `nearExisting` cut above.
+       * in conflict. The `nearExisting` read above is sport-wide and capped,
+       * so id-carrying rows from other leagues ("Dodgers") can crowd an NB-only
+       * duplicate out of it, and the hold would fail open. The hold therefore
+       * reads its own candidates, narrowed to this league by the index, then
+       * filters to no-id rows with overlapping years and ranks them with the
+       * same ranker, independent of the informational `nearExisting` cut.
        */
       if (mlbamId !== undefined && !decided && leagueId) {
-        const noIdHits = hits.filter(
+        let leagueHits: Doc<"teams">[] = [];
+        if (term) {
+          leagueHits = await ctx.db
+            .query("teams")
+            .withSearchIndex("search_name", (q) =>
+              q
+                .search("nameNormalized", term)
+                .eq("sportId", sportId)
+                .eq("leagueId", leagueId),
+            )
+            .take(NEAR_EXISTING_SEARCH_CANDIDATES);
+          ops += 1;
+        }
+        const noIdHits = leagueHits.filter(
           (hit) =>
             hit.externalIds?.mlbamId === undefined &&
-            hit.leagueId === leagueId &&
             erasOverlap(hit.yearsActive, row.yearsActive),
         );
         const namedNoId = noIdHits.map((hit) => ({ hit, name: teamFullName(hit) }));
