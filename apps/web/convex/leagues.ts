@@ -132,7 +132,7 @@ export function normalizeLeagueName(raw: string): string {
  * than stored pre-normalised, so the stored list stays the operator's own
  * spelling (it is what the admin page shows back to them).
  */
-function leagueAnswersTo(row: Doc<"leagues">, nameNormalized: string): boolean {
+export function leagueAnswersTo(row: Doc<"leagues">, nameNormalized: string): boolean {
   if (!nameNormalized) return false;
   if (row.nameNormalized === nameNormalized) return true;
   return (row.aliases ?? []).some(

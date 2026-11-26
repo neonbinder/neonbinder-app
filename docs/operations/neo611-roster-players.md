@@ -18,6 +18,9 @@ the load epoch live in the private wrapper repo. This runbook calls that script
 
 Nothing in this document names a deployment, a dataset or a URL.
 
+For the MLB id link pass (players matched by MLB id, birth dates, disagreement
+reporting), see `neo676-mlb-pass.md`.
+
 ---
 
 ## 0. What the loader will and will not do
