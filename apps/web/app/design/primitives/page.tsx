@@ -200,6 +200,14 @@ export default function PrimitivesPage() {
                   description="You agree to our Terms of Service and Privacy Policy."
                   variant="withText"
                 />
+                <Checkbox label="Checked and uncontrolled" defaultChecked />
+                <Checkbox label="Unchecked, disabled" disabled />
+                <Checkbox label="Checked, disabled" defaultChecked disabled />
+                <Checkbox label="Checked, aria-disabled" defaultChecked aria-disabled />
+                <Checkbox className="text-xs text-ink-2" defaultChecked>
+                  Rich label with <strong className="text-ink">emphasis</strong> and a long
+                  tail that wraps onto a second line so the box stays on the first
+                </Checkbox>
               </div>
 
               {/* Switch */}
