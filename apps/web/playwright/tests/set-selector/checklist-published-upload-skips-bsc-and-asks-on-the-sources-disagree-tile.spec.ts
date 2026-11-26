@@ -38,6 +38,13 @@
 //      card holding the same disagreement no "Apply to the N cards with the same
 //      disagreement" is offered. Every other card is skipped (its names are not
 //      this spec's), so the end screen counts them skipped.
+//   3a. NEO-680 (Jason, 2026-11-25: a lone alias match "should be automatic with a
+//      purple pill tag that says it was linked"): before the fetch, Player
+//      Management gets a per-attempt Hockey player whose one alias is #2's
+//      checklist spelling. Picking that spelling links him by itself: the Player
+//      tile's row "Player <typo>" reads "Edit <him>" with ONE purple note "Linked
+//      by alias" under it, the tile is not pink, and nothing asks ("Link to …"
+//      offers no lead, no "is new to NeonBinder"). Axe runs on that tile.
 //   4. D2 (Jason, 2026-11-10): card #6, which no row could be pinned to, is
 //      looked up on BSC for just that card. Proof from the user's side:
 //      the "17 of 18" line (the other 17 took the checklist's answer, so BSC was
@@ -70,14 +77,22 @@
 // SOLE WRITER of that set (BSC only, 18 cards, reached through the All Brands
 // view); FRESH-ONLY, it commits the checklist, so a re-run on the same seed fails
 // at "No cards in this checklist yet." by name. Every name is left unanswered
-// (skipped in the walk), so no player or team is minted; the two picks write
-// only the picked spellings as pending names on #2 and #4.
+// (skipped in the walk), so the walk mints no player or team. The one player
+// this spec makes is the NEO-680 alias holder, added by hand in Player
+// Management before the drill (`Kip Okc<token>`, Hockey, alias = #2's misspelling,
+// which no other spec prints): #2's pick links the card to him, #4's pick writes
+// BSC's spelling as a pending name. The holder is minted, not a recorded
+// no-match (GUIDE "Enrichment fixtures"): every recorded Hockey no-match is a
+// name some fixture checklist prints, and a holder sharing one would link that
+// spec's card. Under the recording his lookup is refused (no live call), and
+// the row stays bare.
 //
 // Desktop and mobile: one spec, no branch (role and label locators; click()
 // scrolls). Axe runs in light and dark on the dialog's preview, Match Cards and
 // the walk's pink Sources disagree tile.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton, escapeRe } from "../../support/cards";
+import { addPlayerByHand, expectPlayersLoaded } from "../../support/players";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
   CHECKLISTS,
@@ -137,6 +152,9 @@ test(
     const typoFour = misspell(four.player);
     expect(typoTwo, "the misspelling changed the name").not.toBe(two.player);
     expect(typoFour, "the misspelling changed the name").not.toBe(four.player);
+    // NEO-680: the one Hockey player who answers to #2's checklist spelling, by a saved alias.
+    const holderSurname = `Okc${env.ATTEMPT_TOKEN}`;
+    const holder = `Kip ${holderSurname}`;
 
     // The paste: the published line format, one line per card, with the changes above.
     const lines = rows.map((r) => {
@@ -152,6 +170,22 @@ test(
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
+
+    // ── 0. NEO-680 fixture, from the UI: a Hockey player whose one alias is #2's checklist spelling ──
+    await page.getByRole("link", { name: "Players", exact: true }).click();
+    await expectPlayersLoaded(page);
+    await addPlayerByHand(page, holder, "Hockey");
+    const aliases = page.getByRole("textbox", { name: "Aliases", exact: true });
+    await expect(aliases, "added by hand, so he starts with no aliases").toHaveValue("");
+    await aliases.fill(typoTwo);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: `Saved ${holder}.` })).toBeVisible();
+    await expect(aliases).toHaveValue(typoTwo);
+    // He is the only one who answers to it: no "also answers to that name" line.
+    await expect(page.getByText(/also answers to that name/)).toHaveCount(0);
+    await page.goBack();
+    await expect(setBuilderReady(page)).toBeVisible();
+
     await openOneMarketplaceSetBase(page, env, { set: SET });
     // The precondition for a FIRST fetch (fresh-only): a re-run fails here, by name.
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
@@ -388,6 +422,20 @@ test(
         await expect(pinkTile(page, "Sources disagree")).toHaveCount(0);
         // No other card holds this disagreement, so there is nothing to apply it to.
         await expect(disagree.getByRole("button", { name: /^Apply to the [0-9]+ cards? with the same disagreement$/ })).toHaveCount(0);
+        if (number === "2") {
+          // NEO-680: one Hockey player answers to the picked spelling, by his saved alias, so the
+          // pick links him by itself: his Edit line, one purple "Linked by alias" note under it,
+          // and the tile stays plain (a purple note never makes a stop).
+          const playerTile = tidyTile(page, "Player");
+          const linkedRow = playerTile.getByRole("group", { name: `Player ${typoTwo}`, exact: true });
+          await expect(linkedRow.getByRole("button", { name: `Edit ${holder}`, exact: true })).toBeVisible();
+          await expect(linkedRow.getByRole("note")).toHaveText(["Linked by alias"]);
+          await expect(pinkTile(page, "Player")).toHaveCount(0);
+          // Nothing left to ask about the name: no "Link to …" offer, no "is new to NeonBinder".
+          await expect(playerTile.getByRole("button", { name: /^Link to / })).toHaveCount(0);
+          await expect(playerTile.getByText(/is new to NeonBinder/)).toHaveCount(0);
+          await expectAccessible(page, { within: playerTile, label: "Tidy Up walk, a Player row linked by alias" });
+        }
       } else {
         // Every other card's sources agree (#6 never paired a row, so the checklist cannot disagree with it).
         await expect(disagree).toHaveCount(0);
@@ -418,12 +466,17 @@ test(
     // its player in the search box, as a collector would.
     const search = page.getByRole("searchbox", { name: "Search cards" });
     // A pick writes the card's PLAYER (and regenerates its generated title), never the other
-    // source's spelling: read back from the title's own chips and the stored title.
-    for (const [n, picked, other] of [["2", typoTwo, two.player], ["4", four.player, typoFour]] as const) {
+    // source's spelling: read back from the title's own chips and the stored title. #2's spelling
+    // linked the alias holder (NEO-680), so his NB name is the title's player; #4's waits as BSC
+    // printed it. The search finds #2 by the name it printed, as the row shows it.
+    for (const [n, picked, titled, other] of [
+      ["2", typoTwo, holderSurname, two.player],
+      ["4", four.player, four.player, typoFour],
+    ] as const) {
       await search.fill(picked);
       await editCardButton(page, n).click();
-      await expect(cardTitle).toHaveValue(new RegExp(`\\b${escapeRe(picked)} #${n}\\b`));
-      await expect(builtFrom.filter({ hasText: picked })).toHaveCount(1);
+      await expect(cardTitle).toHaveValue(new RegExp(`\\b${escapeRe(titled)} #${n}\\b`));
+      await expect(builtFrom.filter({ hasText: titled })).toHaveCount(1);
       await expect(builtFrom.filter({ hasText: other })).toHaveCount(0);
       await drawer.getByRole("button", { name: "Done editing card" }).click();
       await expect(cardTitle).toBeHidden();
