@@ -9,6 +9,7 @@ import { WaitingOnMarketplaceRun } from "../modules/WaitingOnMarketplace";
 import { mintWaitKey } from "@/lib/marketplace/wait-key";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { Input } from "../primitives/Input";
+import { Checkbox } from "../primitives/Checkbox";
 import {
   BSC_NO_LINKED_SET_MESSAGE,
   NO_MARKETPLACE_IDS_MESSAGE,
@@ -1115,11 +1116,10 @@ function CandidateRow({
             <span className="sr-only">{`${label} is already attached`}</span>
           </span>
         ) : (
-          <input
-            type="checkbox"
+          <Checkbox
             checked={isSelected}
             onChange={() => onToggle(side, candidate, facet)}
-            className="accent-neon-green-text mt-1"
+            className="mt-0.5"
             aria-label={`Toggle ${label}`}
           />
         )}

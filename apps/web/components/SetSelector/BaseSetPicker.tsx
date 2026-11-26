@@ -4,6 +4,7 @@ import { Theme } from "@radix-ui/themes";
 import NeonButton from "../modules/NeonButton";
 import type { PlatformItem } from "./ReconciliationModal";
 import { Input } from "../primitives/Input";
+import { Checkbox } from "../primitives/Checkbox";
 import { PAUSE_NOTICE_COPY, sideLabel } from "@/lib/marketplace/pause-notice";
 import { unaskedSideCopy } from "@/lib/marketplace/unasked-side";
 import {
@@ -1021,18 +1022,16 @@ export default function BaseSetPicker({
                   {hiddenSectionCount > 0 && baseLikeSections.length > 0 && (
                     // The visible label names the box (A4), count and all;
                     // the label is the 24px target (A-N8).
-                    <label className="mt-1 flex min-h-6 items-center gap-2 text-xs text-ink-3 select-none cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={showAllSections}
-                        onChange={(e) => {
-                          setShowAllSections(e.target.checked);
-                          setChecklistFocusIndex(0);
-                        }}
-                        className="h-3.5 w-3.5 rounded border-control bg-raised text-neon-teal-text focus-outline"
-                      />
+                    <Checkbox
+                      className="mt-1 text-xs text-ink-3 select-none"
+                      checked={showAllSections}
+                      onChange={(e) => {
+                        setShowAllSections(e.target.checked);
+                        setChecklistFocusIndex(0);
+                      }}
+                    >
                       {`Show all checklist sections (${hiddenSectionCount} more)`}
-                    </label>
+                    </Checkbox>
                   )}
                 </>
               )}

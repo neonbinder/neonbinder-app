@@ -7,6 +7,7 @@ import {
   type ExpectedFeature,
 } from "../../convex/features/expectedFeatures";
 import { FeatureValueControl } from "./FeatureValueControl";
+import { Checkbox } from "../primitives/Checkbox";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 
 /**
@@ -207,27 +208,26 @@ function CardFeatureRow({
       }
     };
     return (
-      <label
-        className="flex flex-row items-center gap-2 p-1.5 rounded border text-xs border-rule-strong bg-raised-deep/30"
+      <div
+        className="flex flex-row items-center p-1.5 rounded border text-xs border-rule-strong bg-raised-deep/30"
         aria-label={`Feature ${label}`}
       >
-        <input
-          type="checkbox"
+        <Checkbox
           checked={cardIsRookie === true}
           disabled={boolBusy}
           onChange={(e) => void handleToggle(e.target.checked)}
           aria-label={`Value for ${label}`}
-          className="accent-neon-green-text"
-        />
-        <span className="text-[10px] uppercase tracking-wide text-ink-3">
-          {label}
-        </span>
-        {boolError && (
-          <span className="text-[10px] text-neon-pink-text" role="alert">
-            {boolError}
+        >
+          <span className="text-[10px] uppercase tracking-wide text-ink-3">
+            {label}
           </span>
-        )}
-      </label>
+          {boolError && (
+            <span className="ml-2 text-[10px] text-neon-pink-text" role="alert">
+              {boolError}
+            </span>
+          )}
+        </Checkbox>
+      </div>
     );
   }
 
