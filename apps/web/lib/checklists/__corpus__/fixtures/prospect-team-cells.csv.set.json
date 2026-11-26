@@ -1,0 +1,30 @@
+{
+  "file": "prospect-team-cells.csv",
+  "mode": "set",
+  "options": {"mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"1,Gunnar Henderson,Prospect","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Colt Keith,Prospect (Oklahoma)","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Bobby Witt Jr.,Prospect (Dallas Baptist)","reason":"Not under any section heading"},
+      {"line":5,"text":"4,J.P. Crawford,Seattle","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Seiya Suzuki,Chicago","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"1,Gunnar Henderson,Prospect","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Colt Keith,Prospect (Oklahoma)","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Bobby Witt Jr.,Prospect (Dallas Baptist)","reason":"Not under any section heading"},
+      {"line":5,"text":"4,J.P. Crawford,Seattle","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Seiya Suzuki,Chicago","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

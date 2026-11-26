@@ -1,22 +1,39 @@
 ---
 name: reference_hand_made_rows_cannot_reach_the_commit_path
-description: A fetch on a hand-made row (no marketplace ids) returns "No marketplace ids on this path" BEFORE it reads a publisher's checklist, so no spec can drive commitCardChecklistChunk on a hand-made set; card-birth proofs there go through quick-add or the parallel build
+description: A hand-made row (no marketplace ids) DOES reach the review gate and the commit when a checklist is in play (leaf "Add the official checklist" or a stored set-checklist section linked via Reconcile; NEO-496 D10, checklist-only solo fetch). Without a checklist the fetch stops at "No marketplace ids on this path" and creates nothing
 metadata:
   type: reference
 ---
 
-`fetchCardChecklist` (convex/selectorOptions.ts, the `resolvableSides` check) returns
-`NO_MARKETPLACE_IDS_MESSAGE` with `candidateCount: 0` when neither side is resolvable,
-and that return comes before anything reads `args.publishedChecklist`. So "upload the
-publisher's checklist onto a hand-made row and commit it" is not a path: nothing is
-created. The three card-creation paths are `commitCardChecklistChunk` (a real fetch on a
-set with marketplace ids), `addCustomCard` (quick-add) and `parallelChecklistBuild`
-(a parallel built from its source's cards; no marketplace needed).
+`fetchCardChecklist` (convex/selectorOptions.ts) returns `NO_MARKETPLACE_IDS_MESSAGE` with
+`candidateCount: 0` only when neither side is resolvable AND no published checklist is in
+play (`!published`, NEO-496 D10). With a checklist (pasted/uploaded on the leaf through
+"Add the official checklist", or the set's stored checklist section the row is linked to)
+the run goes on with the checklist as its ONE source: no Match Cards dialog (one source is the
+solo path), every row a checklist-only candidate that reaches `resolveUnknownsAndStartBatch`
+(the review gate) and the commit exactly as a marketplace fetch's do, then the commit, and the Tidy up walk when a card needs a person (unknown
+names, a team question) or a direct commit ("Saved N cards. Teams from your checklist: N of N
+cards.").
 
-**Why:** NEO-528 asked for "store a value, then let a fetch's commit create the cards" on a
-hand-made row; it cannot be done, and a real set needs owner approval (SET-REGISTRY
-"Adding a set").
-**How to apply:** for any "new cards are born with X" feature, prove it on a hand-made set
-through quick-add (and the parallel build if the feature touches it); a commit-path proof
-is a real-set proposal to the coordinator, never an improvised fixture.
-Related: [[patterns_cameo_specs_and_sorted_binder_pages]]
+So a per-attempt hand-made set CAN prove "a fetch's commit creates cards with X": upload a
+small hand-written CSV on the leaf, Sync, read the cards back, delete them. Used by NEO-591
+`checklist-prospect-and-place-team-cells-ask-only-the-unsettled-on-the-team-tile` (Baseball > 2024 > Topps, sport must be real
+when the feature resolves teams/players against the set's sport).
+
+Recipe (NEO-602 `checklist-team-name-on-two-eras-follows-the-player`): `drillToCustom` to a
+private sport/year/brand/set + Insert > Base (empty checklist shows Sync + "Add the official
+checklist"), `usePastedChecklist(page, "number,player,team\n1,<player>,<team>", 1)`, press
+`syncChecklistButton`; the cards are saved at once ("Saved 1 card") and the walk opens only when a name needs a look (a Player row). Players/teams made
+in a custom sport (no `sportConfig.wikidata`) resolve at the gate with no lookup.
+
+A hand-made SET with a stored checklist: the Inserts column's first visit opens Reconcile
+Inserts with the sections (BSC/SportLots "wasn't asked"); "Make its own set from checklist
+section: <name>" then "Save 1 sets" makes a linked insert whose sync is checklist-only.
+
+Without a checklist the three card-creation paths are still quick-add (`addCustomCard`),
+the parallel build and a real fetch.
+
+**Why:** the earlier note (NEO-528) predates NEO-496 D10 and led specs to think a real set
+was needed. **How to apply:** before proposing a real set for a commit-path proof, try a
+hand-made set plus a leaf checklist.
+Related: [[patterns_cameo_specs_and_sorted_binder_pages]], [[patterns_checklist_is_a_match_cards_source]], [[patterns_checklist_is_a_match_cards_source]]

@@ -19,11 +19,13 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { ConvexError } from "convex/values";
 import React from "react";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
+    careerCoverage: { careerGaps: "careerCoverage.careerGaps" },
     selectorOptions: {
       getCardChecklist: "getCardChecklist",
       getSelectorOptionById: "getSelectorOptionById",
@@ -70,15 +72,13 @@ vi.mock("react-virtuoso", () => ({
 }));
 
 vi.mock("./CardDetailPanel", () => ({ default: () => null }));
-vi.mock("./EntityReviewWizard", () => ({ default: () => null }));
 vi.mock("./CardPairingModal", () => ({ default: () => null }));
 vi.mock("./sync-review-modal", () => ({
   default: () => null,
   needsSyncReview: () => false,
 }));
 vi.mock("./CrossListingImportModal", () => ({ default: () => null }));
-vi.mock("./CardAttentionWalker", () => ({ default: () => null }));
-vi.mock("./SkippedNamesPanel", () => ({ default: () => null }));
+vi.mock("./tidy/TidyUpWalk", () => ({ default: () => null }));
 vi.mock("./TeamPicker", () => ({ default: () => null }));
 vi.mock("./PlayerPicker", () => ({ default: () => null }));
 
@@ -125,11 +125,13 @@ function card(n: string, name: string) {
 
 function ui() {
   return (
-    <CardChecklist
-      variantId={VARIANT_ID}
-      sourceChips={{}}
-      sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-    />
+    <MemoryRouter>
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      />
+    </MemoryRouter>
   );
 }
 

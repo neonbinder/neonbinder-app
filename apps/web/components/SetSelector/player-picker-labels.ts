@@ -106,6 +106,13 @@ export const ALSO_PICTURED_PICKER_LABELS: ResolvedPlayerPickerLabels = {
 export const ALSO_ON_THIS_CARD_HEADING = "Also on this card";
 
 /**
+ * NEO-528 — said when someone picked as a cameo is already the card's own
+ * player. The drawer's field and the Tidy Up walk's "+ Cameo" both say it
+ * beside the pick rather than letting the server quietly drop the id.
+ */
+export const ALREADY_A_PLAYER_MESSAGE = "They're already this card's player. No cameo needed.";
+
+/**
  * NEO-528 — the Attributes panel's "Player on every card" section heading
  * (and its region's name). The picker below it is `EVERY_CARD_PLAYER_PICKER_LABELS`.
  */

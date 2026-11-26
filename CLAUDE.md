@@ -68,13 +68,26 @@ whether they do or don't."
    only when the ids that side needs are present; otherwise that side is
    skipped, never guessed by name. `isCustom` is being retired
    (NEO-239).
-7. **Card number is the strongest key, but it is not guaranteed unique.**
-   Within a set a card number is almost always unique (Jason, 2026-10-08:
-   "probably 99.99%"), far more often than a player, who frequently has
-   several cards in one set. Rank the number above the player when
-   matching, but never key logic on a card number without an
-   exactly-one-match guard. A number/player disagreement is a likely
-   misread to surface as a conflict, never one to settle silently.
+7. **Match on names first; numbers confirm.** Sources number the same
+   cards differently (BSC "OV-ANFI" against a checklist's NNO; letters on
+   one side, digits on the other), so the name is the key and the number
+   is a confirmation.
+   - A name pairs only on an exactly-one match on each side. A player with
+     several cards in the set is not unique by name: the number (or the
+     operator) decides among that player's cards, and a tie stays
+     unmatched.
+   - Names agree, numbers differ or are missing on one side: matched, at a
+     lower confidence, with a note that the numbers didn't match. Never a
+     silent overwrite of either side.
+   - The NB card's number, when the sources differ, prefers letters, then
+     digits, then NNO (a number with letters is the more specific print).
+     An NB card that already exists is never renumbered by a sync.
+   - Two different plain-digit numbers never pair automatically; numbers of
+     different kinds (letters, digits, NNO) pair at lower confidence. A bare
+     number and the same number with "a" agree. The operator can pick
+     either source's number.
+   - Never key logic on a card number without an exactly-one-match guard;
+     within a set a number is almost always unique, not always.
 
 Marketplace refs may be read only inside the sync/adapter boundary, to
 route a marketplace's own update to the row linked to it.
@@ -131,8 +144,8 @@ re-measure before quoting them for Playwright.
    `services/browser` — they are not the expensive part, and they catch most
    breakage without a round trip.
 3. **Run the specs covering the change on this worktree's own Convex
-   deployment**, before the first push (below). Seller specs and cloud threads
-   use shared dev instead.
+   deployment**, before the first push (below). Cloud threads use shared dev
+   instead.
 4. **Audit once.** One full audit round per ticket (the auditors the change
    calls for, all in parallel). After the fixes, re-audit only the delta: the
    fix commits, sent to every auditor whose findings they answer or whose
@@ -190,10 +203,20 @@ run off-queue.
    these checks. In the Claude-run flow a green `CI Gate` is not E2E proof:
    require the `E2E / e2e` gate check run on the head SHA (not `Playwright E2E`,
    which is only the report), no exceptions.
-6. **Keep watching in the same session** with `pr-watch --queue <PR>`, which
-   ends in `MERGED`, `EJECTED` (GitHub removed it by itself; reason and failing
-   run/job included) or `REMOVED` (anything else: stop and tell Jason, never
-   re-enqueue). A green PR run alone is never "green". Discord is a backup for
+6. **Keep following it in the same session** with one background Bash command
+   (`run_in_background`), which wakes the session once, when the PR leaves the
+   queue:
+
+   ```bash
+   until s=$(gh api graphql -F n=<PR> -f query='query($n:Int!){repository(owner:"neonbinder",name:"neonbinder-app"){pullRequest(number:$n){state isInMergeQueue}}}' -q '.data.repository.pullRequest|"\(.state) \(.isInMergeQueue)"') && [ "$s" != "OPEN true" ]; do sleep 120; done; echo "$s"
+   ```
+
+   `MERGED false` is **MERGED**. `OPEN false` means it left the queue: if the
+   latest `merge_group` run for it (`gh run list --event merge_group --limit 20
+   --json headBranch,conclusion,url`, head branch
+   `gh-readonly-queue/main/pr-<PR>-*`) failed, it is **EJECTED**; anything else
+   (a person, a closed PR) is **REMOVED**: stop and tell Jason, never
+   re-enqueue. A green PR run alone is never "green". Discord is a backup for
    when no session is alive, not the signal.
 7. **`MERGED`:** `pr-close` does the production check, smoke test, Linear and
    cleanup. **`EJECTED`:** triage it like a Claude-run red (step 7 of the
@@ -227,7 +250,7 @@ deployment, created through
 [Convex agent mode](https://docs.convex.dev/cli/agent-mode), so a reset or a code
 push from one session cannot change another session's run. The local Convex
 backend is not used, because it has no public URL and the app needs live
-integrations. Seller specs and cloud threads are the exceptions (next section).
+integrations. Cloud threads are the exception (next section).
 
 1. **Bring the branch onto latest main** (`git fetch origin main && git merge
    origin/main`).
@@ -299,6 +322,10 @@ integrations. Seller specs and cloud threads are the exceptions (next section).
    npx playwright test --project=e2e --no-deps <path-substring>
    ```
 
+   Or, all of the above in one command with its guards and a short digest:
+   `node playwright/tools/e2e-run.mjs run <path-substring>` (usage in
+   `apps/web/playwright/QUICK.md`; GUIDE.md → **Running**).
+
 5. **The deployment is yours.** Push new code with `npx convex dev --once` whenever
    the branch changes, and reset and re-seed as often as a fresh-only spec needs.
 6. **Delete it when the ticket closes**, before removing the worktree. An idle
@@ -328,18 +355,24 @@ integrations. Seller specs and cloud threads are the exceptions (next section).
 
 What a per-worktree deployment does not separate or cover:
 
-- **Marketplace sellers.** SportLots and the eBay sandbox each have one test
-  seller. Do not connect a seller on your own deployment: every deployment runs
-  the 15-minute sales poll against the seller connected there. `@marketplace-seller`
-  (eBay) specs run on shared dev or a PR preview (next section). BuySportsCards is
-  the fake (NEO-552) with one account per test user, so BSC specs run on your own
-  deployment.
+- **Marketplace sellers.** BuySportsCards (NEO-552) and eBay (NEO-555) are both
+  the standing fake (`services/fake-bsc`, CONTRACT.md) on every test deployment,
+  with one account per test user, so their listing, sale and takedown specs run
+  on your own deployment, in parallel, and nothing you do there reaches a real
+  marketplace. eBay is the fake when the deployment's `EBAY_ENVIRONMENT` is
+  `fake`; the agent-convex script copies it with the rest of dev's env, and
+  `npx convex run fakeBsc:ebayTarget` says `fake` when it is wired. SportLots
+  has one real test seller: do not connect it on your own deployment, because
+  every deployment runs the 15-minute sales poll against the seller connected
+  there.
 - **Saved marketplace logins.** The browser service keys them by Clerk user, not
   by deployment, with one exception: on a deployment wired to the fake
   BuySportsCards the BSC login is keyed by deployment AND user
-  (`buysportscards-credentials-fake-<slug>-<user>`, NEO-552), so BSC specs on
+  (`buysportscards-credentials-fake-<slug>-<user>`, NEO-552), and likewise the
+  eBay login on a deployment wired to the fake eBay
+  (`ebay-credentials-fake-<slug>-<user>`, NEO-555), so those specs on
   your deployment never share a session with CI or another worktree. SportLots
-  and eBay logins are still per user. Locally, a worker with no `TEST_EMAIL_<n>`
+  logins are still per user. Locally, a worker with no `TEST_EMAIL_<n>`
   falls back to `TEST_EMAIL`, so those workers are one user in every worktree. A
   reset stays on your deployment, but those saved logins are shared. Avoid any
   worker that has its own `TEST_EMAIL_<n>` while CI is running, because CI signs
@@ -347,10 +380,13 @@ What a per-worktree deployment does not separate or cover:
 - **PR service code.** The deployment calls the dev `services/browser` and
   `services/preprocess`. A spec covering a change there runs against the PR's
   preview after the first push.
-- **Single-host integrations.** eBay's OAuth redirect and deletion endpoint are
-  registered to one host, so connecting eBay through the UI does not work here.
-  Buying or tracking a label registers a webhook per deployment on the one dev
-  EasyPost account.
+- **Single-host integrations.** Buying or tracking a label registers a webhook
+  per deployment on the one dev EasyPost account. Connecting eBay through the UI
+  works on every test deployment: in fake mode Connect goes to the testing
+  consent page (`/testing/fake-ebay/authorize`, on your own origin), not to
+  eBay's registered redirect. A deployment on the real eBay sandbox or
+  production (`EBAY_ENVIRONMENT=sandbox|production`) still has the registered
+  host only; never point your own deployment at it.
 
 Limits: the deployment expires 5 days after creation because the block passes
 `--expiration`. Always pass it: each deployment holds a full copy of dev's secrets.
@@ -359,11 +395,12 @@ close-out (step 6) rather than leaving it to expire. The env copy is a snapshot:
 long-lived deployment's env changes. A rotated dev secret's old value stays on these
 deployments until they expire or you copy again.
 
-#### Cloud threads and seller specs: shared dev (NEO-390)
+#### Cloud threads: shared dev (NEO-390)
 
-Cloud threads cannot create a per-worktree deployment yet, and seller specs need
-the shared eBay sandbox seller. Both run on the shared dev deployment. Everything on it moves
-forward only, because every session and thread shares it:
+Cloud threads cannot create a per-worktree deployment yet, so they run on the
+shared dev deployment. (Seller specs no longer need it since NEO-555: eBay is
+the fake, like BuySportsCards.) Everything on it moves forward only, because
+every session and thread shares it:
 
 1. **Bring the branch onto latest main** (`git fetch origin main && git merge
    origin/main`). Never push a branch that is behind main onto dev: that rolls
@@ -386,9 +423,8 @@ forward only, because every session and thread shares it:
    that user's binders, boxes and copies. Only one session at a time can run specs
    on them, so agree the order in the thread. Set `PAUSED_PLATFORMS` to dev's
    `NEONBINDER_PAUSED_PLATFORMS`.
-5. **One seller session at a time.** Before a `@marketplace-seller` (eBay) spec, check that
-   no CI seller job is in progress. CI's seller queue cannot see local runs, so agree
-   the order in the thread.
+5. **Do not connect SportLots on dev.** It is the one real seller left (eBay and
+   BuySportsCards are the fake, NEO-555); agree any SportLots run in the thread.
 6. **Dev is not reseeded per run.** It keeps whatever the last run left. A spec
    that needs a fresh seed (fresh-only, or a precondition such as "this set does
    not exist yet") needs the reset, which wipes dev under every other session:
@@ -484,7 +520,7 @@ npm run test:e2e:seed    # e2e-baseline.sh reset + the setup (seed) project
 > "Run your specs on your own Convex deployment before the first push"
 > above. **Nobody deploys to any dev deployment from CI** (NEO-249). A developer's
 > long-lived dev deployment is the env source for those deployments and the shared
-> home of cloud threads and seller specs ("Cloud threads and seller specs: shared dev" above), so a push there brings
+> home of cloud threads ("Cloud threads: shared dev" above), so a push there brings
 > the branch onto latest main first. Point local Vite at **that PR's Convex preview**
 > only when your own deployment cannot reproduce a CI red — see "Debugging a red spec
 > against the PR's own services" above.
@@ -673,7 +709,7 @@ Sensitive credentials are stored in **Google Cloud Secret Manager**, not `.env` 
 
 ## Agents and skills
 
-`.claude/agents/` and `.claude/skills/` in this repo are the **single source** for the specialist agents and the `pr-watch`, `pr-close`, `pr-queue`, `deps-batch` and `impeccable` skills; there is no other copy. `impeccable` is a vendored third-party skill (its version is in `scripts/VERSION`); its launcher downloads a per-platform engine binary into the user's cache on first run, so `scripts/bin/` is gitignored and never committed. Agent memory under `.claude/agent-memory/<agent>/` is committed and public, so it holds **patterns only** (driver quirks, house conventions, gates that lie) — never a deployment name, account, secret name, internal URL or incident. An agent that learns something operational reports it under *Private notes* for the coordinator instead of saving it. Change an agent or skill through a normal PR.
+`.claude/agents/` and `.claude/skills/` in this repo are the **single source** for the specialist agents and the `pr-close`, `pr-queue`, `deps-batch` and `impeccable` skills; there is no other copy. `impeccable` is a vendored third-party skill (its version is in `scripts/VERSION`); its launcher downloads a per-platform engine binary into the user's cache on first run, so `scripts/bin/` is gitignored and never committed. Agent memory under `.claude/agent-memory/<agent>/` is committed and public, so it holds **patterns only** (driver quirks, house conventions, gates that lie) — never a deployment name, account, secret name, internal URL or incident. An agent that learns something operational reports it under *Private notes* for the coordinator instead of saving it. Change an agent or skill through a normal PR.
 
 Agent memory lives at the **repo root** `.claude/agent-memory/<agent>/` and nowhere else. Agents write memory relative to their working directory, so a session started in `apps/web` will happily create `apps/web/.claude/agent-memory/` and then read a much smaller index than a root-level session — the two diverge silently and knowledge is lost rather than shadowed. If you are working under `apps/web`, write memory to the root path explicitly. The `repo-hygiene` job in `pr-pipeline.yml` fails any PR that leaves a `.claude/` directory outside the repo root.
 
@@ -694,7 +730,7 @@ done
 
 Rules for a cloud thread:
 
-1. **Check the skills at the start.** If `pr-watch` is not among your skills, run the loop above yourself; the skills load at once.
+1. **Check the skills at the start.** If `pr-close` is not among your skills, follow the loop above yourself; the skills load at once.
 2. **Run each agent as a `general-purpose` agent briefed with its file.** Tell it to read `.claude/agents/<name>.md` and follow it as its instructions, including its model and effort if your Agent tool takes them, and its memory under `.claude/agent-memory/<name>/`. Never fold an audit into your own turn; the point of the auditors is a read that is not anchored on yours.
 3. **Name what ran in the PR body**: which agent files were run this way, and what each found.
 4. Agent memory the stand-in writes goes to this checkout's `.claude/agent-memory/<name>/`; ship it in the PR like any other change.
@@ -705,24 +741,26 @@ Rules for a cloud thread:
 
 All workflows live in `.github/workflows/`. `pr-pipeline.yml` is the single all-PR orchestrator; area CI is keyed on `apps/web/**` vs `services/browser/**` vs `services/preprocess/**`:
 
-- **`pr-pipeline.yml`** — the top-level per-PR orchestrator (runs on **every** PR, no path filter). `changes` (paths filter → `web` / `browser` / `preprocess` outputs) → conditional **`web-lint`** + **`web-unit`** (apps/web eslint + vitest), **`browser-test`** (services/browser build + unit) and **`preprocess-test`** (services/preprocess ruff + pytest) → **`web-preview`** (builds the PR's Vercel preview) → `wire-browser-url` (when `services/browser` changed: point the Convex preview's `NEONBINDER_BROWSER_URL` at this PR's `pr-<N>` browser preview) → **`e2e`** (calls the reusable `e2e.yml`) → **`ci-gate`**. **`preprocess-crop-matrix`** (NEO-191) hangs off `wire-preprocess-url` alongside `e2e` — a strict subset of e2e's dependencies, so the two run concurrently and it adds no wall-clock — and sends the 11 real-card fixtures to the PR's own `pr-<N>` preprocess revision to assert crop/deskew/rotate geometry. It is in *this* file rather than `preprocess.yml` precisely so `ci-gate` can make it blocking; a path-filtered workflow cannot be a required check. `wire-preprocess-url` itself holds until the `pr-<N>` heavy **and** fast revisions report `PREVIEW_SHA` equal to the PR head SHA (NEO-484), using `.github/scripts/wait-preprocess-revision.sh`, which the crop matrix re-runs as a one-poll re-check so the two share one definition. Its first wait only sees the `pr-<N>` URL stop 404ing, which on any **second-or-later push** is already true of the *previous* push's revision, so without the SHA wait `e2e` (which needs this job) started against a stale container while the new image was still building. Ceilings: heavy 40 min, fast 15 min after it; a deploy that never arrives fails `wire-preprocess-url` with an `::error::` rather than falling through to the stale revision, and `e2e` then does not run. PRs that do not touch `services/preprocess` skip the job and take no wait. On a later preprocess push `e2e` therefore starts only after the new image is built and deployed.
+- **`pr-pipeline.yml`** — the top-level per-PR orchestrator (runs on **every** PR, no path filter). `changes` (paths filter → `web` / `browser` / `preprocess` outputs) → conditional **`web-lint`** + **`web-unit-shard`** ×3 → **`web-unit`** (apps/web eslint + vitest; NEO-628: the shards run `vitest --shard=i/3` with blob reports, and `web-unit` keeps the name `ci-gate` reads, merges the blobs and runs `verify-test-completeness.mjs` on the merged JSON), **`browser-test`** (services/browser build + unit) and **`preprocess-test`** (services/preprocess ruff + pytest) → **`web-preview`** (builds the PR's Vercel preview) → `wire-browser-url` (when `services/browser` changed: point the Convex preview's `NEONBINDER_BROWSER_URL` at this PR's `pr-<N>` browser preview) → **`e2e`** (calls the reusable `e2e.yml`) → **`ci-gate`**. **`preprocess-crop-matrix`** (NEO-191) hangs off `wire-preprocess-url` alongside `e2e` — a strict subset of e2e's dependencies, so the two run concurrently and it adds no wall-clock — and sends the 11 real-card fixtures to the PR's own `pr-<N>` preprocess revision to assert crop/deskew/rotate geometry. It is in *this* file rather than `preprocess.yml` precisely so `ci-gate` can make it blocking; a path-filtered workflow cannot be a required check. `wire-preprocess-url` itself holds until the `pr-<N>` heavy **and** fast revisions report `PREVIEW_SHA` equal to the PR head SHA (NEO-484), using `.github/scripts/wait-preprocess-revision.sh`, which the crop matrix re-runs as a one-poll re-check so the two share one definition. Its first wait only sees the `pr-<N>` URL stop 404ing, which on any **second-or-later push** is already true of the *previous* push's revision, so without the SHA wait `e2e` (which needs this job) started against a stale container while the new image was still building. Ceilings: heavy 40 min, fast 15 min after it; a deploy that never arrives fails `wire-preprocess-url` with an `::error::` rather than falling through to the stale revision, and `e2e` then does not run. PRs that do not touch `services/preprocess` skip the job and take no wait. On a later preprocess push `e2e` therefore starts only after the new image is built and deployed.
   - **`web-preview`** (NEO-162) builds the preview with the Vercel CLI. The Vercel **git integration is disabled for every branch** (`apps/web/vercel.json`), so nothing deploys itself — same reasoning as NEO-143's production lane, applied to previews. It exists because Vercel built for every PR including ones touching no web code, while `changes` already knew better; the decision now lives on the side that has the information. It also collapsed three byte-identical copies of a "poll the GitHub Deployments API for the vercel[bot] deployment" block (both wire jobs + `e2e.yml`'s setup) into one job output, so they can no longer disagree about which preview a PR has.
-  - **The preview is not just a preview.** `vercel.json`'s `buildCommand` runs `npx convex deploy`, so building it is also what creates the per-PR **Convex** preview that both wire jobs write env vars to and that E2E runs against. That is why `web-preview`'s condition is `deps_only` — matching `e2e` exactly, *not* the narrower `changes.outputs.web`. **If you ever narrow one, narrow both**, or you get a PR that runs E2E with no backend to run it against.
+  - **The preview is not just a preview.** `vercel.json`'s `buildCommand` runs `npx convex deploy`, so building it is also what creates the per-PR **Convex** preview that both wire jobs write env vars to and that E2E runs against. That is why `web-preview`'s condition is `deps_only` and `e2e_inert` (NEO-627) — matching `e2e` exactly, *not* the narrower `changes.outputs.web`. **If you ever narrow one, narrow both**, or you get a PR that runs E2E with no backend to run it against.
   - `web-preview` also records the preview as a **GitHub Deployment**. That is not bookkeeping: `preview-cleanup.yml` finds the PR's Convex preview through that record, and its "no record ⇒ nothing to clean up" guard exits 0 — so without it, every Convex preview would leak silently. **`ci-gate`** is the single **required** status check: it `always()` runs and passes iff every in-scope job succeeded (out-of-area jobs skip), so web/browser lint+unit+E2E all block merge **without wedging** out-of-area PRs. A PR touching web + browser is validated end-to-end against its **own** browser code; web-only PRs run E2E against the dev browser default. **Vercel stays "dumb"** (SPA build + `convex deploy` only — it never calls the browser service); the browser-URL wiring is a deployment concern that lives here. *(web lint/unit are inlined here; there is no separate `web-ci.yml`.)*
-- **Merge queue (`MERGE_QUEUE=true`):** the same workflows also run on `merge_group`, and the full stack runs there instead of on the PR (workflow detail lives in the workflow files). `ci-gate` stays the single required check. The `pr-queue`, `pr-watch`, `pr-close` and `deps-batch` skills branch on the variable; see the PR loop above.
+- **Inert-path skip (NEO-627):** `changes` runs `.github/scripts/e2e-scope.sh`, which sets `e2e_inert=true` only when every changed path (renames count both names; on `merge_group` the diff from the merge base with the base branch, so a PR queued ahead that is not yet merged is included) is `.claude/**` (except paths an area filter covers, e.g. agents, which run full E2E), `docs/**`, a repo-root `*.md`, `services/fake-bsc/recorder/**`, `services/fake-bsc/tests/**` or `services/fake-bsc/README.md` (not `CONTRACT.md`, which browser tests read). `web-preview`, the three `wire-*` jobs, `preprocess-crop-matrix` and `e2e` then skip together, and `ci-gate-verdict.sh` accepts `e2e=skipped` iff `e2e_inert=true`. The `changes` job ANDs that verdict with the area path filters (`e2e-inert-final.sh`), and `ci-gate-verdict.sh` refuses the skip if any filter is true. Fail-closed to full on anything unclear, and on the `run-e2e` label. Before adding a path to the list, grep that nothing reads it at build or test time.
+- **Merge queue (`MERGE_QUEUE=true`):** the same workflows also run on `merge_group`, and the full stack runs there instead of on the PR (workflow detail lives in the workflow files). `ci-gate` stays the single required check. The `pr-queue`, `pr-close` and `deps-batch` skills branch on the variable; see the PR loop above.
 - **`release.yml`** — ⚠️ **the single driver of every push-to-`main` production deploy** (NEO-143). `changes` (path diff → `fake_bsc` / `browser` / `preprocess`) → the fake BSC's dev deploy lane (NEO-552), then those services' deploy lanes **to 100% traffic** → **then** the web job: `vercel pull` / `vercel build` (this is where `npx convex deploy` pushes production Convex) → `vercel deploy --prebuilt --prod --skip-domain` → smoke the staged build → `vercel promote`. Servers lead their clients: Convex is a client of the browser service, the SPA is a client of Convex. Before NEO-143 all three deployed in parallel from the same commit, putting ~5.5 minutes of new-Convex-against-old-browser-service in front of real users. **Do not add a `push:` trigger to any other workflow** — that is exactly what re-creates the race. Note Convex itself *cannot* be staged (one production deployment, and it owns its database), so the Convex push is a hard mid-job cutover; read `services/browser/README.md` → **Release contract** before changing anything on the Convex ↔ browser boundary.
 - **`browser.yml`** — `services/browser` build + unit tests + the **per-PR browser preview** (builds the image, deploys a `pr-<N>` tagged, **no-traffic** Cloud Run revision on the dev service, runs a fake-BSC probe (`/probe/bsc`, NEO-552) and a real SportLots login probe against it). **Pre-merge only.**
 - **`fake-bsc.yml`** / **`fake-bsc-deploy.yml`** (NEO-552) — `services/fake-bsc` build + unit tests per PR, and its deploy lane (called by `release.yml` ahead of the browser lane, and by `workflow_dispatch`). The fake is a standing dev Cloud Run service that every preview, worktree deployment and dev call instead of BuySportsCards; its recordings live only in its bucket. `bsc-drift.yml` is the daily real-BSC shape check through the prod browser service's `/probe/bsc`. See `services/fake-bsc/CONTRACT.md`.
 - **`browser-deploy.yml`** / **`preprocess-deploy.yml`** — the prod deploy lanes, `workflow_call`-only (invoked by `release.yml`; `workflow_dispatch` is retained for dev-only validation). **Both** dev and prod use blue/green — deploy at 0% under a `sha-<short>` tag, probe/smoke the tagged URL, then one atomic `update-traffic` that promotes *and* drops the tag (NEO-114). There is deliberately **no rollback job**: nothing is promoted until the probe passes, so there is nothing to roll back (NEO-67). Gated on the `BROWSER_DEPLOY_ENABLED` / `PREPROCESS_DEPLOY_ENABLED` repo variables.
 - **`preprocess.yml`** — `services/preprocess` lint + unit tests + the **per-PR preprocess preview** (`pr-<N>` tagged no-traffic revision on the dev service + smoke + sticky PR comment). **Pre-merge only.**
-- **`e2e.yml`** — reusable (`workflow_call`) Playwright suite (`apps/web/playwright/`): two passes, each on a freshly seeded preview (fresh-only and sole-writer specs pass once per seed): `setup` → `seed` (scripted reset + the `setup` project, worker 0) → **`shard-desktop` ×8** (`--project=e2e`) → `seed-mobile` (needs every desktop shard, runs even if desktop has reds; reset + `setup` again) → **`shard-mobile` ×8** (`--project=e2e-mobile`), each shard given an explicit file list by `shard-plan.mjs <N> <i> --project <p>` (longest-first over that project's timings, which the best-effort `timings` job rebuilds beside `seed` from the median of the last few green runs' reports, falling back to the committed `timings.json`; NEO-389; `playwright/project-scope.mjs` lists the few specs one project leaves out) and running the `bootstrap` project for its own test account first (so each pass re-bootstraps after its reset) → beside each pass's shards, a **`seller-desktop`** / **`seller-mobile`** job runs the marketplace-seller listing specs (`SELLER_SPECS` in `project-scope.mjs`, tag `@marketplace-seller`; no shard plans them; eBay only since NEO-552, so the list may be empty and the job then passes as a no-op) as worker 8, one PR at a time repo-wide behind an in-job queue (`.github/scripts/seller-queue.sh`: polls this repo's other runs' jobs, fails closed, first come first served, never cancels, 60 min cap; `seed-mobile` waits for `seller-desktop` because its reset wipes the preview; once its turn comes the job ends every eBay sandbox listing) because every PR shares one eBay sandbox seller account; BuySportsCards is the fake (one account per test user), so BSC listing specs run in the ordinary shards. After the shards and seller jobs, **`breaker-desktop`** / **`breaker-mobile`** run the `@bsc-breaker` specs (`BREAKER_SPECS`, `shard-plan.mjs --breaker`) serially as worker 8, because a 429, 503, hang or reset fault opens Convex's deployment-wide BSC call gate for every shard (`seed-mobile` also waits for `breaker-desktop`) → the single required **`e2e`** gate (green iff both seeds and every shard, seller and breaker job succeeded, no spec failed **and** every planned spec has a passing result on both projects, so a shard that died before reporting fails it); about 20 min wall clock (seed ~4 min + longest spec ~5 min, twice) → a `report` job (the "Playwright E2E" check and a sticky PR comment). Artifacts are failure screenshots and the blob/merged HTML report, which embeds each failure's `error-context.md` ARIA snapshot (accepted: real marketplace passwords never reach the browser) and the sanitised axe JSON; never traces (a trace records Clerk testing tokens, and the repo is public). `setup` also refuses any preview URL that is not this team's `neonbinder-<hash>-neon-binder.vercel.app` and the production Convex deployment. Note it runs on **every** PR including preprocess-only ones — E2E cannot observe preprocess, but no carve-out exists, deliberately: `preprocess.yml` is path-filtered and therefore cannot block a merge, so `e2e` plus `preprocess-test` are what gate a preprocess PR.
+- **`e2e.yml`** — reusable (`workflow_call`) Playwright suite (`apps/web/playwright/`): two passes, each on a freshly seeded preview (fresh-only and sole-writer specs pass once per seed): `setup` → `seed` (scripted reset + the `setup` project, worker 0) → **`shard-desktop` ×8** (`--project=e2e`) → `seed-mobile` (NEO-628: starts right after `seed`, installs and downloads the reference bundle while the desktop pass runs, then `wait-for-jobs.sh` polls the run's jobs API until all 8 desktop shards have completed, any result, and reads their conclusions; it does not rewrite the Convex env switches `seed` set; needs `actions: read`; the wait step has a 55 min ceiling and "Re-run failed jobs" is still unsupported. **Fail fast (NEO-627):** if every desktop shard is not `success` (fail closed), it ends successfully without touching the preview (no log capture, reset or `setup`; output `desktop_green=false`) and `shard-mobile`, which needs `desktop_green == 'true'`, is skipped; the `e2e` gate still runs and fails with "mobile skipped: desktop red" (`e2e-upstream-verdict.sh`), `report` still publishes the desktop results and reads the desktop fixture coverage, and there are no `*-mobile-*` artifacts. A job condition, never a run cancel. Otherwise it resets + runs `setup` again) → **`shard-mobile` ×8** (`--project=e2e-mobile`), each shard given an explicit file list by `shard-plan.mjs <N> <i> --project <p>` (longest-first over that project's timings, which the best-effort `timings` job rebuilds beside `seed` from the median of the last few green runs' reports, falling back to the committed `timings.json`; NEO-389; `playwright/project-scope.mjs` lists the few specs one project leaves out) and running the `bootstrap` project for its own test account first (so each pass re-bootstraps after its reset) → eBay and BuySportsCards are both the fake (NEO-552, NEO-555; one account per test user), so their listing specs run in the ordinary shards: there are no seller jobs, seller queue or `@marketplace-seller` tag any more. The BSC call gate is per test user against the fake, so the fault-injection BSC specs run in the ordinary shards and there are no separate serial jobs after them → the single required **`e2e`** gate (green iff both seeds and every shard job succeeded (when desktop is red and the mobile pass was skipped it fails with the one fail-fast message and checks only the desktop results), no spec failed **and** every planned spec has a passing result on both projects, so a shard that died before reporting fails it); about 20 min wall clock (seed ~4 min + longest spec ~5 min, twice, less what seed-mobile's prep now overlaps) → a `report` job (the "Playwright E2E" check and a sticky PR comment). A PR whose every changed path is inert skips E2E entirely (see Inert-path skip above) and has no E2E artifacts. Artifacts are failure screenshots and the blob/merged HTML report, which embeds each failure's `error-context.md` ARIA snapshot (accepted: real marketplace passwords never reach the browser) and the sanitised axe JSON; never traces (a trace records Clerk testing tokens, and the repo is public). `setup` also refuses any preview URL that is not this team's `neonbinder-<hash>-neon-binder.vercel.app` and the production Convex deployment. Note it runs on **every** PR including preprocess-only ones — E2E cannot observe preprocess, but no carve-out exists, deliberately: `preprocess.yml` is path-filtered and therefore cannot block a merge, so `e2e` plus `preprocess-test` are what gate a preprocess PR.
+- **`.github/actions/web-deps`** + **`cache-warm.yml`** (NEO-628) — every apps/web `npm ci` and Playwright Chromium install in `pr-pipeline.yml` and `e2e.yml` goes through this composite action: `apps/web/node_modules` is restored under an exact key (OS, arch, runner image, Node version, lockfile hash; no restore-keys) and saved on a miss, Chromium by the installed `@playwright/test` version. A cache is readable only from its own ref and the default branch, so `cache-warm.yml` (after Release on main, weekly, manual) saves the main-scoped copy that PR and merge-queue runs hit; PR and queue runs never write a cache another ref can read. Never add a secret to `cache-warm.yml`.
 - **`preview-cleanup.yml`** — on PR close, removes the `pr-<N>` Cloud Run tag + image, and deletes the PR's Convex preview. Browser and preprocess get **separate jobs**, because each authenticates as its own deployer SA and `google-github-actions/auth` rewrites ADC in place — a second auth in one job would silently run later steps as the wrong identity. The Convex job finds its target via the PR head SHA's GitHub Deployment record; since NEO-162 it accepts **both** `vercel[bot]` (PRs opened before the cutover) and `github-actions[bot]` (previews built by `web-preview`), so the pre-cutover backlog stays reclaimable.
 - **`refresh-flow-timings.yml`** — weekly, pushes a refreshed `apps/web/playwright/timings.json` (the shard planner's per-spec, per-project timings) to a branch for a maintainer to PR. Since NEO-389 CI rebuilds the timings itself each run, so this only keeps the committed fallback close.
 - **`e2e-repeat.yml`** — manual flakiness sampler (runs the Playwright suite N times).
 
 ## E2E Testing (Playwright)
 
-The E2E suite is Playwright, in `apps/web/playwright/` (specs under `tests/`, helpers under `support/`, config `apps/web/playwright.config.ts`). **`apps/web/playwright/GUIDE.md` is the authoring and running guide** — hard rules (role/label/text locators only, 7 s budget, no sleeps), the R1–R9 spec rules, tags, support helpers, the seed, the PAUSED_PLATFORMS switch, local commands, CI shape, and how to read a red run. Read it before writing or changing a spec. `SET-REGISTRY.md` beside it lists the real sets the suite touches and who may write to them.
+The E2E suite is Playwright, in `apps/web/playwright/` (specs under `tests/`, helpers under `support/`, config `apps/web/playwright.config.ts`). **`apps/web/playwright/GUIDE.md` is the authoring and running guide** — hard rules (role/label/text locators only, 7 s budget, no sleeps), the R-rules, tags, support helpers, the seed, the PAUSED_PLATFORMS switch, local commands, CI shape, and how to read a red run. Read it before writing or changing a spec; `QUICK.md` beside it is its one-page card (every hard rule and R-rule in a line, the `tools/e2e-run.mjs` run tool, the common helpers, an index of GUIDE sections), which agents read first. `SET-REGISTRY.md` beside it lists the real sets the suite touches and who may write to them.
 
 **Every PR that changes user-facing behaviour ships a spec that proves the feature live**, and the audit round includes the `test-coverage-auditor` agent, which checks the diff against the suite (and, for a new screen, `/impeccable audit`; see **UI & Styling**). `playwright-e2e-author` writes and debugs specs.
 

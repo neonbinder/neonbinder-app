@@ -116,6 +116,10 @@ async function seed(t: T) {
         playerIds: [p],
         playerLinks: [{ playerId: p, nameOnCard: name }],
         platformData: { bsc: { ref: `ins-${n}`, src: "b0" } },
+        // NEO-661: a card still waiting on its team lookup holds the build, so
+        // the source is one an operator ruled teamless (tidy, owes no lookup).
+        teamNoneConfirmedAt: SENTINEL,
+        teamNoneConfirmedByUserId: "user_operator",
         sortOrder,
         lastUpdated: SENTINEL,
       });

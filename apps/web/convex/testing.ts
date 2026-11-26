@@ -30,10 +30,13 @@ import {
   internalMutation,
   internalQuery,
   type MutationCtx,
+  type QueryCtx,
 } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
+import { bscGateKey, BSC_GATE_DEPLOYMENT_KEY } from "./lib/bscGateKey";
+import { convexSlugOf, fakeBscNamespaceFor, fakeBscPrefixFor, fakeBscUserTag } from "./lib/fakeBscNamespace";
 import { CLERK_USER_ID_RE, placeholderJobPrefix } from "./lib/placeholderObjects";
 // NEO-287 — the operator switch. A paused marketplace is seeded as `skipped`,
 // before any read of its stored credentials.
@@ -45,12 +48,13 @@ import { addOne, applyCopyChanges, defaultConditionOf, getOrCreateMain } from ".
 import { ListingGate } from "./listingGate";
 import { intakePhotoFailureValidator, listingPlatformValidator, listingProblemReasonValidator } from "./schema";
 import { DRAIN_LEASE_MS } from "./listingDrain";
-import { LISTING_PLATFORMS, listingStateOf, listsAnywhere, newToken, pushesCounts } from "./listingOutbox";
+import { LISTING_PLATFORMS, listingStateOf, listsAnywhere, listsOnMarketplaces, newToken, pushesCounts } from "./listingOutbox";
 import { VISIT_GAP_MS } from "./dashboard";
 import type { ActionCtx } from "./_generated/server";
 import {
   applySaleLinesCore,
   eraOfVariant,
+  pollOwnerGuarded,
   projectEbayOrderForRecord,
   recordOrderCore,
   SALE_ITEMS_PER_APPLY,
@@ -60,10 +64,13 @@ import { ebayLineTitle, projectEbayOrder } from "./lib/ebayListing";
 import { TEST_OUTBOX_SEQ, TEST_SALE_ORDER_PREFIX, TEST_SYNC_MARK } from "./lib/testSeedMarks";
 import { bscConditionFor, type BscEra } from "./lib/bscConditions";
 import { buildListingSku } from "./lib/listingSku";
+import { foldBscTargets, type ListingCopy } from "./lib/bscSheetPlan";
+import { hasListingCondition } from "./lib/listingReadiness";
 import { BSC_LISTED_BOUNDS, BSC_ORDER_BOUNDS, bscListedText } from "./lib/bscOrders";
 import { CatalogReader } from "./lib/catalogView";
 import { slotIds } from "./platformSlots";
 import { resolveBscTarget } from "./lib/bscHttp";
+import { cancelQueuedBscTeamChecksFor } from "./bscTeamPool";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -110,53 +117,11 @@ export function fakeBscMode(env: Record<string, string | undefined> = process.en
   return resolveBscTarget(env).mode !== "real";
 }
 
-/**
- * The Convex deployment's slug from `CONVEX_CLOUD_URL`
- * (`https://<slug>.convex.cloud`), or null when it is missing or not the
- * shape a Convex slug has. Lowercase letters, digits and hyphens only, so it
- * is safe inside an email local part.
- */
-export function convexSlugOf(cloudUrl: string | undefined): string | null {
-  if (!cloudUrl) return null;
-  const slug = /^https:\/\/([a-z0-9-]+)\.convex\.cloud\/?$/.exec(cloudUrl)?.[1];
-  return slug ?? null;
-}
-
-/**
- * A stable, short tag for one test user: the first 12 hex digits of the
- * FNV-1a 64-bit hash of their Clerk subject. Stable across runs and
- * deployments (the same worker account always has the same tag), and it keeps
- * the Clerk id itself off the fake. Synchronous and runtime-free, so a
- * mutation and an action derive the same value.
- */
-export function fakeBscUserTag(userId: string): string {
-  let hash = 0xcbf29ce484222325n;
-  for (const byte of new TextEncoder().encode(userId)) {
-    hash ^= BigInt(byte);
-    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
-  }
-  return hash.toString(16).padStart(16, "0").slice(0, 12);
-}
-
-/**
- * Every namespace this deployment owns on the fake starts with this:
- * `<convexSlug>-`. The trailing hyphen keeps one slug from matching another
- * that merely starts with it.
- */
-export function fakeBscPrefixFor(cloudUrl: string | undefined): string {
-  const slug = convexSlugOf(cloudUrl);
-  if (!slug) {
-    // Fail closed: a namespace with no deployment in it could collide with
-    // another deployment's, and a reset by an empty prefix would clear them all.
-    throw new Error("Fake BuySportsCards needs this deployment's CONVEX_CLOUD_URL");
-  }
-  return `${slug}-`;
-}
-
-/** The test user's namespace on the fake: `<convexSlug>-<userTag>`. */
-export function fakeBscNamespaceFor(userId: string, cloudUrl: string | undefined): string {
-  return `${fakeBscPrefixFor(cloudUrl)}${fakeBscUserTag(userId)}`;
-}
+// NEO-628: the namespace derivation lives in `lib/fakeBscNamespace.ts` (the BSC
+// call gate keys on it too, and `bscSeller` -> `bscCallGate` must not import
+// this module: `testing` reaches the listing drainer, which reaches `bscSeller`).
+// Re-exported here, where its callers and tests have always imported it from.
+export { convexSlugOf, fakeBscNamespaceFor, fakeBscPrefixFor, fakeBscUserTag };
 
 /** The test user's fake BSC sign-in, `nb+<namespace>@fake.invalid`. */
 export function fakeBscUsernameFor(userId: string, cloudUrl: string | undefined): string {
@@ -274,6 +239,16 @@ export const resetMyTestState = action({
     const counts: ResetCounts = await ctx.runMutation(internal.testing.resetMyTestStateRows, { userId });
     const ns = fakeBscNamespaceOf(userId);
     if (ns) {
+      // NEO-628: the caller's own BSC call gate goes with their namespace (a
+      // breaker spec's window or failure run must not outlive its reset). Only
+      // this user's row: the key is derived from the verified subject.
+      // A no-op unless the deployment is really on the fake: no `ns:` row can
+      // exist elsewhere (a misconfigured fake must not fail every reset over a
+      // row that cannot be there).
+      const key = bscGateKey({ mode: "fake", fakeNs: ns });
+      if (key !== BSC_GATE_DEPLOYMENT_KEY && resolveBscTarget(process.env).mode === "fake") {
+        await ctx.runMutation(internal.bscCallGate.clearForTesting, { key });
+      }
       const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.resetNamespace, { ns });
       requireFakeBscDone(done, "clear your test account");
     }
@@ -496,6 +471,8 @@ export const MAX_FAKE_BSC_DELAY_MS = 120_000;
 export const MAX_FAKE_BSC_FAULT_TTL_S = 3_600;
 /** Most items on one injected order. */
 export const MAX_FAKE_BSC_ORDER_ITEMS = 50;
+/** Most error ids one `ebayError` fault carries (the fake's own cap). */
+export const MAX_FAKE_EBAY_ERROR_IDS = 10;
 
 /** One fault rule, as CONTRACT.md "Faults" names it. */
 export const fakeBscFaultRuleValidator = v.object({
@@ -505,11 +482,24 @@ export const fakeBscFaultRuleValidator = v.object({
     pathTemplate: v.string(),
     cardId: v.optional(v.string()),
   }),
-  kind: v.union(v.literal("429"), v.literal("503"), v.literal("delay"), v.literal("hang"), v.literal("reset")),
+  kind: v.union(
+    v.literal("429"),
+    v.literal("503"),
+    v.literal("delay"),
+    v.literal("hang"),
+    v.literal("reset"),
+    // NEO-555 — the two kinds that answer in eBay's own bodies; their template must start `ebay/`.
+    v.literal("ebayError"),
+    v.literal("unauthorized"),
+  ),
   delayMs: v.optional(v.number()),
   retryAfterS: v.optional(v.number()),
   times: v.optional(v.number()),
   ttlS: v.optional(v.number()),
+  /** `ebayError` only: the HTTP status answered (400-599). */
+  status: v.optional(v.number()),
+  /** `ebayError` only: eBay's error ids in the body (1-10 whole numbers). */
+  errorIds: v.optional(v.array(v.number())),
 });
 type FakeBscFaultRule = (typeof fakeBscFaultRuleValidator)["type"];
 
@@ -535,6 +525,26 @@ export const fakeBscOrderValidator = v.object({
 });
 type FakeBscOrder = (typeof fakeBscOrderValidator)["type"];
 
+/**
+ * An order as a spec sends it (`addMyBscOrder`): an item is either the BSC ids
+ * themselves, or `listedCardNumber`, a card THIS caller lists on BuySportsCards
+ * named by its printed number. A spec never sees a BSC card id or an NB SKU,
+ * so the server resolves the number against the caller's own listings, exactly
+ * one (`listedCardForOrder`), and builds the id item from it.
+ */
+export const fakeBscOrderRequestValidator = v.object({
+  orderNo: v.optional(v.string()),
+  status: v.optional(v.string()),
+  orderDateMs: v.optional(v.number()),
+  items: v.array(
+    v.union(
+      fakeBscOrderValidator.fields.items.element,
+      v.object({ listedCardNumber: v.string(), quantity: v.number(), priceCents: v.optional(v.number()) }),
+    ),
+  ),
+});
+type FakeBscOrderRequest = (typeof fakeBscOrderRequestValidator)["type"];
+
 const isWholeIn = (n: number | undefined, min: number, max: number) =>
   n === undefined || (Number.isInteger(n) && n >= min && n <= max);
 
@@ -544,17 +554,37 @@ export function checkFakeBscFaultRules(rules: FakeBscFaultRule[]): void {
     throw new Error(`Set between 1 and ${MAX_FAKE_BSC_FAULT_RULES} fault rules`);
   }
   for (const rule of rules) {
+    // NEO-555 — a template may end in `/*` to cover everything under a prefix
+    // (`ebay/api/sell/*`). The star is only ever the last segment, so a rule
+    // can never be a bare `*` that matches every path of both marketplaces.
     const template = rule.match.pathTemplate;
+    const literal = template.endsWith("/*") ? template.slice(0, -2) : template;
     if (
       template.length === 0 ||
       template.length > 200 ||
-      !/^[A-Za-z0-9/_:.-]+$/.test(template) ||
+      literal.length === 0 ||
+      !/^[A-Za-z0-9/_:.-]+$/.test(literal) ||
       template.includes("..") ||
       template.includes("//") ||
       // A scheme (`https:`) makes it a URL, not a path; `:id` placeholders follow a slash.
       /^[A-Za-z][A-Za-z0-9+.-]*:/.test(template)
     ) {
-      throw new Error("A fault rule's pathTemplate must be a BSC path template such as seller/order/:id");
+      throw new Error("A fault rule's pathTemplate must be a marketplace path template such as seller/order/:id or ebay/api/sell/*");
+    }
+    const ebayKind = rule.kind === "ebayError" || rule.kind === "unauthorized";
+    if (ebayKind && !template.startsWith("ebay/")) {
+      throw new Error(`A ${rule.kind} fault's pathTemplate must start with ebay/`);
+    }
+    if (rule.kind === "ebayError") {
+      if (!isWholeIn(rule.status, 400, 599) || rule.status === undefined) {
+        throw new Error("An ebayError fault needs a status from 400 to 599");
+      }
+      const ids = rule.errorIds;
+      if (!ids || ids.length < 1 || ids.length > MAX_FAKE_EBAY_ERROR_IDS || !ids.every((id) => isWholeIn(id, 1, 9_999_999))) {
+        throw new Error(`An ebayError fault needs 1 to ${MAX_FAKE_EBAY_ERROR_IDS} errorIds, each a whole number`);
+      }
+    } else if (rule.status !== undefined || rule.errorIds !== undefined) {
+      throw new Error("status and errorIds belong to ebayError faults");
     }
     if (rule.match.cardId !== undefined && !/^[A-Za-z0-9-]{1,64}$/.test(rule.match.cardId)) {
       throw new Error("A fault rule's cardId must be a BSC card id");
@@ -630,19 +660,199 @@ export const setMyBscFaults = action({
   },
 });
 
+// ── Naming a sold card by its printed number (NEO-555, G1) ───────────────────
+
+/** How many of the caller's copies or links one resolution reads (a test user holds a handful). */
+const LISTED_SCAN_MAX = 2_000;
+const LISTED_NUMBER_MAX = 32;
+
+/** What `listedCardForOrder` found: how many listings carry that number, and the ids when exactly one. */
+export const listedCardResolutionValidator = v.object({
+  matches: v.number(),
+  ebay: v.optional(v.object({ sku: v.string(), listingId: v.string() })),
+  bsc: v.optional(v.object({ cardId: v.string(), condition: v.string(), sku: v.string() })),
+});
+export type ListedCardResolution = (typeof listedCardResolutionValidator)["type"];
+
+const foldNumber = (n: string) => n.trim().toLowerCase();
+
+/**
+ * The caller's OWN live listing of the card printed `cardNumber`, on one
+ * platform. A card number is never unique at any scope (CLAUDE.md invariant
+ * 7), so this answers `matches` and fills the ids only when it is exactly 1.
+ *   - eBay: a `live` link of the caller's with a listing id (NB's link rows
+ *     are the listings it made); one match per link (card + condition bucket).
+ *   - BSC: NB keeps no BSC listing row, so a listing is what the drain would
+ *     push: the caller's graded-free copies in a box that lists, folded the
+ *     way the push folds them (`foldBscTargets`), for a card that carries a
+ *     BSC id; one match per (card, BSC condition).
+ * Another user's listings are never read: every query is keyed on `ownerId`.
+ */
+export async function resolveListedCard(
+  ctx: QueryCtx,
+  args: { ownerId: string; platform: "ebay" | "bsc"; cardNumber: string },
+): Promise<ListedCardResolution> {
+  const wanted = foldNumber(args.cardNumber);
+  const cards = new Map<string, Doc<"cardChecklist"> | null>();
+  const cardOf = async (id: Id<"cardChecklist">) => {
+    if (!cards.has(id)) cards.set(id, await ctx.db.get(id));
+    return cards.get(id) ?? null;
+  };
+  if (args.platform === "ebay") {
+    const links = await ctx.db
+      .query("marketplaceListingLinks")
+      .withIndex("by_owner_platform_card_condition", (q) => q.eq("ownerId", args.ownerId).eq("platform", "ebay"))
+      .take(LISTED_SCAN_MAX + 1);
+    if (links.length > LISTED_SCAN_MAX) throw new Error("Too many eBay listings to name a card by its number");
+    const found: Array<{ sku: string; listingId: string }> = [];
+    for (const link of links) {
+      if (link.status !== "live" || link.listingId === undefined) continue;
+      const card = await cardOf(link.cardId);
+      if (card && foldNumber(card.cardNumber) === wanted) found.push({ sku: link.sku, listingId: link.listingId });
+    }
+    return found.length === 1 ? { matches: 1, ebay: found[0] } : { matches: found.length };
+  }
+  const copies = await ctx.db
+    .query("collectionCopies")
+    .withIndex("by_owner_and_card", (q) => q.eq("ownerId", args.ownerId))
+    .take(LISTED_SCAN_MAX + 1);
+  if (copies.length > LISTED_SCAN_MAX) throw new Error("Too many copies to name a card by its number");
+  const lists = new Map<string, boolean>();
+  const listedBox = async (homeId: Id<"collectionContainers">) => {
+    if (!lists.has(homeId)) {
+      const home = await ctx.db.get(homeId);
+      lists.set(homeId, home !== null && home.ownerId === args.ownerId && listsOnMarketplaces(home));
+    }
+    return lists.get(homeId) === true;
+  };
+  const byCard = new Map<Id<"cardChecklist">, ListingCopy[]>();
+  for (const row of copies) {
+    const cardId = ctx.db.normalizeId("cardChecklist", row.cardId);
+    if (cardId === null) continue; // a private card is never listed
+    const card = await cardOf(cardId);
+    if (!card || foldNumber(card.cardNumber) !== wanted || (card.platformData?.bsc?.ref ?? null) === null) continue;
+    if (!(await listedBox(row.homeId))) continue;
+    const copy: ListingCopy = {
+      copyId: row._id,
+      homeId: row.homeId,
+      ...(row.acquiredOn !== undefined ? { acquiredOn: row.acquiredOn } : {}),
+      creationTime: row._creationTime,
+      card: { kind: "catalog", id: cardId },
+      homeIsBox: true,
+      graded: row.grading !== undefined,
+      quantity: row.quantity,
+      ...(row.condition !== undefined && hasListingCondition(row.condition) ? { condition: row.condition } : {}),
+      hasPhotos: false,
+    };
+    byCard.set(cardId, [...(byCard.get(cardId) ?? []), copy]);
+  }
+  const eras = new Map<string, BscEra | null>();
+  const found: Array<{ cardId: string; condition: string; sku: string }> = [];
+  for (const [cardId, group] of byCard) {
+    const card = await cardOf(cardId);
+    if (!card) continue;
+    const era = await eraOfVariant(ctx, card.selectorOptionId, eras);
+    const { targets } = foldBscTargets({ copies: group, era, commonPriceCents: null });
+    for (const target of targets) {
+      found.push({ cardId: card.platformData?.bsc?.ref as string, condition: target.bscCondition, sku: target.sku });
+    }
+  }
+  return found.length === 1 ? { matches: 1, bsc: found[0] } : { matches: found.length };
+}
+
+/** The resolution as a query, for the testing actions (internal: reached only from them). */
+export const listedCardForOrder = internalQuery({
+  args: { ownerId: v.string(), platform: v.union(v.literal("ebay"), v.literal("bsc")), cardNumber: v.string() },
+  returns: listedCardResolutionValidator,
+  handler: async (ctx, args) => await resolveListedCard(ctx, args),
+});
+
+/** Throws on a `listedCardNumber` a spec could not have meant, before anything is read. */
+function checkListedCardNumber(value: string, where: string): void {
+  if (value.trim() === "" || value.length > LISTED_NUMBER_MAX || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(`${where}.listedCardNumber is blank, too long or has a control character`);
+  }
+}
+
+/** The fixed refusal for a number that did not name exactly one of the caller's listings. */
+function listedCardRefusal(where: string, platform: "ebay" | "bsc", matches: number): Error {
+  const site = platform === "ebay" ? "eBay" : "BuySportsCards";
+  return new Error(
+    matches === 0
+      ? `${where}: none of your cards with that number is listed on ${site}`
+      : `${where}: more than one of your listings on ${site} has that number, so it names no one card`,
+  );
+}
+
 /**
  * Add one order to the caller's fake seller order history, as a buyer's
- * purchase would, so the sales poll has something to find.
+ * purchase would, so the sales poll has something to find. An item may name
+ * the card by `listedCardNumber` instead of the BSC ids (see
+ * `fakeBscOrderRequestValidator`).
  */
 export const addMyBscOrder = action({
-  args: { order: fakeBscOrderValidator },
+  args: { order: fakeBscOrderRequestValidator },
   returns: v.object({ items: v.number() }),
   handler: async (ctx, args) => {
     const ns = await callerFakeBscNamespace(ctx);
-    checkFakeBscOrder(args.order);
-    const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.addOrder, { ns, order: args.order });
+    const request: FakeBscOrderRequest = args.order;
+    if (request.items.length === 0 || request.items.length > MAX_FAKE_BSC_ORDER_ITEMS) {
+      throw new Error(`An order carries between 1 and ${MAX_FAKE_BSC_ORDER_ITEMS} items`);
+    }
+    // Everything a spec could get wrong without a lookup is checked FIRST, so
+    // a bad order costs no read: the same checks the resolved order gets, with
+    // a stand-in for each item that names a number.
+    checkFakeBscOrder({
+      ...(request.orderNo !== undefined ? { orderNo: request.orderNo } : {}),
+      ...(request.status !== undefined ? { status: request.status } : {}),
+      ...(request.orderDateMs !== undefined ? { orderDateMs: request.orderDateMs } : {}),
+      items: request.items.map((item) =>
+        "listedCardNumber" in item
+          ? {
+              cardId: "x",
+              condition: "x",
+              quantity: item.quantity,
+              ...(item.priceCents !== undefined ? { priceCents: item.priceCents } : {}),
+            }
+          : item,
+      ),
+    });
+    for (const [i, item] of request.items.entries()) {
+      if ("listedCardNumber" in item) checkListedCardNumber(item.listedCardNumber, `items[${i}]`);
+    }
+    // callerFakeBscNamespace passed, so the caller is signed in.
+    const userId = (await getCurrentUserId(ctx)) as string;
+    const items: FakeBscOrder["items"] = [];
+    for (const [i, item] of request.items.entries()) {
+      if (!("listedCardNumber" in item)) {
+        items.push(item);
+        continue;
+      }
+      const where = `items[${i}]`;
+      const found = await ctx.runQuery(internal.testing.listedCardForOrder, {
+        ownerId: userId,
+        platform: "bsc",
+        cardNumber: item.listedCardNumber,
+      });
+      if (found.matches !== 1 || !found.bsc) throw listedCardRefusal(where, "bsc", found.matches);
+      items.push({
+        cardId: found.bsc.cardId,
+        condition: found.bsc.condition,
+        sellerSku: found.bsc.sku,
+        quantity: item.quantity,
+        ...(item.priceCents !== undefined ? { priceCents: item.priceCents } : {}),
+      });
+    }
+    const order: FakeBscOrder = {
+      ...(request.orderNo !== undefined ? { orderNo: request.orderNo } : {}),
+      ...(request.status !== undefined ? { status: request.status } : {}),
+      ...(request.orderDateMs !== undefined ? { orderDateMs: request.orderDateMs } : {}),
+      items,
+    };
+    checkFakeBscOrder(order);
+    const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.addOrder, { ns, order });
     requireFakeBscDone(done, "add the order");
-    return { items: args.order.items.length };
+    return { items: order.items.length };
   },
 });
 
@@ -664,21 +874,381 @@ export const clearMyBscFaults = action({
 });
 
 /**
- * Clear this deployment's BSC call gate (`bscCallGate`: the breaker and its
- * failure run), so a spec that opened it, with a 429 or a run of 5xx or
- * timeouts, leaves it closed. The gate is DEPLOYMENT-WIDE, not per user: it is
- * the one control here that reaches past the caller, which is why only specs
- * tagged `@bsc-breaker` (run alone, after every shard) may move it. Same locks
- * as the other controls: a testing deployment, a signed-in caller, the fake.
+ * Clear the CALLER'S BSC call gate (`bscCallGate`: the breaker and its failure
+ * run), so a spec that opened it, with a 429 or a run of 5xx or timeouts,
+ * leaves it closed. NEO-628: on the fake the gate is per namespace, one per
+ * test user, so this clears the row of the caller's own `ns:` key and nothing
+ * else: a breaker spec in one shard cannot close or open another shard's gate.
+ * `deleted` is 1 when the caller's gate had a row, else 0. Same locks as the
+ * other controls: a testing deployment, a signed-in caller, the fake (no key
+ * argument exists to spoof; the key is derived from the verified subject).
  */
 export const clearBscCallGate = action({
   args: {},
   returns: v.object({ deleted: v.number() }),
   // Annotated: without it the action's type loops back through `internal` (TS7022).
   handler: async (ctx): Promise<{ deleted: number }> => {
-    await callerFakeBscNamespace(ctx);
-    const cleared: { deleted: number } = await ctx.runMutation(internal.bscCallGate.clearForTesting, {});
+    const ns = await callerFakeBscNamespace(ctx);
+    const key = bscGateKey({ mode: "fake", fakeNs: ns });
+    // A namespace always forms an `ns:` key; the guard keeps a malformed one
+    // from ever asking to clear the deployment's own gate.
+    if (key === BSC_GATE_DEPLOYMENT_KEY) return { deleted: 0 };
+    const cleared: { deleted: number } = await ctx.runMutation(internal.bscCallGate.clearForTesting, { key });
     return cleared;
+  },
+});
+
+/**
+ * NEO-644 — cancel the background team lookups the CALLER queued on the
+ * `bscTeamPool` lane, and nobody else's. The lane is one slot per deployment,
+ * so a fault spec's cards (the 429 and stall specs queue up to ~30) would hold
+ * it after the spec ends, in front of every other shard's per-card lookups.
+ * The spec's own teardown calls this through the `/testing/bsc-fake?clear=lane`
+ * hop. Items are matched on `queuedBy`, the verified Clerk subject (no argument
+ * exists to name another user). An item already running finishes (see
+ * `bscTeamPool.cancelQueuedBscTeamChecksFor`). Same locks as the other fake
+ * BSC controls: a testing deployment, a signed-in caller, the fake.
+ */
+export const cancelMyBscTeamChecks = mutation({
+  args: {},
+  returns: v.object({ cancelled: v.number() }),
+  handler: async (ctx): Promise<{ cancelled: number }> => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Fake BuySportsCards controls are not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    if (!fakeBscNamespaceOf(userId)) {
+      throw new Error("This deployment talks to the real BuySportsCards, so it takes no fake faults or orders");
+    }
+    return { cancelled: await cancelQueuedBscTeamChecksFor(ctx, userId) };
+  },
+});
+
+// ── NEO-555: the fake eBay's test controls ────────────────────────────────
+//
+// What a spec sets up on its own fake eBay seller, and the poll it presses to
+// see a sale. Same locks as the fake BSC controls above: they throw where
+// `TESTING_RESET_SECRET` is unset, refuse an anonymous caller, act only on the
+// caller's own namespace (derived from the verified Clerk subject; no
+// namespace argument exists to spoof), and refuse a deployment whose eBay is
+// not the fake (`ebayConfig()` is null or not `fake` there). Nothing secret
+// passes through these arguments; the consent code `fakeEbayConsent` returns
+// is a one-time code for the caller's own fake seller, worth nothing anywhere
+// else.
+
+/** Whether this deployment's eBay is the fake. `ebayConfig()` is only ever `fake` beside the testing flag and the fake BSC. */
+export function fakeEbayMode(): boolean {
+  return ebayConfig()?.environment === "fake";
+}
+
+/** The fake's two sellers: the main one every run starts as, and a second account to switch to. */
+export const fakeEbaySellerValidator = v.literal("alt");
+
+const FAKE_EBAY_SKU_MAX = 50;
+const FAKE_EBAY_TITLE_MAX = 80;
+export const MAX_FAKE_EBAY_POLICIES = 10;
+export const MAX_FAKE_EBAY_ORDER_LINES = 50;
+
+/** One shipping policy a seller already has on the fake (NB never creates shipping policies). */
+export const fakeEbayPolicyValidator = v.object({
+  name: v.string(),
+  costType: v.optional(v.union(v.literal("FLAT_RATE"), v.literal("CALCULATED"))),
+  services: v.array(
+    v.object({
+      code: v.string(),
+      costCents: v.optional(v.number()),
+      freeShipping: v.optional(v.boolean()),
+      carrier: v.optional(v.string()),
+    }),
+  ),
+});
+type FakeEbayPolicy = (typeof fakeEbayPolicyValidator)["type"];
+
+/** One order a spec injects into its fake seller's history, in the fake's own terms (CONTRACT.md, "Orders"). */
+export const fakeEbayOrderValidator = v.object({
+  orderId: v.optional(v.string()),
+  paymentStatus: v.optional(
+    v.union(v.literal("PAID"), v.literal("PARTIALLY_REFUNDED"), v.literal("FULLY_REFUNDED"), v.literal("PENDING"), v.literal("FAILED")),
+  ),
+  fulfillmentStatus: v.optional(v.union(v.literal("NOT_STARTED"), v.literal("IN_PROGRESS"), v.literal("FULFILLED"))),
+  cancelled: v.optional(v.boolean()),
+  /** When the order was placed, epoch ms. The fake's clock when absent. */
+  creationDateMs: v.optional(v.number()),
+  lines: v.array(
+    v.object({
+      /** A SKU NB listed puts the sale on that listing; absent or unknown is a sale NB did not make. */
+      sku: v.optional(v.string()),
+      title: v.optional(v.string()),
+      quantity: v.number(),
+      priceCents: v.optional(v.number()),
+      listingId: v.optional(v.string()),
+    }),
+  ),
+});
+type FakeEbayOrder = (typeof fakeEbayOrderValidator)["type"];
+
+/**
+ * An order as a spec sends it (`addMyEbayOrder`): a line is the fake's own
+ * (a SKU and listing id, or a title for a sale NB did not make), or
+ * `listedCardNumber`, a card THIS caller lists on eBay named by its printed
+ * number, which the server resolves to the live listing's SKU and listing id
+ * (`listedCardForOrder`), exactly one.
+ */
+export const fakeEbayOrderRequestValidator = v.object({
+  ...fakeEbayOrderValidator.fields,
+  lines: v.array(
+    v.union(
+      fakeEbayOrderValidator.fields.lines.element,
+      v.object({ listedCardNumber: v.string(), quantity: v.number(), priceCents: v.optional(v.number()) }),
+    ),
+  ),
+});
+type FakeEbayOrderRequest = (typeof fakeEbayOrderRequestValidator)["type"];
+
+/** Throws on a policy list the fake would refuse; the fake never sees it. */
+export function checkFakeEbayPolicies(policies: FakeEbayPolicy[]): void {
+  if (policies.length < 1 || policies.length > MAX_FAKE_EBAY_POLICIES) {
+    throw new Error(`Give between 1 and ${MAX_FAKE_EBAY_POLICIES} fulfillmentPolicies`);
+  }
+  const code = /^[A-Za-z0-9_]{1,64}$/;
+  for (const [i, policy] of policies.entries()) {
+    if (policy.name.length < 1 || policy.name.length > 64 || /[\u0000-\u001f\u007f]/.test(policy.name)) {
+      throw new Error(`fulfillmentPolicies[${i}].name is blank, too long or has a control character`);
+    }
+    if (policy.services.length < 1 || policy.services.length > 5) {
+      throw new Error(`fulfillmentPolicies[${i}].services must hold 1-5`);
+    }
+    for (const [j, service] of policy.services.entries()) {
+      if (!code.test(service.code)) throw new Error(`fulfillmentPolicies[${i}].services[${j}].code is not a service code`);
+      if (service.carrier !== undefined && !code.test(service.carrier)) {
+        throw new Error(`fulfillmentPolicies[${i}].services[${j}].carrier is not a carrier code`);
+      }
+      if (!isWholeIn(service.costCents, 0, 100_000)) {
+        throw new Error(`fulfillmentPolicies[${i}].services[${j}].costCents must be whole cents`);
+      }
+    }
+  }
+}
+
+/** Throws on an order the fake would refuse. */
+export function checkFakeEbayOrder(order: FakeEbayOrder): void {
+  if (order.orderId !== undefined && !/^[0-9A-Za-z-]{1,64}$/.test(order.orderId)) throw new Error("orderId is not an eBay order id");
+  if (order.creationDateMs !== undefined && !(Number.isFinite(order.creationDateMs) && order.creationDateMs > 0 && order.creationDateMs < 8.64e15)) {
+    throw new Error("creationDateMs must be epoch milliseconds");
+  }
+  if (order.lines.length < 1 || order.lines.length > MAX_FAKE_EBAY_ORDER_LINES) {
+    throw new Error(`An order carries between 1 and ${MAX_FAKE_EBAY_ORDER_LINES} lines`);
+  }
+  for (const [i, line] of order.lines.entries()) {
+    if (line.sku !== undefined && (line.sku.length < 1 || line.sku.length > FAKE_EBAY_SKU_MAX)) throw new Error(`lines[${i}].sku is blank or too long`);
+    if (line.title !== undefined && (line.title.length < 1 || line.title.length > FAKE_EBAY_TITLE_MAX || /[\u0000-\u001f\u007f]/.test(line.title))) {
+      throw new Error(`lines[${i}].title is blank, too long or has a control character`);
+    }
+    if (!isWholeIn(line.quantity, 1, 1_000)) throw new Error(`lines[${i}].quantity must be a whole number from 1 to 1000`);
+    if (!isWholeIn(line.priceCents, 0, 10_000_000)) throw new Error(`lines[${i}].priceCents must be whole cents`);
+    if (line.listingId !== undefined && !/^\d{1,40}$/.test(line.listingId)) throw new Error(`lines[${i}].listingId must be digits`);
+  }
+}
+
+/**
+ * Throws unless the fake did what was asked. Reads the control result
+ * defensively (`fakeBsc` reports failure in its result, it never throws): a
+ * failure, or a "skipped" from a module that found no fake to talk to, is a
+ * failure here, because the caller already decided this deployment is on it.
+ * The message names the fake's own reason (`detail`: its validation answer,
+ * already bounded and stripped of control characters by `fakeBsc`, never a
+ * key or token) when it sent one, else the transport's `error`: a spec tells
+ * "that policy name is already held" from any other 409 by it.
+ */
+function requireFakeEbayDone(result: unknown, what: string): void {
+  const r = (typeof result === "object" && result !== null ? result : {}) as {
+    ok?: unknown;
+    skipped?: unknown;
+    error?: unknown;
+    detail?: unknown;
+    status?: unknown;
+  };
+  if (r.ok === false) {
+    const reason = typeof r.detail === "string" && r.detail.length > 0 ? r.detail : typeof r.error === "string" ? r.error : "no answer";
+    throw new Error(`Fake eBay did not ${what}: ${reason}${typeof r.status === "number" ? ` (${r.status})` : ""}`);
+  }
+  if (r.skipped === true) {
+    throw new Error(`Fake eBay did not ${what}: this deployment has no fake eBay to talk to`);
+  }
+}
+
+/**
+ * The caller's namespace for a fake eBay call, after the testing locks.
+ * Throws off a testing deployment, for an anonymous caller, and on a
+ * deployment whose eBay is not the fake.
+ */
+async function callerFakeEbayNamespace(ctx: ActionCtx): Promise<{ userId: string; ns: string }> {
+  if (!process.env.TESTING_RESET_SECRET) {
+    throw new Error("Fake eBay controls are not enabled on this deployment");
+  }
+  const userId = await getCurrentUserId(ctx);
+  if (!userId) {
+    throw new Error("Not authenticated");
+  }
+  if (!fakeEbayMode()) {
+    throw new Error("This deployment does not talk to the fake eBay, so it takes no fake sellers or orders");
+  }
+  return { userId, ns: fakeBscNamespaceFor(userId, process.env.CONVEX_CLOUD_URL) };
+}
+
+/**
+ * Mint a one-time consent code for the caller's own fake eBay seller, as the
+ * fake's consent screen does when the collector agrees. `seller: "alt"` is
+ * the second account ("Agree as another eBay account"). The stand-in consent
+ * page (`/testing/fake-ebay/authorize`) calls this; the code then rides back
+ * to `/profile/ebay` exactly as eBay's would.
+ */
+export const fakeEbayConsent = action({
+  args: { seller: v.optional(fakeEbaySellerValidator) },
+  returns: v.object({ code: v.string() }),
+  handler: async (ctx, args): Promise<{ code: string }> => {
+    const { ns } = await callerFakeEbayNamespace(ctx);
+    const minted: unknown = await ctx.runAction(internal.fakeBsc.ebayConsent, {
+      ns,
+      ...(args.seller !== undefined ? { seller: args.seller } : {}),
+    });
+    requireFakeEbayDone(minted, "mint a consent code");
+    const code = (minted as { code?: unknown }).code;
+    if (typeof code !== "string" || code.length === 0) {
+      throw new Error("Fake eBay did not mint a consent code: it sent none");
+    }
+    return { code };
+  },
+});
+
+/**
+ * Set up the caller's fake eBay seller: opt it into business policies and/or
+ * give it the shipping policies a real seller already has (NB never creates
+ * shipping policies). Listing policies imply the opt-in unless `optedIn` says
+ * otherwise.
+ */
+export const setMyEbaySeller = action({
+  args: {
+    seller: v.optional(fakeEbaySellerValidator),
+    optedIn: v.optional(v.boolean()),
+    fulfillmentPolicies: v.optional(v.array(fakeEbayPolicyValidator)),
+  },
+  returns: v.object({ policies: v.number() }),
+  handler: async (ctx, args): Promise<{ policies: number }> => {
+    const { ns } = await callerFakeEbayNamespace(ctx);
+    if (args.fulfillmentPolicies !== undefined) checkFakeEbayPolicies(args.fulfillmentPolicies);
+    const done: unknown = await ctx.runAction(internal.fakeBsc.ebaySeller, {
+      ns,
+      ...(args.seller !== undefined ? { seller: args.seller } : {}),
+      ...(args.optedIn !== undefined ? { optedIn: args.optedIn } : {}),
+      ...(args.fulfillmentPolicies !== undefined ? { fulfillmentPolicies: args.fulfillmentPolicies } : {}),
+    });
+    requireFakeEbayDone(done, "set the seller up");
+    return { policies: args.fulfillmentPolicies?.length ?? 0 };
+  },
+});
+
+/**
+ * Add one order to the caller's fake eBay seller history, as a buyer's
+ * purchase would, so the sales poll has something to find. A line naming a SKU
+ * NB listed is a sale of that listing; a line without one is a sale NB did not
+ * make, shown with eBay's own title.
+ */
+export const addMyEbayOrder = action({
+  args: { seller: v.optional(fakeEbaySellerValidator), order: fakeEbayOrderRequestValidator },
+  returns: v.object({ lines: v.number() }),
+  handler: async (ctx, args): Promise<{ lines: number }> => {
+    const { ns, userId } = await callerFakeEbayNamespace(ctx);
+    const request: FakeEbayOrderRequest = args.order;
+    // Everything a spec could get wrong without a lookup is checked FIRST, so
+    // a bad order costs no read: the same checks the resolved order gets, with
+    // a stand-in for each line that names a number.
+    checkFakeEbayOrder({
+      ...request,
+      lines: request.lines.map((line) =>
+        "listedCardNumber" in line
+          ? { title: "x", quantity: line.quantity, ...(line.priceCents !== undefined ? { priceCents: line.priceCents } : {}) }
+          : line,
+      ),
+    });
+    for (const [i, line] of request.lines.entries()) {
+      if ("listedCardNumber" in line) checkListedCardNumber(line.listedCardNumber, `lines[${i}]`);
+    }
+    const lines: FakeEbayOrder["lines"] = [];
+    for (const [i, line] of request.lines.entries()) {
+      if (!("listedCardNumber" in line)) {
+        lines.push(line);
+        continue;
+      }
+      const where = `lines[${i}]`;
+      const found = await ctx.runQuery(internal.testing.listedCardForOrder, {
+        ownerId: userId,
+        platform: "ebay",
+        cardNumber: line.listedCardNumber,
+      });
+      if (found.matches !== 1 || !found.ebay) throw listedCardRefusal(where, "ebay", found.matches);
+      lines.push({
+        sku: found.ebay.sku,
+        listingId: found.ebay.listingId,
+        quantity: line.quantity,
+        ...(line.priceCents !== undefined ? { priceCents: line.priceCents } : {}),
+      });
+    }
+    const order: FakeEbayOrder = { ...request, lines };
+    checkFakeEbayOrder(order);
+    const done: unknown = await ctx.runAction(internal.fakeBsc.ebayOrders, {
+      ns,
+      ...(args.seller !== undefined ? { seller: args.seller } : {}),
+      order,
+    });
+    requireFakeEbayDone(done, "add the order");
+    return { lines: order.lines.length };
+  },
+});
+
+/**
+ * Run the caller's sales poll now, for one marketplace, and answer when it has
+ * finished, so a spec does not wait out the 15-minute cron. It is the cron's
+ * own poll for the caller alone (`pollOwnerGuarded`, under the owner's poll
+ * lease: a poll already running is waited out for up to 30 s, then this
+ * throws "already running"); when the cron's poll lands first the orders are
+ * already stored and this reads none new. A poll that
+ * ended in an error throws, so the hop prints a failure rather than a count.
+ * Refuses a deployment on the real marketplace it names.
+ */
+const POLL_NOW_WAIT_MS = 30_000;
+
+export const pollMySalesNow = action({
+  args: { platform: listingPlatformValidator },
+  returns: v.object({ ordersRead: v.number(), ordersStored: v.number(), linesApplied: v.number() }),
+  handler: async (ctx, args): Promise<{ ordersRead: number; ordersStored: number; linesApplied: number }> => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("The sales poll control is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    if (args.platform === "ebay" ? !fakeEbayMode() : !fakeBscMode()) {
+      throw new Error(
+        args.platform === "ebay"
+          ? "This deployment does not talk to the fake eBay, so it takes no poll on demand"
+          : "This deployment talks to the real BuySportsCards, so it takes no poll on demand",
+      );
+    }
+    // The cron's poll for the same owner may be running: wait for it (its
+    // orders are then stored and this reads none new) rather than overlap it.
+    const report = await pollOwnerGuarded(
+      ctx,
+      { ownerId: userId, platform: args.platform },
+      { waitMs: POLL_NOW_WAIT_MS },
+    );
+    if (report === null) throw new Error("A sales check is already running; press again in a moment");
+    if (report.error !== null) throw new Error(`The sales check failed: ${report.error}`);
+    return { ordersRead: report.ordersRead, ordersStored: report.ordersStored, linesApplied: report.linesApplied };
   },
 });
 
@@ -713,7 +1283,7 @@ export const resetFakeBscForDeploymentFromCli = internalAction({
 export const FAKE_BSC_CLEANUP_MAX_USERS = 200;
 
 /**
- * NEO-552 — the users whose fake BSC sessions `credentials.deleteFakeBscSessionsFromCli`
+ * NEO-552 — the users whose fake BSC sessions `credentials.deleteFakeSessionsFromCli`
  * deletes: every `userProfiles` row on this deployment, with or without a
  * saved BSC flag (a per-user reset can drop the flag while the session
  * stays). Only ids leave this query. Bounded; `truncated` says more exist.
@@ -1607,6 +2177,28 @@ export const seedMyTestCredentials = action({
       // production). One token exchange, no browser login, so it simply
       // reconnects every time. Skipped like any site with no dev secret.
       if (site === "ebay") {
+        // NEO-555 — on a deployment wired to the fake eBay, the sign-in is the
+        // caller's own fake seller: the fake mints a consent code for their
+        // namespace and the connect spends it, the same grant the consent
+        // screen's Agree gives. No refresh token and no real seller exist
+        // there. The sandbox branch below stays for a deployment on the sandbox.
+        if (fakeEbayMode()) {
+          const minted: unknown = await ctx.runAction(internal.fakeBsc.ebayConsent, {
+            ns: fakeBscNamespaceFor(userId, process.env.CONVEX_CLOUD_URL),
+          });
+          const code = (minted as { code?: unknown } | null)?.code;
+          if (typeof code !== "string" || code.length === 0) {
+            seeded.push({ site, stored: false, reason: "Fake eBay did not mint a consent code" });
+            continue;
+          }
+          const connected = await ctx.runAction(internal.credentials.connectEbay, {
+            userId,
+            code,
+            listing: args.listing === true ? "save" : "testOff",
+          });
+          seeded.push({ site, stored: connected.ok, ...(connected.ok ? {} : { reason: connected.error }) });
+          continue;
+        }
         const refreshToken = process.env.DEV_EBAY_REFRESH_TOKEN;
         if (!refreshToken || !ebayConfigured() || ebayConfig()?.environment !== "sandbox") {
           seeded.push({ site, stored: false, skipped: true });
@@ -1798,7 +2390,13 @@ export const seedMyTestCredentials = action({
         userId,
         apiKey: easypostKey,
       });
-      seeded.push({ site: "easypost", stored: result.success });
+      // NEO-604: carry the store's reason through on a failure, like the
+      // marketplace loop above (the message holds an HTTP status, never the key).
+      seeded.push({
+        site: "easypost",
+        stored: result.success,
+        ...(result.success ? {} : { reason: result.message }),
+      });
     }
 
     return { seeded };

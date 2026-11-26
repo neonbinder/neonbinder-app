@@ -1,0 +1,47 @@
+# Accessibility and Axe
+
+Accessible names, focus handling, live regions, dialogs, axe false reds and contrast.
+
+- [Disambiguate duplicate aria labels by rewording](disambiguate-duplicate-aria-labels-by-rewording.md) — When two instances of the same picker/component can be on screen at once, give the second instance labels that share NO substring with the first — never a suffixed var…
+- [Confirmdialog owns the word cancel](reference_confirmdialog_owns_the_word_cancel.md) — the shared ConfirmDialog always renders a button named "Cancel"; an inline picker that raises it must be a disclosure toggle, not a second Cancel
+- [Inert the opener behind ConfirmDialog](reference_inert_the_opener_behind_confirmdialog.md) — not portalled, Tab-only trap: use `inert`; portalled modals use lib/dom/inertBackground (stacks); restore focus after release
+- [Copy that names a button goes stale](reference_copy_that_names_a_button_goes_stale.md) — a sentence quoting a control's label drifts silently; grep the JSX before trusting any label an audit or spec quotes
+- [Entity review batch is a grouping not a table](reference_entity_review_batch_is_a_grouping_not_a_table.md) — no "batches" table; the queue's reaper waits 24h but the candidates' waits 1h, and one holdings number covers both
+- [An inert trigger still names a button](reference_an_inert_trigger_still_names_a_button.md) — confirm must not reuse the trigger's text; pin unique button names with the dialog open
+- [Count-gated row tears out its own dialog](reference_count_gated_row_tears_out_its_own_dialog.md) — a live-count gate unmounts the control mid-dialog; onActiveChange window; `empty:hidden` pinned by childNodes
+- [Escape blur commits the draft](reference_escape_blur_commits_the_draft.md) — Enter/Escape act in place, never blur (focus leaves aria-modal); never key={prefill}
+- [ReconciliationModal lists unstable per render](reference_reconciliation_modal_lists_are_unstable_per_render.md) — default `[]` props → new list identity each render; key setState effects on content or the modal loops silently
+- [Focus centres; scroll margins add](reference_focus_centres_and_scroll_margins_add.md) — Chrome focus() centres off-screen targets; scrollIntoView = 80px scroll-padding + scroll-mt; use preventScroll + own scroll
+- [Ref cleanup sees focus before removal](reference_ref_cleanup_sees_focus_before_removal.md) — park focus when a focused control unmounts: React 19 callback-ref cleanup, not a parent effect cleanup
+- [Relabelled primary slot needs a focus move](reference_relabelled_primary_slot_needs_a_focus_move.md) — move focus off a relabelled footer slot; arm the ref only on a real change; park-on-heading effect goes AFTER the opener-reading open effect
+- [Neon contrast ink and axe text-shadow](reference_neon_contrast_ink_and_axe_text_shadow.md) — black ink on neon fills; text-neon-purple-text for purple text; axe counts animate-pulse fades and blurred glow halos
+- [axe combobox popup + listbox children](reference_axe_combobox_popup_and_listbox_children.md) — scrollable-region exempts a listbox only if combobox aria-controls names IT; listbox owns only options; empty = review
+- [Axe target-size and animation false reds](reference_axe_target_size_and_animation_false_reds.md) — "partially obscured" = a focusable widget (sticky header buttons) overlaps; Clerk dialog contrast reds can be its fade-in
+- [Wrapped select name includes its option](reference_wrapping_label_select_name_includes_option.md) — label-wrapped <select> name = "Binder All"; aria-label the select, aria-hide the word
+- [axe contrast ignores aria-hidden](reference_axe_contrast_ignores_aria_hidden.md) — aria-hidden/role=img text is still measured; user-colour previews go in an <img alt> (SVG foreignObject)
+- [rAF focus request clears by identity](reference_raf_focus_request_clear_by_identity.md) — functional clear or a stale frame drops a newer move; happy-dom blur() fires no focusout
+- [Scroll on focus swallows mouse clicks](reference_scroll_on_focus_swallows_mouse_clicks.md) — focus fires between mousedown/mouseup; gate scroll-on-focus on :focus-visible (binders/trayClear)
+- [sr-only escapes an unpositioned scroller](reference_sr_only_escapes_unpositioned_scroller.md) — overflow-x rail with sr-only kids widens the page unless the scroller is `relative`
+- [listitem has no name from content](reference_listitem_has_no_name_from_content.md) — getByRole("listitem", { name }) needs aria-label on the li; keep the text the same, state in an sr-only tail
+- [Tap target inside a scrolling list](reference_tap_target_inside_a_scrolling_list.md) — 44px target past the tile makes an overflow-auto lane scroll; extend upward, add `relative`
+- [Always-mounted live region in space-y](reference_always_mounted_live_region_in_space_y.md) — empty region still takes the gap; nest beside a min-h line, or mb-0 / empty:-mt-*; no sr-only copy of a getByText line
+- [Live region text via ref, not state](reference_live_region_text_via_ref_not_state.md) — mount empty, write textContent in the effect; same words twice = id-keyed clear + rAF
+- [dnd-kit disabled draggable is aria-disabled](reference_dndkit_disabled_draggable_is_aria_disabled.md) — useDraggable({disabled}) spreads aria-disabled onto the row and disables its nested buttons for AT and Playwright; override after the spread
+- [axe catches hover where the pointer rests](reference_axe_catches_hover_where_the_pointer_rests.md) — click+goBack leaves a link in :hover; batch-only contrast red on an inner span; fix with group-hover ink step
+- [axe radiogroup may wrap content](reference_axe_radiogroup_may_wrap_content.md) — no requiredOwned in axe 4.13; wrap the card in the radiogroup, keep the li plain
+- [Status after a dialog closes](reference_status_after_a_dialog_closes.md) — say it from a parent effect after the inert release, not in the closing handler; sr-only text breaks anchored Playwright getByText
+- [A name in a NeonButton needs free height](reference_a_name_in_a_neonbutton_needs_free_height.md) — Radix fixes height, not nowrap; h-auto min-h-8 py-1.5 max-w-full wrap-anywhere (size 1: min-h-6 py-1)
+- [sr-only suffix in a name is unstable](reference_sr_only_suffix_in_a_name_is_unstable.md) — extra screen-reader words on a role=heading: aria-label, not an sr-only child (happy-dom pads it)
+- [Wrapping label with hint names the control](reference_wrapping_label_with_hint_names_the_control.md) — checkbox label holding a help line: name it via aria-labelledby on the title span
+- [Segmented switch is a radiogroup](reference_segmented_switch_is_a_radiogroup.md) — one-of-two pill = roving radiogroup; reserve the check slot; padded track keeps focus ring off the cyan fill
+- [Axe contrast red: read the attachment first](reference_axe_contrast_red_read_the_attachment_first.md) — blob report holds every node fg/bg; a role blended toward the bg = mid-fade frame, not a token bug
+- [Nested ConfirmDialog leaks Escape/Tab](reference_nested_confirmdialog_leaks_escape_and_tab.md) — wrap it to stop Escape/Tab; count-gated door stays mounted while busy
+- [Focus park after ConfirmDialog races its restore](reference_focus_park_after_confirmdialog_races_its_restore.md) — setTimeout loses to the unmount restore; focus-request effect + layout effect on disabled
+- [Wizard step status rides the footer live region](reference_wizard_step_status_rides_the_footer_live_region.md) — a step that mounts/unmounts cannot own a role=status; compute words in the wizard, step renders only Retry
+- [Number picker reuses ConflictRadioGroup](reference_number_picker_reuses_conflict_radio_group.md) — stable group name across a pick; hand-link picks wait in numberPicks; minted card needs shelf picker
+- [Lead-in names its list; cached status needs a tick](reference_lead_in_p_names_its_list_and_cached_status_needs_a_tick.md) — aria-labelledby on the lead-in p; delayed status fill from a remount
+- [Key hints hide on coarse pointers](reference_key_hint_hides_on_coarse_pointers_via_hintedlabel.md) — HintedLabel sr-onlys (Esc)/(Enter); drop aria-label to satisfy label-in-name, regex lookups
+- [Re-opened row focus is owed in walk memory](pattern_reopened_row_focus_is_owed_in_walk_memory.md) — oweFocus before the write; the row that mounts takes it; answer sentences go to the walk's status line
+- [Extra line in an option stays out of its name](reference_extra_line_in_option_stays_out_of_its_name.md) — aria-hidden span + aria-describedby on role=option; t.run turns undefined into null; drain
+- [Park focus before a write that unmounts the button](reference_park_focus_before_a_write_that_unmounts_the_button.md) — heading tabIndex -1 park, then Change; focus ref armed until target exists; status span is the visible line
+- [Armed focus ref must outlive the settle](reference_focus_armed_ref_must_outlive_the_settle.md) — write settles before the reactive plan arrives; stay armed until the target mounts

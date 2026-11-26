@@ -24,6 +24,7 @@ import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { Doc, Id } from "./_generated/dataModel";
 import { applyBscAttributeFill } from "./cardChecklist";
 import { insertTestCard } from "../lib/testing/card-row";
+import { normalizeTeamName } from "./teams";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -250,7 +251,15 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
+
+function armFake() {
+  vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
+  vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+  vi.stubEnv("TESTING_RESET_SECRET", "armed");
+  vi.stubEnv("CONVEX_CLOUD_URL", "https://happy-otter-123.convex.cloud");
+}
 
 describe("getForBscTeamCheck", () => {
   test("returns null when the card has no platformData.bsc", async () => {
@@ -1486,6 +1495,33 @@ describe("enqueueBscTeamBackfill modes (NEO-345)", () => {
     ).toEqual([ids.legacy, ids.gaveUp].sort());
   });
 
+  test("NEO-628 N2: on real BSC an operator-run backfill's scheduled enqueue carries no queuedBy, named or not", async () => {
+    const t = harness();
+    await seedEveryKind(t);
+    await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, { queuedBy: "user_2backfillOp" });
+    const named = await pendingScheduled(t);
+    expect(named).toHaveLength(1);
+    expect("queuedBy" in (named[0].args[0] as object)).toBe(false);
+  });
+
+  test("NEO-628: on the fake the queuing operator an operator-run backfill names rides to the lane, and is absent when none is named", async () => {
+    armFake();
+    const t = harness();
+    await seedEveryKind(t);
+
+    await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, { queuedBy: "user_2backfillOp" });
+    const named = await pendingScheduled(t);
+    expect(named).toHaveLength(1);
+    expect(named[0].args[0]).toMatchObject({ queuedBy: "user_2backfillOp" });
+
+    const t2 = harness();
+    await seedEveryKind(t2);
+    await t2.mutation(internal.cardChecklist.enqueueBscTeamBackfill, {});
+    const unnamed = await pendingScheduled(t2);
+    expect(unnamed).toHaveLength(1);
+    expect("queuedBy" in (unnamed[0].args[0] as object)).toBe(false);
+  });
+
   test("a second re-ask does not select the re-asked cards again", async () => {
     const t = harness();
     await seedEveryKind(t);
@@ -1533,5 +1569,200 @@ describe("enqueueBscTeamBackfill modes (NEO-345)", () => {
     await expect(
       t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, { batchSize: 0 }),
     ).rejects.toThrow(/batchSize/);
+  });
+});
+
+// ===========================================================================
+// NEO-602 - the per-card path asks THIS card's players
+// ===========================================================================
+
+describe("NEO-602: applyBscTeamResolution reads the card's players when a name fits several eras", () => {
+  const NAME = "Oakland Athletics";
+
+  /**
+   * A 2025 set holding "Oakland Athletics" twice over: the 1968-2024 row's
+   * own name, and an alias of the 2025- Athletics row. The set year covers
+   * only the Athletics.
+   */
+  async function seedAthletics(t: ReturnType<typeof convexTest>) {
+    const { variantTypeId, sportId } = await seedTree(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(variantTypeId, { features: { season: "2025" } });
+    });
+    const { oakland, athletics } = await t.run(async (ctx) => {
+      const oaklandId = await ctx.db.insert("teams", {
+        location: "Oakland",
+        name: "Athletics",
+        nameNormalized: normalizeTeamName(NAME),
+        sportId,
+        yearsActive: { from: 1968, to: 2024 },
+        lastUpdated: Date.now(),
+      });
+      const athleticsId = await ctx.db.insert("teams", {
+        name: "Athletics",
+        nameNormalized: normalizeTeamName("Athletics"),
+        sportId,
+        yearsActive: { from: 2025 },
+        aliases: [NAME],
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.insert("teamAliases", {
+        teamId: athleticsId,
+        sportId,
+        aliasNormalized: normalizeTeamName(NAME),
+      });
+      return { oakland: oaklandId, athletics: athleticsId };
+    });
+    return { variantTypeId, sportId, oakland, athletics };
+  }
+
+  const player = (
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    name: string,
+    teamYears: Array<{ teamId: Id<"teams">; fromYear: number; toYear: number }>,
+  ) =>
+    t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name,
+        nameNormalized: name.toLowerCase().split(" ").reverse().join(" "),
+        sportId,
+        teamYears,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+  const cardWith = (
+    t: ReturnType<typeof convexTest>,
+    variantTypeId: Id<"selectorOptions">,
+    cardNumber: string,
+    playerIds: Array<Id<"players">>,
+  ) =>
+    t.run(async (ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: variantTypeId,
+        cardNumber,
+        cardName: `Card ${cardNumber}`,
+        platformData: { bsc: { ref: `bsc-${cardNumber}`, src: "b0" } },
+        sortOrder: Number(cardNumber),
+        lastUpdated: Date.now(),
+        ...(playerIds.length > 0 ? { playerIds } : {}),
+      }),
+    );
+
+  const apply = (
+    t: ReturnType<typeof convexTest>,
+    cardChecklistId: Id<"cardChecklist">,
+    teamNames: string[] = [NAME],
+  ) =>
+    t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId,
+      rawTeamName: NAME,
+      teamNames,
+    });
+
+  test("Rickey Henderson's card links Oakland, not the 2025 Athletics whose alias the name is", async () => {
+    const t = harness();
+    const w = await seedAthletics(t);
+    const rickey = await player(t, w.sportId, "Rickey Henderson", [
+      { teamId: w.oakland, fromYear: 1979, toYear: 1984 },
+      { teamId: w.oakland, fromYear: 1989, toYear: 1993 },
+    ]);
+    const cardId = await cardWith(t, w.variantTypeId, "1", [rickey]);
+
+    expect(await apply(t, cardId)).toEqual({ applied: true, unmatched: false });
+
+    expect((await getCard(t, cardId))!.teamOnCardIds).toEqual([w.oakland]);
+  });
+
+  test("the whole-name branch reads the players too (BSC's raw string, split into parts that name other teams)", async () => {
+    const t = harness();
+    const w = await seedAthletics(t);
+    const rickey = await player(t, w.sportId, "Rickey Henderson", [
+      { teamId: w.oakland, fromYear: 1979, toYear: 1984 },
+    ]);
+    const cardId = await cardWith(t, w.variantTypeId, "1", [rickey]);
+
+    expect(await apply(t, cardId, ["Oakland", "Athletics"])).toEqual({
+      applied: true,
+      unmatched: false,
+    });
+
+    expect((await getCard(t, cardId))!.teamOnCardIds).toEqual([w.oakland]);
+  });
+
+  test("each card is decided by its OWN players: Rickey's card is Oakland, a 2025 rookie's is the Athletics", async () => {
+    const t = harness();
+    const w = await seedAthletics(t);
+    const rickey = await player(t, w.sportId, "Rickey Henderson", [
+      { teamId: w.oakland, fromYear: 1979, toYear: 1984 },
+    ]);
+    const rookie = await player(t, w.sportId, "Jacob Wilson", [
+      { teamId: w.athletics, fromYear: 2025, toYear: 2025 },
+    ]);
+    const retro = await cardWith(t, w.variantTypeId, "1", [rickey]);
+    const current = await cardWith(t, w.variantTypeId, "2", [rookie]);
+
+    await apply(t, retro);
+    await apply(t, current);
+
+    expect((await getCard(t, retro))!.teamOnCardIds).toEqual([w.oakland]);
+    expect((await getCard(t, current))!.teamOnCardIds).toEqual([w.athletics]);
+  });
+
+  test("a card with NO players is not linked to the alias-only Athletics: unmatched, hint kept, answered", async () => {
+    const t = harness();
+    const w = await seedAthletics(t);
+    const cardId = await cardWith(t, w.variantTypeId, "1", []);
+
+    expect(await apply(t, cardId)).toEqual({ applied: false, unmatched: true });
+
+    const card = await getCard(t, cardId);
+    expect(card!.teamOnCardIds ?? []).toEqual([]);
+    expect(card!.bscTeamName).toBe(NAME);
+    expect(card!.teamCheckDoneAt).toBeTypeOf("number");
+  });
+
+  test("a player with stints on both rows is a tie: unmatched, never the first candidate", async () => {
+    const t = harness();
+    const w = await seedAthletics(t);
+    const both = await player(t, w.sportId, "Tied Player", [
+      { teamId: w.oakland, fromYear: 2020, toYear: 2024 },
+      { teamId: w.athletics, fromYear: 2025, toYear: 2025 },
+    ]);
+    const cardId = await cardWith(t, w.variantTypeId, "1", [both]);
+
+    expect(await apply(t, cardId)).toEqual({ applied: false, unmatched: true });
+
+    expect((await getCard(t, cardId))!.teamOnCardIds ?? []).toEqual([]);
+  });
+
+  test("a name with ONE row is not affected by the players: the year (and the past-era allowance) decides", async () => {
+    const t = harness();
+    const { variantTypeId, sportId } = await seedTree(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(variantTypeId, { features: { season: "2026" } });
+    });
+    const brooklyn = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        location: "Brooklyn",
+        name: "Dodgers",
+        nameNormalized: normalizeTeamName("Brooklyn Dodgers"),
+        sportId,
+        yearsActive: { from: 1911, to: 1957 },
+        lastUpdated: Date.now(),
+      }),
+    );
+    const stranger = await player(t, sportId, "No Dodger", []);
+    const cardId = await cardWith(t, variantTypeId, "1", [stranger]);
+
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      rawTeamName: "Brooklyn Dodgers",
+      teamNames: ["Brooklyn Dodgers"],
+    });
+    await drainScheduled(t);
+
+    expect((await getCard(t, cardId))!.teamOnCardIds).toEqual([brooklyn]);
   });
 });

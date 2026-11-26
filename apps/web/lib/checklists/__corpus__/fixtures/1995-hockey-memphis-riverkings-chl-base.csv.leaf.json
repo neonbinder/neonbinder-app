@@ -1,0 +1,31 @@
+{
+  "file": "1995-hockey-memphis-riverkings-chl-base.csv",
+  "mode": "leaf",
+  "options": {"setYear":"1995","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"1","players":["Scott Brower"],"teams":["Memphis RiverKings"]},
+      {"number":"2","players":["Dan Brown"],"teams":["Memphis RiverKings"]},
+      {"number":"3","players":["Jamie Cooke"],"teams":["Memphis RiverKings"]},
+      {"number":"4","players":["Kevin Evans"],"teams":["Memphis RiverKings"]},
+      {"number":"5","players":["Brent Fleetwood"],"teams":["Memphis RiverKings"]},
+      {"number":"6","players":["Ron Fogarty"],"teams":["Memphis RiverKings"]},
+      {"number":"7","players":["Trent Gleason"],"teams":["Memphis RiverKings"]},
+      {"number":"8","players":["Derek Grant"],"teams":["Memphis RiverKings"]},
+      {"number":"9","players":["Mike Jackson"],"teams":["Memphis RiverKings"]},
+      {"number":"10","players":["Scott Kelsey"],"teams":["Memphis RiverKings"]},
+      {"number":"11","players":["Steve Magnusson"],"teams":["Memphis RiverKings"]},
+      {"number":"12","players":["Carl Menard"],"teams":["Memphis RiverKings"]},
+      {"number":"13","players":["Chris Morque"],"teams":["Memphis RiverKings"]},
+      {"number":"14","players":["Rick Robus"],"teams":["Memphis RiverKings"]},
+      {"number":"15","players":["Andy Ross"],"teams":["Memphis RiverKings"]},
+      {"number":"16","players":["Stephane Roy"],"teams":["Memphis RiverKings"]},
+      {"number":"17","players":["Doug Stromback"],"teams":["Memphis RiverKings"]},
+      {"number":"18","players":["Herb Boxer"],"teams":["Memphis RiverKings"]}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

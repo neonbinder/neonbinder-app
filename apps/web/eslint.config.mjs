@@ -122,6 +122,7 @@ const jsxA11yHouseRules = {
           "PlayerAutocomplete",
           "PlayerPicker",
           "TeamPicker",
+          "Switch",
         ],
         depth: 5,
       },
@@ -171,6 +172,8 @@ const jsxA11yHouseRules = {
 const visualCaptionLabels = {
   files: [
     "components/SetSelector/CardDetailPanel.tsx",
+    // NEO-645: the fields moved here from CardDetailPanel, captions and all.
+    "components/SetSelector/CardDetailFields.tsx",
     "components/SetSelector/CardChecklist.tsx",
   ],
   plugins: jsxA11y.flatConfigs.recommended.plugins,

@@ -32,7 +32,8 @@
  *  5. Nothing secret in any log line, and no fully-qualified resource name
  *     (NEO-294): the bare secret id plus the ordinal only.
  *  6. RESOURCE_EXHAUSTED is retried twice (400 ms, then 1200 ms, each jittered
- *     to 0.5x-1.5x); every other error propagates at once. Reads pass
+ *     to 0.5x-1.5x) and UNAVAILABLE once (200 ms jittered, NEO-604); every
+ *     other error, DEADLINE_EXCEEDED included, propagates at once. Reads pass
  *     ACCESS_CALL_OPTIONS so the client library adds no retry of its own.
  *
  * ## Strategy
@@ -1525,6 +1526,311 @@ describe("SecretsManagerService — quota retry is wired into every call (NEO-38
     const failures = capturedErrors.filter((line) => line.includes("Failed to destroy"));
     assert.equal(failures.length, 1, "one failure line for the abandoned prune");
   });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-604: UNAVAILABLE is retried once; DEADLINE_EXCEEDED is not
+// ---------------------------------------------------------------------------
+//
+// A CI seed saw one UNAVAILABLE on an EasyPost key write after 37 ms and the
+// route answered 500. One retry after a jittered 100-300 ms rides that out.
+// DEADLINE_EXCEEDED stays a failure: the call already spent its deadline and,
+// on a write, has very likely landed.
+
+const unavailable = () => grpcError(14, `14 UNAVAILABLE: No connection established for ${LATEST}`);
+const deadlineExceeded = () => grpcError(4, "4 DEADLINE_EXCEEDED: Deadline exceeded");
+
+describe("withQuotaRetry — UNAVAILABLE (NEO-604)", () => {
+  it("retries UNAVAILABLE once after a jittered 100-300 ms and returns the success", async () => {
+    mock.method(Math, "random", () => 0.5);
+    mock.timers.enable({ apis: ["setTimeout"] });
+    let calls = 0;
+    const promise = withQuotaRetry(async () => {
+      if (++calls === 1) throw unavailable();
+      return "recovered";
+    });
+
+    await settle();
+    assert.equal(calls, 1, "first attempt is immediate");
+    mock.timers.tick(199);
+    await settle();
+    assert.equal(calls, 1, "the retry waits the full (un-jittered) 200 ms");
+    mock.timers.tick(1);
+    await settle();
+
+    assert.equal(await promise, "recovered");
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      capturedWarns.map((line) => JSON.parse(line)),
+      [{ msg: "secret_manager_unavailable_retry", delayMs: 200 }],
+    );
+  });
+
+  for (const [label, random, expected] of [
+    ["low", 0, 100],
+    ["high", 0.9999999, 300],
+  ]) {
+    it(`jitters the UNAVAILABLE delay within 0.5x-1.5x of 200 ms (${label} end)`, async () => {
+      mock.method(Math, "random", () => random);
+      mock.timers.enable({ apis: ["setTimeout"] });
+      let calls = 0;
+      const promise = withQuotaRetry(async () => {
+        if (++calls === 1) throw unavailable();
+        return "ok";
+      });
+      await settle();
+      mock.timers.tick(expected - 1);
+      await settle();
+      assert.equal(calls, 1, `not before ${expected} ms`);
+      mock.timers.tick(1);
+      await settle();
+      assert.equal(calls, 2, `retry at ${expected} ms`);
+      await promise;
+      assert.equal(JSON.parse(capturedWarns[0]).delayMs, expected);
+    });
+  }
+
+  it("fails after two UNAVAILABLEs: one retry, the second error propagates unchanged", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    let calls = 0;
+    const errs = [unavailable(), unavailable()];
+    const promise = withQuotaRetry(async () => {
+      throw errs[calls++];
+    });
+    promise.catch(() => {});
+    await settle();
+    mock.timers.tick(300);
+    await settle();
+    mock.timers.tick(10_000);
+    await settle();
+
+    await assert.rejects(promise, (thrown) => thrown === errs[1]);
+    assert.equal(calls, 2, "exactly one retry");
+    assert.equal(capturedWarns.length, 1);
+  });
+
+  it("does not retry DEADLINE_EXCEEDED", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    let calls = 0;
+    const err = deadlineExceeded();
+    await assert.rejects(
+      withQuotaRetry(async () => {
+        calls++;
+        throw err;
+      }),
+      (thrown) => thrown === err,
+    );
+    assert.equal(calls, 1);
+    assert.equal(capturedWarns.length, 0);
+  });
+
+  for (const [label, makeErr] of [
+    ["NOT_FOUND (5)", notFound],
+    ["ALREADY_EXISTS (6)", () => grpcError(6, "ALREADY_EXISTS")],
+    ["PERMISSION_DENIED (7)", () => grpcError(7, "PERMISSION_DENIED")],
+    ["FAILED_PRECONDITION (9)", failedPrecondition],
+    ["INTERNAL (13)", () => grpcError(13, "INTERNAL")],
+  ]) {
+    it(`still does not retry ${label}`, async () => {
+      mock.timers.enable({ apis: ["setTimeout"] });
+      let calls = 0;
+      await assert.rejects(
+        withQuotaRetry(async () => {
+          calls++;
+          throw makeErr();
+        }),
+      );
+      assert.equal(calls, 1);
+      assert.equal(capturedWarns.length, 0);
+    });
+  }
+
+  it("keeps the quota and UNAVAILABLE budgets separate: quota, blip, quota, then success", async () => {
+    mock.method(Math, "random", () => 0.5);
+    mock.timers.enable({ apis: ["setTimeout"] });
+    const sequence = [quotaExhausted(), unavailable(), quotaExhausted()];
+    let calls = 0;
+    const promise = withQuotaRetry(async () => {
+      if (calls < sequence.length) throw sequence[calls++];
+      calls++;
+      return "done";
+    });
+    for (const ms of [400, 200, 1200]) {
+      await settle();
+      mock.timers.tick(ms);
+    }
+    await settle();
+
+    assert.equal(await promise, "done");
+    assert.equal(calls, 4);
+    assert.deepEqual(
+      capturedWarns.map((l) => JSON.parse(l)),
+      [
+        { msg: "secret_manager_quota_retry", attempt: 1, delayMs: 400 },
+        { msg: "secret_manager_unavailable_retry", delayMs: 200 },
+        { msg: "secret_manager_quota_retry", attempt: 2, delayMs: 1200 },
+      ],
+    );
+  });
+
+  it("reports the retry through the outcome flag, and leaves it false otherwise", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    const clean = { unavailableRetried: false };
+    await withQuotaRetry(async () => "ok", clean);
+    assert.equal(clean.unavailableRetried, false);
+
+    const blip = { unavailableRetried: false };
+    let calls = 0;
+    const promise = withQuotaRetry(async () => {
+      if (++calls === 1) throw unavailable();
+      return "ok";
+    }, blip);
+    await settle();
+    mock.timers.tick(300);
+    await settle();
+    await promise;
+    assert.equal(blip.unavailableRetried, true);
+  });
+
+  it("the retry log carries no resource name and no error message", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    const promise = withQuotaRetry(async () => {
+      throw unavailable();
+    });
+    promise.catch(() => {});
+    await settle();
+    mock.timers.tick(300);
+    await settle();
+    await promise.catch(() => {});
+
+    const joined = capturedWarns.join("\n");
+    assert.ok(!joined.includes("projects/"), "no resource name");
+    assert.ok(!joined.includes("UNAVAILABLE"), "no raw message");
+  });
+});
+
+describe("SecretsManagerService — UNAVAILABLE retry is wired into the write and read paths (NEO-604)", () => {
+  function addFlaky(client, errors, createdVersion) {
+    let n = 0;
+    client.addSecretVersion = async (req) => {
+      client.calls.add.push(req);
+      if (n < errors.length) throw errors[n++];
+      return [{ name: createdVersion }];
+    };
+  }
+
+  it("updateCredentials retries an UNAVAILABLE add and succeeds (the NEO-604 case)", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    activeClient = makeClient();
+    addFlaky(activeClient, [unavailable()], V(6));
+
+    const promise = new SecretsManagerService().updateCredentials(KEY, CREDS);
+    await settle();
+    mock.timers.tick(300);
+    await settle();
+    await promise;
+
+    assert.equal(activeClient.calls.add.length, 2);
+    assert.equal(activeClient.calls.create.length, 0, "UNAVAILABLE is not NOT_FOUND: no create");
+    assert.equal(capturedErrors.filter((l) => l.includes("Failed to update")).length, 0);
+  });
+
+  it("a retried add prunes two back (N-1 and N-2), so a duplicate version cannot survive", async () => {
+    // First attempt may have committed as v5 before the connection dropped; the
+    // retry created v6. Live: v4 (old), v5 (duplicate), v6. Keep only v6.
+    mock.timers.enable({ apis: ["setTimeout"] });
+    activeClient = makeClient();
+    addFlaky(activeClient, [unavailable()], V(6));
+
+    const promise = new SecretsManagerService().updateCredentials(KEY, CREDS);
+    await settle();
+    mock.timers.tick(300);
+    await settle();
+    await promise;
+
+    assert.deepEqual(destroyed(activeClient), [V(5), V(4)]);
+  });
+
+  it("a retried add whose N-2 is already destroyed is silent (the first attempt had not landed)", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    activeClient = makeClient({
+      destroyBehavior: (name) => {
+        if (name === V(4)) throw failedPrecondition();
+      },
+    });
+    addFlaky(activeClient, [unavailable()], V(6));
+
+    const promise = new SecretsManagerService().updateCredentials(KEY, CREDS);
+    await settle();
+    mock.timers.tick(300);
+    await settle();
+    await promise;
+
+    assert.deepEqual(destroyed(activeClient), [V(5), V(4)]);
+    assert.equal(capturedErrors.length, 0);
+  });
+
+  it("an add that needed no UNAVAILABLE retry still prunes only N-1", async () => {
+    activeClient = makeClient({ createdVersion: V(6) });
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+    assert.deepEqual(destroyed(activeClient), [V(5)]);
+  });
+
+  it("two UNAVAILABLE adds fail with the generic error, log only the code, and prune nothing", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    activeClient = makeClient();
+    addFlaky(activeClient, [unavailable(), unavailable()], V(6));
+
+    const promise = new SecretsManagerService().updateCredentials(KEY, CREDS);
+    promise.catch(() => {});
+    await settle();
+    mock.timers.tick(300);
+    await settle();
+
+    await assert.rejects(promise, /^Error: Failed to update credentials$/);
+    assert.equal(activeClient.calls.add.length, 2);
+    assert.deepEqual(destroyed(activeClient), []);
+    const failure = capturedErrors.find((l) => l.includes("Failed to update credentials for key"));
+    assert.ok(failure.includes("gRPC code 14"));
+    assert.ok(!failure.includes("projects/") && !failure.includes("UNAVAILABLE"));
+  });
+
+  it("updateCredentials does not retry a DEADLINE_EXCEEDED add", async () => {
+    activeClient = makeClient();
+    addFlaky(activeClient, [deadlineExceeded()], V(6));
+
+    await assert.rejects(
+      new SecretsManagerService().updateCredentials(KEY, CREDS),
+      /^Error: Failed to update credentials$/,
+    );
+    assert.equal(activeClient.calls.add.length, 1, "a write that may have landed is not replayed");
+    assert.deepEqual(destroyed(activeClient), []);
+  });
+
+  it("getCredentials retries an UNAVAILABLE read", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    const client = makeReadClient({ payload: { username: "seller@example.com", token: "placeholder-token" } });
+    let refused = false;
+    const access = client.accessSecretVersion.bind(client);
+    client.accessSecretVersion = async (req, options) => {
+      if (!refused) {
+        refused = true;
+        client.calls.access.push(req.name);
+        throw unavailable();
+      }
+      return access(req, options);
+    };
+    activeClient = client;
+
+    const promise = new SecretsManagerService().getCredentials(KEY);
+    await settle();
+    mock.timers.tick(300);
+    await settle();
+
+    assert.deepEqual(await promise, { username: "seller@example.com", token: "placeholder-token" });
+    assert.deepEqual(client.calls.access, [LATEST, LATEST]);
+  });
+
 });
 
 describe("SecretsManagerService — error logs carry the gRPC code, never the message (NEO-388)", () => {

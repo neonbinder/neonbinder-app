@@ -88,9 +88,7 @@ just sports. The load refuses if the target holds rows in any table the
 reset drains that points into `selectorOptions` (`slSetReviews`,
 `selectorSyncStatus`, `collectionCopies`, `collectionBuildingSets`,
 `cardPlayerLinks`, `cardChecklist`, `cardCrossListings`,
-`entityReviewQueue`, `checklistCandidates`), because those rows mean the
-reset did not run. `entityReviewSkips` also points into `selectorOptions`,
-but no reset drains it, so the load only reports its count.
+`checklistCandidates`), because those rows mean the reset did not run.
 
 **`--sports remap`** is the developer mode. `selectorOptions` is left alone.
 Each bundle sport is matched by exact name to the one sport row with that

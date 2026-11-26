@@ -11,9 +11,11 @@
  *   3. Otherwise the builder's flagged result is stored, and the card goes to
  *      the Card titles dialog.
  *
- * "Failing" is the builder's title over 80 after every cut, or one that lost a
- * first name. A title built from the box that fits with full names is NOT
- * failing: the box is the operator's own answer and it worked.
+ * "Failing" is the builder's title over 80 after every cut, or one that
+ * sits in Tidy Up (NEO-609: a Tidy Up cut, which includes a lost first name,
+ * is still out). A title built from the box that fits with full names is NOT
+ * failing: the box is the operator's own answer and it worked (the builder
+ * takes the box when its title leaves something out, NEO-637).
  *
  * Pure and browser-safe (the dialog reruns the same order when the operator
  * edits the box). Imports only the generator, the cap and the suffix list.
@@ -171,21 +173,28 @@ export type ParallelCopyTitle = ListingTitleAssessment & {
  * chain); `carriedRest` is `carriedTitleRest` over its source card, when the
  * caller has one.
  *
- * Step 2's description is the builder's own for the parallel card; when that
- * puts the title over 80 and the parallel has box text, the box text instead.
+ * Step 2 is reached only when the builder's title needs Tidy Up (or is over
+ * 80). Its description is the box text when the parallel has one and the
+ * title headed by the builder's description leaves something out (NEO-637:
+ * the same rule as `assessListingTitle`, read off the carried words) or runs
+ * over 80; otherwise the builder's own.
  */
 export function assessParallelCopyTitle(
   inputs: ListingCardInputs,
   carriedRest?: string,
 ): ParallelCopyTitle {
   const builder = assessListingTitle(inputs);
-  if (builder.fits && !builder.firstNameLost) return { ...builder, failing: false };
+  // NEO-609 — "works" is: fits, and nothing from the Tidy Up line is still
+  // out (a whole team, the number, SP, RELIC, a first name, RC, AUTO).
+  if (builder.fits && !builder.tidyUp) return { ...builder, failing: false };
   if (carriedRest !== undefined) {
     const rest = withPrintRun(carriedRest, inputs.printRun);
     const headed = (description: string) => [description, rest].filter(Boolean).join(" ");
     let title = headed(titleDescription(inputs));
     const box = inputs.setShortName?.trim();
-    if (title.length > LISTING_TITLE_MAX && box) title = headed(box);
+    if (box && (title.length > LISTING_TITLE_MAX || leftOutOfTitle(inputs, title).length > 0)) {
+      title = headed(box);
+    }
     if (title && title.length <= LISTING_TITLE_MAX) {
       return {
         title,
@@ -193,6 +202,7 @@ export function assessParallelCopyTitle(
         // The operator's own words: whatever they left out was their call.
         firstNameLost: false,
         dropped: leftOutOfTitle(inputs, title),
+        tidyUp: false,
         coreFits: true,
         carried: true,
         failing: false,

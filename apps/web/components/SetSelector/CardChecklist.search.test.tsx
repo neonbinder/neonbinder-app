@@ -25,12 +25,14 @@ import {
   within,
 } from "@testing-library/react";
 import React, { useEffect, useImperativeHandle } from "react";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import { cardMatchesSearch } from "../../lib/cards/card-search";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
+    careerCoverage: { careerGaps: "careerCoverage.careerGaps" },
     selectorOptions: {
       getCardChecklist: "getCardChecklist",
       getSelectorOptionById: "getSelectorOptionById",
@@ -92,15 +94,13 @@ vi.mock("./CardDetailPanel", () => ({
     <div role="dialog" aria-label={`Card detail stand-in ${card.cardNumber}`} />
   ),
 }));
-vi.mock("./EntityReviewWizard", () => ({ default: () => null }));
 vi.mock("./CardPairingModal", () => ({ default: () => null }));
 vi.mock("./sync-review-modal", () => ({
   default: () => null,
   needsSyncReview: () => false,
 }));
 vi.mock("./CrossListingImportModal", () => ({ default: () => null }));
-vi.mock("./CardAttentionWalker", () => ({ default: () => null }));
-vi.mock("./SkippedNamesPanel", () => ({ default: () => null }));
+vi.mock("./tidy/TidyUpWalk", () => ({ default: () => null }));
 vi.mock("./TeamPicker", () => ({ default: () => null }));
 vi.mock("./PlayerPicker", () => ({ default: () => null }));
 
@@ -172,11 +172,13 @@ const asRow = (c: ReturnType<typeof card>) =>
 
 function ui(sourceChips = {}) {
   return (
-    <CardChecklist
-      variantId={VARIANT_ID}
-      sourceChips={sourceChips}
-      sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-    />
+    <MemoryRouter>
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={sourceChips}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      />
+    </MemoryRouter>
   );
 }
 
@@ -297,7 +299,7 @@ describe("CardChecklist — search (NEO-343)", () => {
     ];
     render(ui());
     // The set-level pill counts the same two.
-    expect(screen.getByRole("button", { name: "2 need you" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "2 need you, 2 to fix" })).toBeTruthy();
 
     type("Attention");
     expect(shownNumbers()).toEqual(["16a", "60"]);

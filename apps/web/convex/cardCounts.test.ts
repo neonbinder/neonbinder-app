@@ -230,6 +230,24 @@ describe("the ledger", () => {
     ledger.variationChanged(id, true, false);
     expect(ledger.deltaFor(id)).toEqual({ all: 0, nonVariation: 1 });
   });
+
+  test("holdsDeltasBeyond names a write for any row but the one asked about", () => {
+    const leaf = "leaf" as unknown as Id<"selectorOptions">;
+    const other = "other" as unknown as Id<"selectorOptions">;
+    const ledger = createCardCountLedger();
+    expect(ledger.holdsDeltasBeyond(leaf)).toBe(false);
+    ledger.add(leaf, 3, 3);
+    expect(ledger.holdsDeltasBeyond(leaf)).toBe(false);
+    // A card that landed on and left another row nets to zero but still stamps it.
+    ledger.add(other, 1, 1);
+    ledger.add(other, -1, -1);
+    expect(ledger.holdsDeltasBeyond(leaf)).toBe(true);
+    const nothing = createCardCountLedger();
+    nothing.add(other, 0, 0);
+    expect(nothing.holdsDeltasBeyond(leaf)).toBe(false);
+    nothing.add(other, 0, -1);
+    expect(nothing.holdsDeltasBeyond(leaf)).toBe(true);
+  });
 });
 
 describe("every writer lands the true counts", () => {
@@ -248,6 +266,7 @@ describe("every writer lands the true counts", () => {
       pendingTeamNames: [],
       sortOrder: 0,
       playerNames: [],
+      printedNames: [],
       ...extra,
     });
     await t.run(async (ctx) => {
@@ -370,7 +389,6 @@ describe("every writer lands the true counts", () => {
         resolvedTeamNames: [],
         skippedPlayerNames: [],
         skippedTeamNames: [],
-        reviewRowIds: [],
         bscTeamEnrichmentIds: [],
         cardCount: 3,
         ...overrides,
@@ -399,6 +417,7 @@ describe("every writer lands the true counts", () => {
     await primeCounts(t, s.parallel);
     const result = await t.mutation(internal.parallelChecklistBuild.deleteParallelCardsPage, {
       parallelId: s.parallel,
+      sourceId: s.insert,
     });
     expect(result.deleted).toBe(2);
     expect(await stored(t, s.parallel)).toEqual({ cardCount: 0, nonVariationCardCount: 0 });
@@ -495,7 +514,6 @@ describe("the collector guard on every card delete", () => {
       resolvedTeamNames: [],
       skippedPlayerNames: [],
       skippedTeamNames: [],
-      reviewRowIds: [],
       bscTeamEnrichmentIds: [],
       cardCount: 0,
     });
@@ -524,7 +542,6 @@ describe("the collector guard on every card delete", () => {
       resolvedTeamNames: [],
       skippedPlayerNames: [],
       skippedTeamNames: [],
-      reviewRowIds: [],
       bscTeamEnrichmentIds: [],
       cardCount: 0,
     });
@@ -540,6 +557,7 @@ describe("the collector guard on every card delete", () => {
     await addCopy(t, s, owned);
     const result = await t.mutation(internal.parallelChecklistBuild.deleteParallelCardsPage, {
       parallelId: s.parallel,
+      sourceId: s.insert,
     });
     expect(result).toMatchObject({
       deleted: 0,
@@ -770,6 +788,7 @@ describe("a refusal says how many collectors are in the way", () => {
     await addCopy(t, s, two, "collector_a");
     const result = await t.mutation(internal.parallelChecklistBuild.deleteParallelCardsPage, {
       parallelId: s.parallel,
+      sourceId: s.insert,
     });
     expect(result.blockedReason).toBe(
       "2 collectors own copies of its cards, and a rebuild would pull those cards out from under them",
@@ -813,7 +832,6 @@ describe("a refusal says how many collectors are in the way", () => {
       resolvedTeamNames: [],
       skippedPlayerNames: [],
       skippedTeamNames: [],
-      reviewRowIds: [],
       bscTeamEnrichmentIds: [],
       cardCount: 0,
     });
@@ -886,6 +904,7 @@ describe("lastCardAt (NEO-532)", () => {
           pendingTeamNames: [],
           sortOrder: 0,
           playerNames: [],
+          printedNames: [],
         },
         { sportValue: "Baseball", setNameValue: "Chrome" },
         { sport: async () => s.sport },

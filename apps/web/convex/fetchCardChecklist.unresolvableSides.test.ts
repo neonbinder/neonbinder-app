@@ -14,11 +14,9 @@
  * `addCustomCard`), but since `fetchCardChecklist` was the ONLY place
  * unknowns were ever computed, those names could never be resolved via the
  * review wizard at all. This file covers the fix: the custom-subtree branch
- * now runs the same `resolveUnknownsAndStartBatch` pass the marketplace path
- * uses (BSC/SL fetching itself is still fully skipped — only the
- * pending-name resolution runs), and the batch it opens is scoped to the
- * calling user via `createdByUserId` (see `entityReviewQueue.test.ts` for
- * the scoping mechanism itself).
+ * runs the same pending-name resolution the marketplace path uses (BSC/SL
+ * fetching itself is still fully skipped). NEO-656: nothing is stored for the
+ * caller (no batch), so two callers see the same unknowns.
  *
  * No BSC/SL adapter mocking needed here (unlike
  * `fetchCardChecklistTeamLookup.test.ts`) — the whole point of the
@@ -42,13 +40,18 @@ vi.mock("./credentials", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./credentials")>();
   const { internalAction } = await import("./_generated/server");
   const { v } = await import("convex/values");
+  const getSiteToken = internalAction({
+    args: { site: v.string() },
+    returns: v.any(),
+    handler: async () => ({ token: "test-bsc-token" }),
+  });
   return {
     ...actual,
-    getSiteToken: internalAction({
-      args: { site: v.string() },
-      returns: v.any(),
-      handler: async () => ({ token: "test-bsc-token" }),
-    }),
+    getSiteToken,
+    // NEO-605: the BSC adapter reads the token by calling this directly,
+    // not through `runAction(getSiteToken)`; the same stub answers both.
+    siteTokenForCurrentUser: (ctx: unknown, site: string) =>
+      (getSiteToken as unknown as { _handler: (c: unknown, a: { site: string }) => unknown })._handler(ctx, { site }),
     authenticateBsc: internalAction({
       args: { userId: v.optional(v.string()), tokenRefused: v.optional(v.boolean()) },
       returns: v.any(),
@@ -56,6 +59,15 @@ vi.mock("./credentials", async (importOriginal) => {
     }),
   };
 });
+
+// Warm the mocked module once, before any test runs. The adapters import
+// "./credentials" and convex-test's function loader imports it too, and when
+// those two first imports overlap (a BSC and a SportLots side fetched together)
+// vitest builds the async factory twice, and one importer can fall through to
+// the REAL module, so the adapter reads a real token and the sync ends in
+// "error". Vitest's own mocker says this does not work for concurrent imports.
+// Awaiting it here caches the mocked module before anything can race.
+await import("./credentials");
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -120,7 +132,7 @@ async function seedCustomCardWithPendingPlayer(
 }
 
 describe("fetchCardChecklist — a path with no marketplace ids", () => {
-  test("surfaces a custom card's pendingPlayerNames as an unknown and opens a review batch", async () => {
+  test("surfaces a custom card's pendingPlayerNames as an unknown", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_A);
     const selectorOptionId = await seedCustomSport(t);
@@ -155,18 +167,12 @@ describe("fetchCardChecklist — a path with no marketplace ids", () => {
       { selectorOptionId, sportId: selectorOptionId, cards: [] },
     );
     expect(resolved.unknownPlayers).toEqual(["Custom Subtree Player"]);
-    expect(resolved.batchId).toBeTruthy();
-
-    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
-      selectorOptionId,
-      batchId: resolved.batchId!,
-    });
-    expect(rows).toHaveLength(1);
-    expect(rows[0].name).toBe("Custom Subtree Player");
-    expect(rows[0].kind).toBe("player");
+    // NEO-656: the gate stores nothing; the name stays pending on the card.
+    const cards = await t.run((ctx) => ctx.db.query("cardChecklist").collect());
+    expect(cards.map((c) => c.pendingPlayerNames)).toEqual([["Custom Subtree Player"]]);
   });
 
-  test("a path with no marketplace ids commits with the fixed skip message, no batch opened", async () => {
+  test("a path with no marketplace ids commits with the fixed skip message", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_A);
     const selectorOptionId = await seedCustomSport(t);
@@ -185,10 +191,9 @@ describe("fetchCardChecklist — a path with no marketplace ids", () => {
     );
     expect(resolved.unknownPlayers).toEqual([]);
     expect(resolved.unknownTeams).toEqual([]);
-    expect(resolved.batchId).toBeUndefined();
   });
 
-  test("two different users fetching the SAME custom subtree get separate, non-colliding batches", async () => {
+  test("two different users fetching the SAME custom subtree are both told the same unknown name", async () => {
     // Direct regression coverage for the exact bug class this session fixed
     // in production: a shared review batch used to leak one caller's
     // pending names into another caller's wizard. Confirms the fix holds
@@ -212,9 +217,12 @@ describe("fetchCardChecklist — a path with no marketplace ids", () => {
       { selectorOptionId, sportId: selectorOptionId, cards: [] },
     );
 
-    expect(resultA.batchId).toBeTruthy();
-    expect(resultB.batchId).toBeTruthy();
-    expect(resultB.batchId).not.toBe(resultA.batchId);
+    expect(resultA.unknownPlayers).toEqual(["Shared Set Player"]);
+    expect(resultB.unknownPlayers).toEqual(["Shared Set Player"]);
+    // The name belongs to the card, not to a caller: nothing is stored per
+    // user, so both gates found it and the card still carries it once.
+    const cards = await t.run((ctx) => ctx.db.query("cardChecklist").collect());
+    expect(cards.map((c) => c.pendingPlayerNames)).toEqual([["Shared Set Player"]]);
   });
 });
 

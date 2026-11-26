@@ -56,6 +56,8 @@ import { useSearchParams } from "react-router";
 import { api } from "../../convex/_generated/api";
 import { ALL_BRANDS_VIEW, type ManufacturerSelection } from "./all-brands-view";
 import type { SelectorLevel } from "./selector-sync-feedback";
+import { liveSearchParams, noteSearchWrite, settleSearchWrite } from "./live-search-params";
+import { TIDY_PARAM } from "./tidy/useTidyWalkUrl";
 
 /**
  * The cascade's levels, root first. Keep in step with `DRILL_LEVELS` in
@@ -140,18 +142,37 @@ export function canonicalPrefix(raw: ReadonlyArray<string | null>): {
 
 /**
  * The params for `path`, in canonical order. Params that are not the drill's
- * (anything else a link carries) are kept as they were; the drill's own keys
- * are rewritten from scratch, so a stale deeper level can never survive.
+ * (anything else a link carries, `tidy` among them) keep their place and their
+ * order; the drill's own keys are rewritten from scratch, so a stale deeper
+ * level can never survive.
+ *
+ * The drill's keys are written where the first of them already sat (at the end
+ * when none was there). That is what makes `sport=…&type=…&tidy=first` its own
+ * canonical form: the Tidy Up walk opens by appending `tidy`, and a drill that
+ * moved `tidy` to the front would be a second writer undoing the walk's next
+ * write (NEO-645).
  */
 export function serializeDrillPath(
   path: readonly string[],
   base?: URLSearchParams,
 ): URLSearchParams {
-  const next = new URLSearchParams(base);
-  for (const level of DRILL_LEVELS) next.delete(DRILL_PARAMS[level]);
+  const drillKeys = new Set<string>(DRILL_LEVELS.map((level) => DRILL_PARAMS[level]));
+  const drillPairs: Array<[string, string]> = [];
   path.forEach((value, i) => {
-    if (i < DRILL_LEVELS.length) next.append(DRILL_PARAMS[DRILL_LEVELS[i]], value);
+    if (i < DRILL_LEVELS.length) drillPairs.push([DRILL_PARAMS[DRILL_LEVELS[i]], value]);
   });
+  const next = new URLSearchParams();
+  let placed = false;
+  const place = () => {
+    if (placed) return;
+    placed = true;
+    for (const [key, value] of drillPairs) next.append(key, value);
+  };
+  base?.forEach((value, key) => {
+    if (drillKeys.has(key)) place();
+    else next.append(key, value);
+  });
+  place();
   return next;
 }
 
@@ -351,11 +372,22 @@ export function useDrillUrlState(): DrillUrlState {
   useEffect(() => {
     if (effectivePath === null) return;
     setTrusted((prev) => withTrust(prev, effectivePath));
-    const next = serializeDrillPath(effectivePath, searchParams);
-    if (next.toString() === searchParams.toString()) return;
+    // NEO-645: build on the URL a write has just asked for, not the one last
+    // rendered, like every other writer (see live-search-params). The walk's
+    // `?tidy=first` -> `?tidy=<card>` replace can land in the same effect flush
+    // as this one; a correction built on the rendered `tidy=first` would put it
+    // back, and the walk (whose inputs did not change) would never ask again.
+    const base = liveSearchParams(searchParams);
+    const next = serializeDrillPath(effectivePath, base);
+    if (next.toString() === base.toString()) return;
+    // A write is in flight and it is not canonical (or not the path this render
+    // shows): leave it. Its render re-runs this effect with the URL as it landed,
+    // and `effectivePath` here may be older than what the write asked for.
+    if (base.toString() !== searchParams.toString()) return;
     if (urlDropped || effectivePath.length < urlPath.length) {
       setTruncatedOnLoad(true);
     }
+    noteSearchWrite(next);
     setSearchParams(next, { replace: true });
   }, [effectivePath, searchParams, setSearchParams, urlDropped, urlPath]);
 
@@ -370,6 +402,7 @@ export function useDrillUrlState(): DrillUrlState {
       searchParams,
       setSearchParams,
     };
+    settleSearchWrite(searchParams);
   });
 
   /**
@@ -384,9 +417,16 @@ export function useDrillUrlState(): DrillUrlState {
       pruneFrom?: number,
     ) => {
       const { path: next } = canonicalPrefix(nextRaw);
-      const { searchParams: params, setSearchParams: setParams } =
+      const { searchParams: rendered, setSearchParams: setParams } =
         latest.current;
+      // NEO-645: build on the URL a walk write has just asked for (`?tidy=`),
+      // not the one last rendered, or this write undoes it.
+      const params = liveSearchParams(rendered);
       const serialized = serializeDrillPath(next, params);
+      // NEO-645: the Tidy Up walk (`?tidy=`) belongs to the checklist it was
+      // opened on. A write that moves the drill (anywhere else, a delete, a
+      // move, a reshape) ends it; one that leaves the path where it is does not.
+      if (next.join("/") !== latest.current.path.join("/")) serialized.delete(TIDY_PARAM);
       // One transition for all of it. The router commits a navigation inside
       // `startTransition`, so trust and the notice flag set outside it would
       // render a frame of their own first — the new trust against the OLD
@@ -401,6 +441,7 @@ export function useDrillUrlState(): DrillUrlState {
         );
         setTruncatedOnLoad(false);
         if (serialized.toString() === params.toString()) return;
+        noteSearchWrite(serialized);
         setParams(serialized, { replace: mode === "replace" });
       });
     },

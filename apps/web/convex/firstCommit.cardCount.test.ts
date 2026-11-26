@@ -290,7 +290,6 @@ describe("the seed's first Base commit saves every card", () => {
     );
     expect(resolved.unknownPlayers.length).toBe(BSC_TOTAL);
     expect(resolved.unknownTeams.length).toBeGreaterThan(0);
-    expect(resolved.batchId).toBeTruthy();
 
     // 3. COMMIT — the number the flow asserts.
     const committed = await asAdmin.action(

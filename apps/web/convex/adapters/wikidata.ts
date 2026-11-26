@@ -1,23 +1,20 @@
 "use node";
 
-import { internalAction } from "../_generated/server";
-import type { ActionCtx } from "../_generated/server";
+import { action, internalAction } from "../_generated/server";
 import { internal } from "../_generated/api";
-// NEO-294: the review row's resolution is WRITTEN through this. The write is
-// a separate failure mode from the lookup, and an optimistic-concurrency loss
-// on it must never be reported to the operator as "Wikidata found nothing" —
-// see `runEntityReviewLookupImpl` for the whole argument.
-import {
-  isOccConflict,
-  OCC_RETRY_ATTEMPTS,
-  runWithOccRetry,
-  type OccRetryOptions,
-} from "../../lib/errors/occ-retry";
-import { v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import type { Id } from "../_generated/dataModel";
-// NEO-301: a lookup that could not reach Wikidata is retried by the pool
-// rather than recorded as "no match"; a write failure is not.
-import { NonRetryableError } from "@convex-dev/workpool";
+import { requireAdmin } from "../auth";
+import {
+  awaitsOperatorBeforeLookup,
+  LOOKUP_HISTORY_IDS_MAX,
+  MAX_TIDY_NAME_LENGTH,
+  mergeLookupEnrichment,
+  pickEnrichment,
+  tidyLookupStatusValidator,
+  tidyNameEnrichmentValidator,
+  tidyNameKindValidator,
+} from "../tidyNames";
 import {
   WikidataUnavailableError,
   type WikidataLookupKind,
@@ -32,6 +29,9 @@ import { sortTeamYears } from "../../lib/players/team-tenure";
 // below is where an EXTERNAL string first becomes something we call an id, so
 // it is the right place to decide whether it is one.
 import { isWikidataQid } from "../../lib/players/wikidata-id";
+// NEO-643 — a label Wikidata hands back is cleansed before it is written into
+// enrichment. QIDs, IRIs and page titles are keys and never pass through it.
+import { cleanseExternalName } from "../../lib/entities/cleanse-name";
 // NEO-236: every outward-facing lookup (ESPN's displayName, Wikidata's label)
 // is keyed on the COMPOSED full name, never on the stored nickname.
 import { teamFullName } from "../../lib/teams/team-name";
@@ -348,7 +348,11 @@ async function sparqlAttempt(url: string): Promise<SparqlAttemptOutcome> {
  */
 let emptySearchReaskBackoffMs = WIKIDATA_RETRY_BACKOFF_MS;
 
-/** Test seam only. Pass `undefined` to restore the production pause. */
+/**
+ * Test seam only. Pass `undefined` to restore the production pause. It also
+ * governs the transport-failure retry pause in `runSparql`, which uses the same
+ * `WIKIDATA_RETRY_BACKOFF_MS` in production.
+ */
 export function __setEmptySearchReaskBackoffForTests(ms: number | undefined): void {
   emptySearchReaskBackoffMs = ms ?? WIKIDATA_RETRY_BACKOFF_MS;
 }
@@ -412,7 +416,7 @@ async function runSparqlWithMeta(
       // Structured, and deliberately WITHOUT the query: the existing lines
       // never carry it, and a query embeds operator-typed names.
       console.warn(JSON.stringify({ msg: "wikidata_sparql_retry", reason: outcome.reason }));
-      await sleep(WIKIDATA_RETRY_BACKOFF_MS);
+      await sleep(emptySearchReaskBackoffMs);
       continue;
     }
     if (trace) {
@@ -569,9 +573,9 @@ const LABEL_SERVICE = `SERVICE wikibase:label { bd:serviceParam wikibase:languag
  * instead of a `Create Q1215892` pill.
  */
 function labelValue(binding?: SparqlBinding): string | undefined {
-  const value = binding?.value;
-  if (value === undefined) return undefined;
-  return isWikidataQid(value) ? undefined : value;
+  if (binding?.value === undefined) return undefined;
+  const value = cleanseExternalName(binding.value);
+  return !value || isWikidataQid(value) ? undefined : value;
 }
 
 /**
@@ -1191,9 +1195,8 @@ export interface PlayerLookupResult {
   // best-effort: a real but thinly-documented player has none of them, which
   // is why each is optional rather than defaulted to a placeholder string.
   //
-  // These are consumed only by the review-wizard path: `runEntityReviewLookup`
-  // spreads this whole result into `entityReviewQueue.enrichment` (whose
-  // validator carries all three), so nothing extra is needed to route them.
+  // These are consumed only by the Tidy Up walk's lookup (`lookupTidyName`),
+  // which returns this whole result, so nothing extra is needed to route them.
   // `enrichPlayer` ignores them — `players` has no column for them, and adding
   // one would be storing a Wikidata blurb as if it were NeonBinder card data.
   /** Wikidata's English `schema:description` — "American football running back". */
@@ -1409,6 +1412,8 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
     // guard against a malformed response, not an expected branch.
     const teamWdId = row.team ? qidFromIri(row.team.value) : undefined;
     if (row.team && row.teamLabel && teamWdId) {
+      // NEO-643: the label is a name NB will store and show; cleansed once.
+      const teamLabel = cleanseExternalName(row.teamLabel.value);
       const stintKey = `${teamWdId}|${row.start?.value ?? ""}|${row.end?.value ?? ""}`;
       const teamSportQid = row.teamSport ? qidFromIri(row.teamSport.value) : undefined;
       if (
@@ -1419,7 +1424,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
         if (!parkedOutsideSport.has(stintKey)) {
           parkedOutsideSport.set(stintKey, {
             teamWdId,
-            teamLabel: row.teamLabel.value,
+            teamLabel,
             // `membershipIsOutsidePlayerSport` answered true, so it is a QID.
             teamSportQid: teamSportQid as string,
           });
@@ -1438,7 +1443,8 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
         // NEO-235: hoisted ABOVE the dated/undated split — an unlabelled team
         // is unusable in `undatedCareerTeams` for exactly the same reason it is
         // unusable as a stint (the operator would be shown "Q127635").
-        const labelLooksLikeQid = isWikidataQid(row.teamLabel.value);
+        // A label with nothing left after the cleanse is no label at all.
+        const labelLooksLikeQid = !teamLabel || isWikidataQid(teamLabel);
         if (labelLooksLikeQid) {
           // NEO-208: structured for the same reason as the no-match log
           // above — `name` is operator input.
@@ -1457,7 +1463,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
           const match = classifyMembership({ start: row.start, end: row.end });
           if (match?.kind === "stint") {
             careerTeams.push({
-              name: row.teamLabel.value,
+              name: teamLabel,
               fromYear: match.fromYear,
               toYear: match.toYear,
               // NEO-236: `teamWdId` is already proven non-null by the guard
@@ -1465,7 +1471,7 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
               wikidataId: teamWdId,
             });
           } else if (match?.kind === "undated") {
-            undatedByTeamQid.set(teamWdId, row.teamLabel.value);
+            undatedByTeamQid.set(teamWdId, teamLabel);
           }
         }
       }
@@ -1483,7 +1489,11 @@ ${hallOfFameSparqlBlocks(qid, hofQid)}
     // keep the first non-empty answer. Guarded on "still undefined" rather
     // than assigned unconditionally so a later row (where an OPTIONAL happened
     // to bind nothing) cannot blank a value an earlier row supplied.
-    if (description === undefined && row.descr?.value) description = row.descr.value;
+    if (description === undefined && row.descr?.value) {
+      // NEO-643: display text. An all-junk description stays undefined so a
+      // later row can still supply one.
+      description = cleanseExternalName(row.descr.value) || undefined;
+    }
     if (birthYear === undefined) birthYear = yearFromBinding(row.dob);
     if (enwikiTitle === undefined && row.title?.value) enwikiTitle = row.title.value;
   }
@@ -2093,314 +2103,154 @@ export const enrichTeam = internalAction({
 });
 
 /**
- * NEO-254 — the subset of a lookup result an `entityReviewQueue` row can hold.
+ * NEO-656 (D3) — one name's Wikidata lookup, ON DEMAND, for the walk.
  *
- * `enrichmentValidator` is a closed object, so a field the lookup returns and
- * the row has no column for is not ignored — it is a runtime refusal on every
- * function that returns the row, which reads to an operator as the wizard
- * failing to open. (That exact failure shipped once already this ticket, when
- * `activeInSetYear` was added to the schema and not to the validator.)
+ * The walk asks when a card opens (and prefetches the next card); the answer
+ * lives in its memory for the sitting and is never stored. Public and
+ * admin-only; it WRITES NOTHING. Ports `runTidyNameLookupImpl` and the merge
+ * `tidyNames.applyLookupResult` made when a result landed (NEO-645):
  *
- * Only the LEAGUE shape needs narrowing today: `lookupLeagueEnrichment`
- * returns `country` for context, and `leagues` has no column for it. The other
- * two kinds pass through whole, as they always have.
+ *  - the live same-name players, with the set's own history candidates first
+ *    (`historyPlayerIds`) and the gate's preselect carried over
+ *    (`tidyNames.mergeLookupEnrichment`);
+ *  - a lookup that FINISHED and found nothing (or the sport has no Wikidata
+ *    mapping) is `ready` with no enrichment: "nothing to enrich" is not a
+ *    failure, and the Player tile's "Add as new player" works from it. One
+ *    that could not complete (a transport failure, an unreadable answer, a
+ *    throw, Wikidata unreachable) is `error`, and the tile offers Try again;
+ *  - a TEAM whose lookup was cut short but still produced a partial (ESPN's
+ *    league, location and colours) is `ready` with that partial (NEO-301);
+ *  - only the keys `tidyNameEnrichmentValidator` holds survive
+ *    (`pickEnrichment`).
+ *
+ * The same action serves the New team form's career-team lookup, where the name
+ * need not be on the card (it is still capped at 120 characters).
+ *
+ * One try per call: the pool's retry ladder is gone with the pool lane (D4). The
+ * caller keys each request by card, kind, name and sport and drops a response
+ * that no longer matches. Ids, kinds and counts only in logs, never the name.
  */
-function reviewEnrichmentFor(
-  kind: "player" | "team" | "league",
-  result: PlayerLookupResult | TeamLookupResult | LeagueLookupResult,
-): Record<string, unknown> {
-  if (kind !== "league") return result as unknown as Record<string, unknown>;
-  const league = result as LeagueLookupResult;
-  return {
-    wikidataId: league.wikidataId,
-    ...(league.abbreviation ? { abbreviation: league.abbreviation } : {}),
-    ...(league.yearsActive ? { yearsActive: league.yearsActive } : {}),
-  };
-}
-
-/**
- * NEO-99: one review row's Wikidata preview lookup — the `wikidataPool` work
- * item that replaced the old chained `processEntityReviewQueue`.
- *
- * The pool (convex/wikidataPool.ts) enqueues exactly one of these per pending
- * `entityReviewQueue` row and drains 5 at a time across the whole deployment.
- * Each item is fully self-contained: it resolves the row's sport config, runs
- * the name+sport lookup (nothing is written to `players`/`teams` — only the
- * review row's own `status`/`enrichment`), and patches the row. The wizard's
- * reactive `getBatch` turns each patch into a visible "one more reviewed" step,
- * so rows stream in as the pool works through them.
- *
- * Self-contained on purpose: the pool coordinates concurrency and the fetch
- * timeout bounds duration, so a single attempt completes in bounded time
- * (success, or a no-match "error") and never blocks the lane. The row is
- * patched for BOTH a match and a no-match here — the pool's
- * `onEntityReviewLookupComplete` is a further backstop for the residue this
- * cannot reach on its own (an UNCAUGHT throw, an action-level timeout, or a
- * pool cancellation), so a row can never be stranded on `pending`.
- *
- * NEO-301: an attempt that could not reach Wikidata at all (timeout, network,
- * 5xx, 429) is neither — it writes nothing, THROWS, and the pool retries it on
- * its ladder (convex/wikidataPool.ts). The row stays `pending` until an
- * attempt gets an answer, or until the final attempt fails and the backstop
- * ages it to "error". The exception is a team row with a partial (ESPN)
- * answer, which is written "ready" before the throw and kept "ready" after
- * the ladder — see `runEntityReviewLookupImpl`.
- *
- * Deliberately catches the LOOKUP rather than letting it propagate to the
- * pool: resolving the row here keeps every lookup outcome in one place and
- * lets the streaming counter advance immediately, instead of waiting for the
- * completion callback to fire. The WRITE is outside that catch — NEO-294, and
- * the reason is on `runEntityReviewLookupImpl`.
- */
-export const runEntityReviewLookup = internalAction({
+export const lookupTidyName = action({
   args: {
-    rowId: v.id("entityReviewQueue"),
+    cardId: v.id("cardChecklist"),
+    kind: tidyNameKindValidator,
+    name: v.string(),
+    sportId: v.id("selectorOptions"),
+    /** The set's own history picks (`tidyLeafFacts`), carried first among the candidates. */
+    historyPlayerIds: v.optional(v.array(v.id("players"))),
+    /**
+     * "Add anyway" (NEO-332/424, ported from main's `awaitsOperatorBeforeLookup`):
+     * a player name that already has a same-name choice or a preselect is
+     * answered from those alone, with no Wikidata call, until the operator asks
+     * for the rest. `true` asks Wikidata too.
+     */
+    full: v.optional(v.literal(true)),
+    /** Rule E's obvious candidate (`tidyLeafFacts`), carried onto the answer. */
+    preselect: v.optional(
+      v.object({
+        playerId: v.id("players"),
+        sportId: v.id("selectorOptions"),
+        sportValue: v.string(),
+        reason: v.union(v.literal("priorYearProduct"), v.literal("onlyNamesake")),
+      }),
+    ),
   },
-  returns: v.null(),
-  handler: async (ctx, args): Promise<null> => runEntityReviewLookupImpl(ctx, args),
-});
-
-/**
- * NEO-294 — what the row will be resolved to, decided BEFORE anything is
- * written.
- *
- * Mirrors `applyLookupResult`'s own args minus the id, so the two cannot drift
- * apart silently: `status: "error"` with no `enrichment` is the genuine
- * no-match, and it is the ONLY way that shape is produced.
- */
-type EntityReviewLookupPayload = {
-  status: "ready" | "error";
-  enrichment?: ReturnType<typeof reviewEnrichmentFor>;
-};
-
-/**
- * The slice of an action ctx this work item uses.
- *
- * Narrow rather than the whole `ActionCtx` so the unit tests can drive the
- * impl with a two-method stub — the same reason `backstopEntityReviewRowImpl`
- * is a plain function rather than a registered mutation: neither can be
- * exercised through the workpool, which convex-test cannot mount.
- */
-export type EntityReviewLookupCtx = Pick<ActionCtx, "runQuery" | "runMutation">;
-
-/**
- * The body of `runEntityReviewLookup`, as a plain function so a test can hand
- * it a ctx whose `runMutation` loses an optimistic-concurrency race.
- *
- * ## NEO-294 — why the write is not inside the lookup's catch
- *
- * It used to be. One `try` covered both the SPARQL lookup and the
- * `applyLookupResult` that stores its answer, so a write that lost an OCC race
- * (live logs: four times in a single seed run, permanently — the pool's
- * lookups and `commitCardChecklist`'s batch read contend on these same rows)
- * landed in the handler written for "Wikidata found nothing", which then wrote
- * `status: "error"` with NO enrichment. A write failure was reported to the
- * operator as a data absence:
- *
- *   - the wizard shows "No Wikidata match found" for a name Wikidata matched;
- *   - a player's `careerTeams` never lands, so no career-team steps are
- *     staged, and the belt-and-braces recovery pass reads `row.enrichment` —
- *     which was never written — so it cannot recover them either;
- *   - a team's `league` never lands, so no New League step and no ESPN
- *     location pre-fill.
- *
- * Nothing in-session heals it; only a full re-sync of the set does.
- *
- * So the lookup decides a PAYLOAD and the catch covers only the lookup. The
- * write then runs once, outside, with `runWithOccRetry` (NEO-189) — the
- * mutation rolled back completely on a conflict, so re-running it starts from
- * the state it started from the first time, which is exactly the failure that
- * helper is safe for.
- *
- * ## What happens when the write fails anyway
- *
- * It THROWS, and the row is left `pending`. It is not rewritten as "error"
- * here, because a write that never landed is not evidence about Wikidata and
- * must not be turned into an answer about it. The pool's `onComplete`
- * (`backstopEntityReviewRowImpl`) then ages the still-`pending` row to "error"
- * off a SINGLE-document read set — it logs `entity_review_row_backstopped`
- * with the work item's `resultKind`, and the failure is attributable in the
- * pool's own telemetry rather than disguised as a lookup that found nothing.
- * The operator ends up at the same wizard step either way; the difference is
- * that this one leaves a trail. The throw is a `NonRetryableError` (NEO-301:
- * the pool retries other throws now), so it costs no second SPARQL round trip.
- *
- * ## Telling the four outcomes apart in the logs
- *
- * Before this they were indistinguishable, which is why it went unnoticed for
- * so long. Now: a genuine no-match logs `entity_review_lookup_no_match`, a
- * lookup that threw logs the `[entity-review-lookup]` line it always has, a
- * write that could not be landed logs `entity_review_lookup_write_failed`,
- * and (NEO-301) a lookup that could not reach Wikidata logs
- * `wikidata_lookup_unavailable` on every attempt, with the backstop's
- * `entity_review_row_backstopped` carrying `wikidataUnavailable: true` once
- * the ladder is spent.
- * Ids, kinds and counts only — never the name on the row (observability.ts).
- */
-export async function runEntityReviewLookupImpl(
-  ctx: EntityReviewLookupCtx,
-  args: { rowId: Id<"entityReviewQueue"> },
-  /**
-   * Test-only seam: lets a test inject a no-op `sleep` so the retry backoff
-   * costs no wall clock. Production passes nothing and gets occ-retry's own
-   * defaults, the same way `commitCardChecklist`'s phases do.
-   */
-  occRetry: OccRetryOptions = {},
-): Promise<null> {
-  const row = await ctx.runQuery(internal.entityReviewQueue.getInternal, {
-    id: args.rowId,
-  });
-  // The row can legitimately be gone: a Cancel deletes the batch's rows while
-  // this item may still be draining. Nothing to resolve.
-  if (!row) return null;
-
-  // Decided inside the try, WRITTEN outside it — see the docblock.
-  let payload: EntityReviewLookupPayload;
-  // NEO-301: records whether Wikidata could be ASKED. Read after the try,
-  // before any write — an unavailable lookup writes nothing and throws.
-  const trace = newLookupTrace();
-  try {
-    const sportCtx = await ctx.runQuery(
-      internal.selectorOptions.getSportEnrichmentContext,
-      { sportId: row.sportId },
-    );
-    const result = !sportCtx
-      ? null
-      : row.kind === "player"
-        ? await lookupPlayerEnrichment(row.name, sportCtx, trace)
-        : row.kind === "league"
-          ? /*
-             * NEO-254 — a staged New League step, pre-filled.
-             *
-             * Without this the step arrived carrying a name and nothing
-             * else, which is the very shape the feature exists to stop an
-             * operator having to produce by hand. `source.wikidataId` is the
-             * league QID off the team's own P118 statement, so this reads
-             * the right record rather than searching for a label.
-             *
-             * `country` is DROPPED on the way out: `lookupLeagueEnrichment`
-             * returns it for context, `leagues` has no column for it, and
-             * the New League step does not render it. Spreading the whole
-             * result would put a field on the row that nothing can store —
-             * and `enrichmentValidator` would refuse it at runtime, which is
-             * the wizard failing to open.
-             */
-            await lookupLeagueEnrichment(
-              row.name,
-              sportCtx.wikidata?.sportQid,
-              row.source?.wikidataId,
-              trace,
-            )
-          : // NEO-236: a row staged off a player's career list carries the QID
-            // Wikidata attached to that P54 membership. Reading THAT record is
-            // not a search — it is the same club by construction, which is what
-            // gets "Sydney Blue Sox" its league instead of a null match from an
-            // EntitySearch that has no `wdt:P641` to filter on.
-            await lookupTeamEnrichment(row.name, sportCtx, row.source?.wikidataId, trace);
-    payload = result
-      ? { status: "ready", enrichment: reviewEnrichmentFor(row.kind, result) }
-      : { status: "error" };
-    if (!result && !trace.unavailable) {
-      // The genuine no-match — and the ONLY place this file produces the
-      // `status: "error"` with no enrichment shape from a lookup that ran and
-      // answered. `sportContext: false` is the other way a row lands here: the
-      // sport carries no enrichment config, so no side was fetched at all.
-      console.log(
-        JSON.stringify({
-          msg: "entity_review_lookup_no_match",
-          rowId: args.rowId,
-          kind: row.kind,
-          sportContext: Boolean(sportCtx),
-        }),
+  returns: v.object({
+    status: tidyLookupStatusValidator,
+    enrichment: v.optional(tidyNameEnrichmentValidator),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const name = args.name.trim();
+    if (name.length === 0) throw new ConvexError("A name is required.");
+    if (name.length > MAX_TIDY_NAME_LENGTH) {
+      throw new ConvexError(
+        `A name is ${name.length} characters; the limit is ${MAX_TIDY_NAME_LENGTH}.`,
       );
     }
-  } catch (error) {
-    // Unchanged (NEO-99): a lookup that THREW resolves the row to "error"
-    // exactly as one that found nothing does — from the operator's seat a
-    // question we could not ask and a question with no answer are the same
-    // end state. What is no longer inside this catch is the WRITE.
-    console.error(`[entity-review-lookup] lookup for ${args.rowId} failed:`, error);
-    payload = { status: "error" };
-  }
+    if ((args.historyPlayerIds?.length ?? 0) > LOOKUP_HISTORY_IDS_MAX) {
+      throw new ConvexError(`At most ${LOOKUP_HISTORY_IDS_MAX} history players can come with a lookup.`);
+    }
+    // The live same-name players, read first (also proves the card and the sport).
+    const known = await ctx.runQuery(internal.tidyNames.lookupContext, {
+      cardId: args.cardId,
+      kind: args.kind,
+      name,
+      sportId: args.sportId,
+      ...(args.historyPlayerIds ? { historyPlayerIds: args.historyPlayerIds } : {}),
+    });
 
-  // NEO-301: Wikidata could not be ASKED — a timeout, a thrown fetch, a 5xx
-  // or a 429 on a call's last attempt. That is not an answer, so nothing is
-  // written: the row stays `pending` ("Looking up…", which is the truth) and
-  // the throw hands it to `wikidataPool`'s retry ladder. Only after the
-  // ladder's FINAL attempt does the pool's onComplete backstop
-  // (`backstopEntityReviewRowImpl`) age it to "error".
-  //
-  // ONE exception (Jason, NEO-301): a TEAM row whose lookup still produced a
-  // partial answer — ESPN's league, location and colours, and a QID if the
-  // search got through before the detail query failed. That half is written
-  // as "ready" NOW, so the operator can act on it, and THEN the item throws
-  // for the retry that fetches the Wikidata half. `applyLookupResult` merges
-  // each later result over it and never downgrades it to "error", and the
-  // final backstop leaves a non-pending row alone, so after a spent ladder the
-  // row keeps its ESPN answer (the backstop still logs the unavailable line).
-  // Teams only: for a team this lookup is the only automatic source of these
-  // fields (NEO-254 — teams are never enriched at creation). A player or
-  // league partial is still discarded. Row ENRICHMENT (`enrichTeam`) never
-  // writes a partial: there `espnId` is a creation-only marker and would make
-  // the retry skip the row.
-  const writePartialThenRetry =
-    trace.unavailable && row.kind === "team" && payload.status === "ready";
-  if (trace.unavailable && !writePartialThenRetry) {
-    throwIfUnavailable(row.kind, args.rowId, trace);
-  }
+    const preselect =
+      args.kind === "player" && args.preselect ? { ...args.preselect, name } : undefined;
+    // A same-name choice or a preselect waits for the operator before any
+    // lookup (main: `awaitsOperatorBeforeLookup`). The answer is what the
+    // facts and the live same-name players already say, so it does not wait on
+    // a Wikidata call it does not need.
+    if (args.kind === "player" && args.full !== true) {
+      const held = mergeLookupEnrichment({
+        incoming: undefined,
+        history: known.history,
+        live: known.live,
+        preselect,
+      });
+      if (awaitsOperatorBeforeLookup(held)) {
+        return { status: "ready" as const, ...(held ? { enrichment: held } : {}) };
+      }
+    }
 
-  try {
-    await runWithOccRetry(
-      () =>
-        ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
-          id: args.rowId,
-          ...payload,
-          // NEO-313 — the sport this answer is about. A row the operator
-          // switched to another sport while this ran drops it.
-          sportId: row.sportId,
-        }),
-      occRetry,
-    );
-  } catch (error) {
-    // Ids, kinds and counts — never the row's name (observability.ts).
-    // `attempted` is what the lookup actually concluded, which is the point of
-    // the line: an "attempted": "ready" here is enrichment the operator did
-    // not get, on a row the backstop is about to age to "error" without it.
-    console.error(
-      JSON.stringify({
-        msg: "entity_review_lookup_write_failed",
-        rowId: args.rowId,
-        kind: row.kind,
-        attempted: payload.status,
-        occConflict: isOccConflict(error),
-        attempts: occRetry.attempts ?? OCC_RETRY_ATTEMPTS,
-      }),
-    );
-    // NEO-301: a partial whose write failed is still an unavailable lookup —
-    // the retry has to go back to Wikidata anyway, and it redoes this write
-    // with it — so the retryable signal wins over NEO-294's non-retryable
-    // rethrow below. The row stays `pending` in the meantime.
-    if (writePartialThenRetry) throwIfUnavailable(row.kind, args.rowId, trace);
-    // Rethrown deliberately (NEO-294): the row stays `pending`, the pool's
-    // onComplete backstop ages it to "error" off a single-document read set,
-    // and the failure is attributable rather than fabricated into an answer
-    // about Wikidata. Never a second `applyLookupResult` call from here.
-    //
-    // NEO-301: rethrown as NON-retryable. The pool retries throws now, and a
-    // retry of THIS failure would spend a second SPARQL round trip (on the
-    // shared 5-wide lane) to re-derive an answer we already had, then lose
-    // the same race against the same commit — which is the contention that
-    // caused it. NEO-294's contract, "the backstop settles it at once",
-    // stays exactly as it was. The original message is kept in the wrapper.
-    throw new NonRetryableError(
-      error instanceof Error ? error.message : String(error),
-      { cause: error },
-    );
-  }
-  // The partial landed; now ask the pool for the Wikidata half.
-  if (writePartialThenRetry) throwIfUnavailable(row.kind, args.rowId, trace);
-  return null;
-}
+    let payload: { status: "ready" | "error"; enrichment?: Record<string, unknown> };
+    const trace = newLookupTrace();
+    try {
+      const sportCtx = await ctx.runQuery(internal.selectorOptions.getSportEnrichmentContext, {
+        sportId: args.sportId,
+      });
+      const result = !sportCtx
+        ? null
+        : args.kind === "player"
+          ? await lookupPlayerEnrichment(name, sportCtx, trace)
+          : await lookupTeamEnrichment(name, sportCtx, undefined, trace);
+      const failed = trace.transportFailed || trace.unavailable;
+      // A team's partial answer (ESPN's half) is still an answer (NEO-301).
+      const partialTeam = trace.unavailable && args.kind === "team" && result;
+      payload =
+        result && (!trace.unavailable || partialTeam)
+          ? { status: "ready", enrichment: result as unknown as Record<string, unknown> }
+          : failed
+            ? { status: "error" }
+            : { status: "ready" };
+      if (!result && !failed) {
+        console.log(
+          JSON.stringify({
+            msg: "tidy_name_lookup_no_match",
+            kind: args.kind,
+            sportContext: Boolean(sportCtx),
+          }),
+        );
+      }
+      if (trace.unavailable) {
+        console.warn(
+          JSON.stringify({
+            msg: "wikidata_lookup_unavailable",
+            kind: args.kind,
+            reason: trace.unavailableReason ?? "unknown",
+          }),
+        );
+      }
+    } catch (error) {
+      console.error("[tidy-name-lookup] lookup failed:", error);
+      payload = { status: "error" };
+    }
+
+    const settled = { status: payload.status, enrichment: pickEnrichment(payload.enrichment) };
+    const enrichment = mergeLookupEnrichment({
+      incoming: settled.enrichment,
+      history: known.history,
+      live: known.live,
+      preselect,
+    });
+    return { status: settled.status, ...(enrichment ? { enrichment } : {}) };
+  },
+});
 
 /**
  * NEO-240 — what a league lookup can answer.
@@ -2543,7 +2393,9 @@ export async function lookupLeagueEnrichmentLive(
 
   return {
     wikidataId: qid,
-    abbreviation: row?.shortName?.value,
+    abbreviation: row?.shortName?.value
+      ? cleanseExternalName(row.shortName.value) || undefined
+      : undefined,
     yearsActive: fromYear !== undefined ? { from: fromYear, to: toYear } : undefined,
     country: labelValue(row?.countryLabel),
   };

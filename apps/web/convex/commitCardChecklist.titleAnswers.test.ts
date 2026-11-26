@@ -64,6 +64,14 @@ const LONG_SET_NAME =
  */
 const BOX = "2026 Topps Sapphire";
 
+/**
+ * A box of exactly the 80 characters the cap allows: the card number still has
+ * to go (a Tidy Up cut), so the card is flagged `listingTitleTruncated`. A title
+ * that fits only because of a short box, with nothing left out, is not (NEO-645,
+ * Jason 2026-11-23), so the tests that need the flag use this one.
+ */
+const CUT_BOX = "2026 Topps Chrome Sapphire Edition Platinum Anniversary Hobby Exclusive Pak Sevn";
+
 async function seedTree(
   t: T,
   opts: { box?: string | null } = {},
@@ -112,7 +120,7 @@ function card(opts: {
 }) {
   return {
     cardNumber: opts.cardNumber,
-    cardName: `Card ${opts.cardNumber}`,
+    cardName: `Card #${opts.cardNumber}`,
     teams: [],
     players: [],
     platformData: { sportlots: { ref: opts.slRef ?? `SL-${opts.cardNumber}` } },
@@ -154,27 +162,38 @@ async function settle(t: T) {
 }
 
 describe("commitCardChecklist — the 'Card titles' answers (NEO-335)", () => {
-  test("no answer: the generated title (built from the box), flagged — exactly as before", async () => {
+  test("no answer: the generated title built from the box, with nothing left out, is not flagged (Jason, 2026-11-23)", async () => {
     const t = convexTest(schema, modules);
     const ids = await seedTree(t);
     await commit(t, ids, [card({ cardNumber: "1" })]);
     const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
     expect(row.listingTitle).toBe("2026 Topps Sapphire #1 Baseball");
+    expect(row.listingTitleTruncated).toBeUndefined();
+    await settle(t);
+  });
+
+  test("no answer: a box that still leaves the card number out is flagged, as before", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedTree(t, { box: CUT_BOX });
+    await commit(t, ids, [card({ cardNumber: "1" })]);
+    const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
+    expect(row.listingTitle).toBe(CUT_BOX);
     expect(row.listingTitleTruncated).toBe(true);
     await settle(t);
   });
 
   test("no box and a description over the cap: the over-cap title is written whole, flagged by its length only", async () => {
-    // NEO-535 STOP: description words are never cut. No first name was lost
-    // and no box was used, so `listingTitleTruncated` is not written; the
-    // walker raises `titleOverLimit` from the length instead.
+    // NEO-535 STOP: description words are never cut. No box was used, but the
+    // card number it had to cut (row 13) is a Tidy Up cut (NEO-609), so the
+    // row is born `listingTitleTruncated` too; the attention walker still
+    // raises the one `titleOverLimit` from the length (over the cap wins).
     const t = convexTest(schema, modules);
     const ids = await seedTree(t, { box: null });
     await commit(t, ids, [card({ cardNumber: "1" })]);
     const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
     expect(row.listingTitle).toBe(`2026 Topps ${LONG_SET_NAME}`);
     expect(row.listingTitle!.length).toBeGreaterThan(LISTING_TITLE_MAX);
-    expect(row.listingTitleTruncated).toBeUndefined();
+    expect(row.listingTitleTruncated).toBe(true);
     await settle(t);
   });
 
@@ -192,7 +211,7 @@ describe("commitCardChecklist — the 'Card titles' answers (NEO-335)", () => {
 
   test("kept text that differs from what the server generates: the flag is still written", async () => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t);
+    const ids = await seedTree(t, { box: CUT_BOX });
     await commit(t, ids, [
       card({ cardNumber: "1", listingTitleKept: "2026 Topps Something Else Entirely #1" }),
     ]);
@@ -256,7 +275,7 @@ describe("commitCardChecklist — the 'Card titles' answers (NEO-335)", () => {
 
   test("a blank title is no answer: generated and flagged as before", async () => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t);
+    const ids = await seedTree(t, { box: CUT_BOX });
     await commit(t, ids, [card({ cardNumber: "1", listingTitle: "   " })]);
     expect((await rowsByNumber(t, ids.leafId)).get("1")!.listingTitleTruncated).toBe(true);
     await settle(t);
@@ -302,7 +321,7 @@ describe("commitCardChecklist — the 'Card titles' answers (NEO-335)", () => {
 
   test("a card that re-syncs a stored row ignores the title answer", async () => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t);
+    const ids = await seedTree(t, { box: CUT_BOX });
     await commit(t, ids, [card({ cardNumber: "1", slRef: "SL-A" })]);
     const before = (await rowsByNumber(t, ids.leafId)).get("1")!;
 

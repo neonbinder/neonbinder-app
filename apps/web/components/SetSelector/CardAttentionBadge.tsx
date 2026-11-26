@@ -1,4 +1,6 @@
-import { attentionItemLabel, type AttentionItem } from "./card-attention";
+import { ExclamationTriangleIcon, EyeIcon } from "@heroicons/react/16/solid";
+import { tidyItemLabel } from "./card-attention";
+import type { TidyAttention } from "./tidy/tile-types";
 
 /**
  * NEO-102 — the checklist grid's first row-level diagnostic mark.
@@ -8,16 +10,18 @@ import { attentionItemLabel, type AttentionItem } from "./card-attention";
  * Deliberately one glyph, not a word. The grid is up to 908 rows of
  * `#123 · Card Name · team · badges · Edit Del`, and every horizontal pixel
  * already belongs to something; a "Needs attention" pill would push the
- * platform badges into a second line on narrow columns. So the mark is an
- * amber `!` in a fixed 20px disc, and the *words* live in its accessible name
- * and tooltip, where they can be as long as they need to be.
+ * platform badges into a second line on narrow columns. So the mark is one
+ * small icon in a fixed 20px disc, and the *words* live in its accessible
+ * name and tooltip, where they can be as long as they need to be.
  *
- * Amber because the other two roles are taken and both would lie: neon green
- * (#00D558) is "good, confirmed" throughout this app, and pink (#FF2E9A) is
- * destructive. This is neither — it is an unanswered question. Amber also
- * matches nothing else in the row's own badge cluster (`RC` amber sits in the
- * attribute group with a filled background; this is an outlined disc in its
- * own reserved slot), so the two do not read as the same kind of thing.
+ * NEO-645: two levels, the Tidy Up walk's own colours. Pink is "to fix": the
+ * card cannot be listed until it is answered. Blue is "to check": a stop for
+ * review that never blocks. (This was amber before the walk had levels; amber
+ * said "a person is needed" and nothing about how much.) Both are an outlined
+ * disc in the row's own reserved slot, so neither reads as one of the row's
+ * attribute badges. Colour is never the only carrier: the icon is the tile's own
+ * (a warning triangle for "to fix", an eye for "to check"), so the two differ
+ * by shape, and the accessible name and the tooltip say which level it is.
  *
  * ## Why it renders inside a caller-reserved slot
  *
@@ -39,11 +43,11 @@ import { attentionItemLabel, type AttentionItem } from "./card-attention";
  * its accessible name.
  */
 export default function CardAttentionBadge({
-  items,
+  attention,
   cardIdentity,
 }: {
-  /** Non-empty. The caller decides whether to render this at all. */
-  items: AttentionItem[];
+  /** Not "none": the caller decides whether to render this at all. */
+  attention: TidyAttention;
   /**
    * How the row names itself — its card number, and its card name when it has
    * one ("NNO, Jon Larson"). Composed by the caller; see the `cardIdentity`
@@ -57,21 +61,29 @@ export default function CardAttentionBadge({
    */
   cardIdentity: string;
 }) {
-  // Every kind, joined — one mark can stand for several reasons once NEO-101
-  // adds its title kinds, and the operator should hear all of them.
-  const reasons = items.map(attentionItemLabel).join("; ");
+  // Every item, joined — one mark can stand for several reasons, and the
+  // operator should hear all of them.
+  const reasons = attention.items.map(tidyItemLabel).join("; ");
+  const fix = attention.level === "fix";
+  const Icon = fix ? ExclamationTriangleIcon : EyeIcon;
   return (
     <span
       role="img"
-      aria-label={`Card ${cardIdentity} needs attention: ${reasons}`}
-      title={`Needs attention — ${reasons}`}
-      // a11y (1.4.3 / 1.4.11): the warn notice roles (NEO-356). Over this
-      // badge's own translucent amber wash, the ink clears 4.5:1 and the
-      // rule 3:1 in both modes; a raw amber step cannot do both, since the
-      // shade that passes on graphite fails on white and the reverse.
-      className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-notice-warn-rule bg-neon-orange/15 text-[11px] font-bold text-notice-warn-ink"
+      aria-label={
+        fix
+          ? `Card ${cardIdentity} needs attention: ${reasons}`
+          : `Card ${cardIdentity} is worth a check: ${reasons}`
+      }
+      title={fix ? `Needs attention: ${reasons}` : `Worth a check: ${reasons}`}
+      // a11y (1.4.3 / 1.4.11): the `-text` roles are the neon hues' text-role
+      // tokens, which clear 3:1 on the tile wash in both modes (TidyTile).
+      className={
+        fix
+          ? "inline-flex h-5 w-5 items-center justify-center rounded-full border border-neon-pink-text bg-wash-pink text-neon-pink-text"
+          : "inline-flex h-5 w-5 items-center justify-center rounded-full border border-neon-blue-text bg-wash-blue text-neon-blue-text"
+      }
     >
-      <span aria-hidden="true">!</span>
+      <Icon aria-hidden="true" className="h-3 w-3" />
     </span>
   );
 }

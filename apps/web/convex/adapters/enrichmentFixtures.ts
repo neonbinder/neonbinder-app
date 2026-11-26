@@ -221,6 +221,22 @@ export const fixtureFileValidator = v.object({
 
 export type EnrichmentFixtureFile = Infer<typeof fixtureFileValidator>;
 
+/**
+ * What `captureFromCli` RETURNS. The committed file's `entries` is an object
+ * keyed `kind|qid|normalisedName`, but a Convex return value may not carry a
+ * non-ASCII field name, and a normalised name can keep an accent (a team such
+ * as "Bodo/Glimt" with its diacritics). So the capture hands the same entries back
+ * as `{ key, entry }[]`, sorted by key; the committed file format and
+ * `parseFixtureFile` are unchanged. The runbook (§4) rebuilds the file's
+ * object from this array with one `jq` expression.
+ */
+export const captureFixtureValidator = v.object({
+  version: v.literal(1),
+  capturedAt: v.string(),
+  sportQid: v.string(),
+  entries: v.array(v.object({ key: v.string(), entry: fixtureEntryValidator })),
+});
+
 export const FIXTURE_VERSION = 1 as const;
 
 // ---------------------------------------------------------------------------

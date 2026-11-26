@@ -253,8 +253,8 @@ vi.mock("../SetSelector/MultiSourcePanel", () => ({ default: () => null }));
 vi.mock("../SetSelector/SportForm", () => ({ SportForm: () => null }));
 
 // The D3 landing spots, with the accessible names their owners give them.
-// With cards the real checklist's header carries a SECOND "Sync card
-// checklist" button, so the stub does too: landing on the attributes panel
+// With cards the real checklist's header carries a SECOND "Refresh"
+// button, so the stub does too: landing on the attributes panel
 // must beat it. A parallel's empty checklist holds ParallelBuildButton, whose
 // visible text is its name, or its "Loading…" stand-in until the source's
 // name is known.
@@ -268,7 +268,7 @@ vi.mock("../SetSelector/CardChecklist", () => ({
       {world.cards?.length === 0 &&
       parallelBuild?.role !== "parallel" &&
       !world.fetchHidden ? (
-        <button aria-label="Sync card checklist">Fetch from Marketplaces</button>
+        <button>Fetch from Marketplaces</button>
       ) : null}
       {world.cards?.length === 0 && parallelBuild?.role === "parallel" ? (
         parallelBuild.sourceValue ? (
@@ -280,7 +280,7 @@ vi.mock("../SetSelector/CardChecklist", () => ({
         )
       ) : null}
       {world.cards && world.cards.length > 0 ? (
-        <button aria-label="Sync card checklist">Fetch again</button>
+        <button>Refresh</button>
       ) : null}
     </div>
   ),
@@ -533,12 +533,12 @@ describe("SetSelector focus — never taken from where it belongs", () => {
 });
 
 describe("SetSelector focus — a terminal selection (D3)", () => {
-  it("Base with zero cards focuses the Sync card checklist button", async () => {
+  it("Base with zero cards focuses the Fetch from Marketplaces button", async () => {
     world.cards = [];
     mount();
     await drillToBase();
 
-    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(focused()).toBe(screen.getByRole("button", { name: "Fetch from Marketplaces" }));
   });
 
   it("Base with cards focuses the attributes panel's Edit attributes button, not Sync", async () => {
@@ -554,12 +554,12 @@ describe("SetSelector focus — a terminal selection (D3)", () => {
     const view = mount();
     await drillToBase();
     // Nothing is chosen yet: still on the last place the cascade put it.
-    expect(focused().getAttribute("aria-label")).not.toBe("Sync card checklist");
+    expect(focused().textContent).not.toBe("Fetch from Marketplaces");
     expect(focused().getAttribute("aria-label")).not.toBe("Edit attributes");
 
     world.cards = [];
     await act(async () => view.rerender(<SetSelector />));
-    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(focused()).toBe(screen.getByRole("button", { name: "Fetch from Marketplaces" }));
   });
 
   /**
@@ -623,7 +623,7 @@ describe("SetSelector focus — a terminal selection (D3)", () => {
     world.cards = [];
     mount();
     await drillToBase();
-    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(focused()).toBe(screen.getByRole("button", { name: "Fetch from Marketplaces" }));
 
     // Re-open the Variant Types chip (focus follows into its combobox), then
     // collapse it again with the same selection.
@@ -641,7 +641,7 @@ describe("SetSelector focus — a terminal selection (D3)", () => {
     });
 
     expect(focused()).toBe(collapse);
-    expect(focused()).not.toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(focused()).not.toBe(screen.getByRole("button", { name: "Fetch from Marketplaces" }));
   });
 
   it("a NEW selection re-arms it", async () => {
@@ -655,7 +655,7 @@ describe("SetSelector focus — a terminal selection (D3)", () => {
     world.picks.type = "vt-base-2";
     await pick("type");
 
-    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(focused()).toBe(screen.getByRole("button", { name: "Fetch from Marketplaces" }));
   });
 
   it("is not taken from a dialog (the Base mapping picker auto-opens on an unmapped Base)", async () => {
@@ -873,7 +873,7 @@ describe("SetSelector focus — never taken from a field being typed into", () =
     await act(async () => view.rerender(<SetSelector />));
 
     expect(focused()).toBe(field);
-    expect(screen.getByRole("button", { name: "Sync card checklist" })).not.toBe(focused());
+    expect(screen.getByRole("button", { name: "Fetch from Marketplaces" })).not.toBe(focused());
   });
 
   it("D3 waiting on the DOM: typing in + Custom keeps focus there when Fetch appears", async () => {
@@ -882,14 +882,14 @@ describe("SetSelector focus — never taken from a field being typed into", () =
     const view = mount();
     await drillToBase();
     // The rule found no target and is watching the page for one.
-    expect(screen.queryByRole("button", { name: "Sync card checklist" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Fetch from Marketplaces" })).toBeNull();
     const field = customInput("type");
     typeInto(field, "Chrome Ref");
 
     world.fetchHidden = false;
     await act(async () => view.rerender(<SetSelector />));
 
-    expect(screen.getByRole("button", { name: "Sync card checklist" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Fetch from Marketplaces" })).toBeTruthy();
     expect(focused()).toBe(field);
   });
 
@@ -905,7 +905,7 @@ describe("SetSelector focus — never taken from a field being typed into", () =
     world.fetchHidden = false;
     await act(async () => view.rerender(<SetSelector />));
 
-    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(focused()).toBe(screen.getByRole("button", { name: "Fetch from Marketplaces" }));
   });
 
   it("a new deepest column does not take focus from + Custom", async () => {
@@ -932,7 +932,7 @@ describe("SetSelector focus — never taken from a field being typed into", () =
 
 describe("SetSelector focus — an insert and its Sub-Variants column (NEO-425)", () => {
   const insertChip = () => screen.getByRole("button", { name: "insert chip" });
-  const fetchButton = () => screen.getByRole("button", { name: "Sync card checklist" });
+  const fetchButton = () => screen.getByRole("button", { name: "Fetch from Marketplaces" });
   const INSERT_LINK = "/?sport=sp&year=yr&brand=br&set=st&type=vt-insert&insert=insert-1";
 
   /** Pick down to the variant type `vt-insert`; its Inserts column is open. */
@@ -1333,7 +1333,7 @@ describe("SetSelector focus — D3 scrolls the target into view only after a key
       scrolled.push(this);
     };
     HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
-      if (this.getAttribute("aria-label") === "Sync card checklist") {
+      if (this.textContent === "Fetch from Marketplaces") {
         return {
           ...fetchRect,
           left: 10,
@@ -1375,7 +1375,7 @@ describe("SetSelector focus — D3 scrolls the target into view only after a key
     mount();
     await enterOnBase();
 
-    const fetch = screen.getByRole("button", { name: "Sync card checklist" });
+    const fetch = screen.getByRole("button", { name: "Fetch from Marketplaces" });
     expect(focused()).toBe(fetch);
     expect(scrolled).toEqual([fetch]);
   });
@@ -1397,7 +1397,7 @@ describe("SetSelector focus — D3 scrolls the target into view only after a key
     mount();
     await enterOnBase();
 
-    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(focused()).toBe(screen.getByRole("button", { name: "Fetch from Marketplaces" }));
     expect(scrolled).toEqual([]);
   });
 
@@ -1407,7 +1407,7 @@ describe("SetSelector focus — D3 scrolls the target into view only after a key
     mount();
     await enterOnBase();
 
-    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(focused()).toBe(screen.getByRole("button", { name: "Fetch from Marketplaces" }));
     expect(scrolled).toEqual([]);
   });
 
@@ -1416,7 +1416,7 @@ describe("SetSelector focus — D3 scrolls the target into view only after a key
     mount();
     await drillToBase();
 
-    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(focused()).toBe(screen.getByRole("button", { name: "Fetch from Marketplaces" }));
     expect(scrolled).toEqual([]);
   });
 
@@ -1437,7 +1437,7 @@ describe("SetSelector focus — D3 scrolls the target into view only after a key
       fireEvent.click(typeButton);
     });
 
-    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(focused()).toBe(screen.getByRole("button", { name: "Fetch from Marketplaces" }));
     expect(scrolled).toEqual([]);
   });
 });

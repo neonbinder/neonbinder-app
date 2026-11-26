@@ -30,12 +30,13 @@
  */
 import { v } from "convex/values";
 import { Workpool } from "@convex-dev/workpool";
-import type { RunResult } from "@convex-dev/workpool";
+import type { RunResult, WorkId } from "@convex-dev/workpool";
 import { components, internal } from "./_generated/api";
 import { internalMutation, type MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { markBscTeamCheckGivenUpImpl } from "./bscTeamCheck";
 import { assertResetArmed } from "./resetArming";
+import { queuedByForLane } from "./lib/bscGateKey";
 
 /** One BSC call at a time, deployment wide. */
 export const BSC_TEAM_POOL_MAX_PARALLELISM = 1;
@@ -46,6 +47,8 @@ export const BSC_TEAM_CHECK_RETRY_DELAYS_MS = [60_000, 300_000] as const;
 export const BSC_TEAM_CHECK_OPERATOR_AFTER_MS = 30 * 60_000;
 /** Items one enqueue mutation adds before scheduling the rest (wikidataPool's figure). */
 export const BSC_TEAM_ENQUEUE_CHUNK_SIZE = 25;
+/** NEO-644 — items one `cancelQueuedBscTeamChecksFor` call cancels (a fault spec queues ~30). */
+export const BSC_TEAM_CANCEL_FOR_USER_MAX = 500;
 
 /**
  * No pool-level retries: the ladder above is the retry policy, and it needs
@@ -62,11 +65,21 @@ export const bscTeamCheckItemValidator = v.object({
   pass: v.number(),
   /** When the card was first queued (epoch ms): the 30-minute clock. */
   firstQueuedAt: v.number(),
+  /**
+   * NEO-628 — the Clerk subject of the operator who queued the card, passed by
+   * the server's enqueue callers (never read in scheduled code, never sent by
+   * a client), and only on the fake, where it is used: the card is asked in
+   * that user's namespace and behind that user's BSC call gate. Absent (real
+   * BSC, an item in flight across the deploy, or one from the old shim) is the
+   * deployment's own domain.
+   */
+  queuedBy: v.optional(v.string()),
 });
 export type BscTeamCheckItem = {
   cardChecklistId: Id<"cardChecklist">;
   pass: number;
   firstQueuedAt: number;
+  queuedBy?: string;
 };
 
 /** What one work item reports. `until` only with "deferred". */
@@ -113,7 +126,7 @@ export function nextBscTeamCheckStep(
 }
 
 async function enqueueItem(ctx: MutationCtx, item: BscTeamCheckItem, runAt?: number): Promise<void> {
-  await bscTeamPool.enqueueAction(
+  const workId = await bscTeamPool.enqueueAction(
     ctx,
     internal.adapters.buysportscards.runBscTeamCheckItem,
     item,
@@ -123,6 +136,58 @@ async function enqueueItem(ctx: MutationCtx, item: BscTeamCheckItem, runAt?: num
       ...(runAt !== undefined ? { runAt } : {}),
     },
   );
+  // NEO-644 — the fake only (`queuedBy` is stored nowhere else): remember the
+  // item so its operator's E2E spec can cancel it (`cancelQueuedBscTeamChecksFor`).
+  // Re-checked here, not only at first queue: a re-enqueue carries the stored
+  // context, and the target may have moved to real BSC since.
+  const laneQueuedBy = queuedByForLane(item.queuedBy);
+  if (laneQueuedBy !== undefined) {
+    await ctx.db.insert("bscTeamLaneFakeItems", { queuedBy: laneQueuedBy, workId });
+  }
+}
+
+/** NEO-644 — drops the bookkeeping row of a finished (or cancelled) fake-lane item. */
+async function forgetFakeLaneItem(ctx: MutationCtx, workId: string): Promise<void> {
+  const row = await ctx.db
+    .query("bscTeamLaneFakeItems")
+    .withIndex("by_workId", (q) => q.eq("workId", workId))
+    .unique();
+  if (row) await ctx.db.delete(row._id);
+}
+
+/**
+ * NEO-644 — cancels the lane items `queuedBy` queued, for the E2E teardown
+ * (`testing.cancelMyBscTeamChecks`, which passes only the verified caller's
+ * subject): a fault spec's cards would otherwise hold the one slot, deployment
+ * wide, in front of every other shard's team lookups after the spec is over.
+ * Only that user's items: they are read by `queuedBy`, and an item queued by
+ * nobody (or by another user) is never touched. On real BSC there are none.
+ *
+ * Like `cancelAllBscTeamChecks`: an item not yet started reaches
+ * `onBscTeamCheckComplete` as `canceled` (done: no re-enqueue, no hand-off to
+ * the operator, no write). One already RUNNING is let finish and reports its
+ * real result, so its ladder may queue it once more. Returns how many items
+ * it asked the pool to cancel.
+ */
+export async function cancelQueuedBscTeamChecksFor(ctx: MutationCtx, queuedBy: string): Promise<number> {
+  const rows = await ctx.db
+    .query("bscTeamLaneFakeItems")
+    .withIndex("by_queuedBy", (q) => q.eq("queuedBy", queuedBy))
+    .take(BSC_TEAM_CANCEL_FOR_USER_MAX);
+  for (const row of rows) {
+    // A finished item's id is a no-op to the pool (it warns and moves on).
+    await bscTeamPool.cancel(ctx, row.workId as WorkId);
+    await ctx.db.delete(row._id);
+  }
+  console.log(
+    JSON.stringify({
+      msg: "bsc_team_check_cancel_for_user",
+      platform: "bsc",
+      operation: "cancelQueuedBscTeamChecksFor",
+      cancelled: rows.length,
+    }),
+  );
+  return rows.length;
 }
 
 /**
@@ -136,15 +201,27 @@ export const enqueueBscTeamChecks = internalMutation({
     pass: v.optional(v.number()),
     firstQueuedAt: v.optional(v.number()),
     from: v.optional(v.number()),
+    /** NEO-628 — see `bscTeamCheckItemValidator.queuedBy`. */
+    queuedBy: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
     const from = args.from ?? 0;
+    // The ONE rule (NEO-628): the operator is recorded on an item only where it
+    // is used, on the fake. Real BSC has one gate, so a Clerk subject would be
+    // stored in the pool's args and completion context for nothing. Every
+    // re-enqueue spreads the item, so what is stored here is all there is.
+    const queuedBy = queuedByForLane(args.queuedBy);
     const firstQueuedAt = args.firstQueuedAt ?? Date.now();
     const pass = Math.min(Math.max(1, Math.floor(args.pass ?? 1)), BSC_TEAM_CHECK_MAX_PASSES);
     const chunk = args.cardChecklistIds.slice(from, from + BSC_TEAM_ENQUEUE_CHUNK_SIZE);
     for (const cardChecklistId of chunk) {
-      await enqueueItem(ctx, { cardChecklistId, pass, firstQueuedAt });
+      await enqueueItem(ctx, {
+        cardChecklistId,
+        pass,
+        firstQueuedAt,
+        ...(queuedBy !== undefined ? { queuedBy } : {}),
+      });
     }
     const next = from + BSC_TEAM_ENQUEUE_CHUNK_SIZE;
     if (next < args.cardChecklistIds.length) {
@@ -153,6 +230,7 @@ export const enqueueBscTeamChecks = internalMutation({
         pass,
         firstQueuedAt,
         from: next,
+        ...(queuedBy !== undefined ? { queuedBy } : {}),
       });
     } else {
       // Counts only.
@@ -229,8 +307,10 @@ export const onBscTeamCheckComplete = bscTeamPool.defineOnComplete({
   context: bscTeamCheckItemValidator,
   handler: async (
     ctx: MutationCtx,
-    { context, result }: { context: BscTeamCheckItem; result: RunResult },
+    { workId, context, result }: { workId: WorkId; context: BscTeamCheckItem; result: RunResult },
   ) => {
+    // NEO-644 — the fake only: this item is no longer on the lane.
+    if (context.queuedBy !== undefined) await forgetFakeLaneItem(ctx, workId);
     const read = readItemResult(result);
     // Cancelled: done. Never a retry (it was not a failure) and never the
     // operator (no lookup was attempted).

@@ -17,3 +17,12 @@ describe("crons", () => {
     expect(job.args).toEqual([{}]);
   });
 });
+
+// NEO-656: nothing about a name lookup is stored any more, so neither tidy
+// cron (aging a stranded lookup, forgetting a day-old one) exists.
+describe("crons: tidy name lookups", () => {
+  test("no cron reaches the tidy name rows", () => {
+    expect(crons.crons["age stale name lookups"]).toBeUndefined();
+    expect(crons.crons["forget expired name lookup output"]).toBeUndefined();
+  });
+});

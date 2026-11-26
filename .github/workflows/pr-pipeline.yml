@@ -83,6 +83,12 @@ jobs:
       scripts: ${{ steps.filter.outputs.scripts }}
       scanner: ${{ steps.filter.outputs.scanner }}
       deps_only: ${{ steps.deps.outputs.deps_only }}
+      # NEO-627: "true" only when e2e-scope.sh says every changed path is on the
+      # inert allow-list AND none of the web / browser / browser_preview /
+      # preprocess / scanner / scripts path filters matched (e2e-inert-final.sh,
+      # step `inert` below). Fail-closed like deps_only. Everything that builds a
+      # preview or runs E2E skips on it, together.
+      e2e_inert: ${{ steps.inert.outputs.e2e_inert }}
       # NEO-546 (see .github/scripts/ci-mode.sh). `full` is "false" ONLY for a
       # pull_request run while the merge queue is verifiably live; every other
       # case, and every error, is "true". `pr`, `sha`, `head_sha` and
@@ -111,12 +117,39 @@ jobs:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: bash .github/scripts/ci-mode.sh >> "$GITHUB_OUTPUT"
 
+      # NEO-627: is every changed path inert, so the preview and E2E can skip?
+      # Runs on pull_request and merge_group (the script is fail-closed on
+      # anything else). The label and the PR number come from the live API and
+      # from ci-mode's `pr` output, which also carries the PR number on a
+      # merge_group run; the label is read for the group's ONE PR, which assumes
+      # the merge queue's max_entries_to_merge is 1. pull_request: the compare
+      # API on the event's own base and head SHAs. merge_group: the git diff
+      # from the merge base of the head and the base branch (NOT the event's
+      # base_sha, which may be an earlier queue entry), so PRs queued ahead that
+      # are not yet on the base branch are included, on purpose.
+      - name: Decide whether the change is inert (NEO-627)
+        id: scope
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ steps.mode.outputs.pr }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+        run: bash .github/scripts/e2e-scope.sh >> "$GITHUB_OUTPUT"
+
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
             web:
               - 'apps/web/**'
+              # The web-unit lane runs flaky-reporter.test.mjs, which reads the
+              # shared redactor corpus and CLI.
+              - '.github/scripts/redact-corpus.json'
+              - '.github/scripts/redact-cli.mjs'
+              # NEO-628: the install every web job (lint, typecheck, unit) runs.
+              - '.github/actions/web-deps/**'
             browser:
               - 'services/browser/**'
               # NEO-552: browser's bsc-fake-identity-contract test loads these two
@@ -155,6 +188,10 @@ jobs:
               # NEO-555: the fake's tests read the browser probe sources.
               - 'services/browser/src/routes/ebay-probe*.ts'
               - '.github/scripts/ebay-drift-verdict.sh'
+              # NEO-555: ebay-server.test.mjs reads Convex's missing-capture pattern and
+              # its test's list of required names, so a change to either runs the fake's tests.
+              - 'apps/web/convex/fakeBsc.ts'
+              - 'apps/web/convex/fakeBsc.test.ts'
             # NEO-309/NEO-310: node --test coverage for the ops shell scripts
             # (revision GC, image check) plus their test helpers, and for the
             # NEO-310 Discord-notify scripts/action — none of these ship as
@@ -165,8 +202,13 @@ jobs:
               - 'scripts/**'
               - '.github/scripts/**'
               - '.github/actions/notify-discord/**'
+              # redact-ci-log.test.mjs exercises the redactor and reporter that
+              # live under apps/web.
+              - 'apps/web/playwright/support/redact.mjs'
+              - 'apps/web/playwright/support/flaky-reporter.mjs'
               # NEO-555: a script test reads the workflow files (filter parity).
               - '.github/workflows/**'
+              - '.claude/agents/**'
             # NEO-386: the scanner script runs on a collector's own computer,
             # never deployed, so it gets its own small lane.
             scanner:
@@ -311,6 +353,25 @@ jobs:
           decide
           echo "deps_only=${verdict}" >> "$GITHUB_OUTPUT"
 
+      # NEO-627: a second, independent check on the inert verdict, made HERE so
+      # the skip itself never happens (and the gate never sees a refused skip).
+      # The script's e2e_inert is trusted only if the area path filters agree:
+      # none of web, browser, browser_preview, preprocess, scanner or scripts
+      # matched. (fake_bsc is deliberately left out: the fake's recorder, README
+      # and tests are fake-bsc paths that ARE inert.) This is the output the
+      # preview, wiring and E2E jobs read.
+      - name: Combine the inert verdict with the path filters (NEO-627)
+        id: inert
+        env:
+          SCOPE: ${{ steps.scope.outputs.e2e_inert }}
+          F_WEB: ${{ steps.filter.outputs.web }}
+          F_BROWSER: ${{ steps.filter.outputs.browser }}
+          F_BROWSER_PREVIEW: ${{ steps.filter.outputs.browser_preview }}
+          F_PREPROCESS: ${{ steps.filter.outputs.preprocess }}
+          F_SCANNER: ${{ steps.filter.outputs.scanner }}
+          F_SCRIPTS: ${{ steps.filter.outputs.scripts }}
+        run: bash .github/scripts/e2e-inert-final.sh >> "$GITHUB_OUTPUT"
+
   # Create the PR's Vercel preview (NEO-162).
   #
   # WHY THIS JOB EXISTS AT ALL. Until NEO-162 the Vercel git integration built a
@@ -335,10 +396,13 @@ jobs:
   # deployment, and E2E reads its `.convex.site` URL out of the built page. So
   # "skip the preview" is never only a build saving — it removes the substrate
   # the entire E2E suite stands on. That is why the condition below is
-  # `deps_only`, matching the `e2e` job EXACTLY rather than the narrower
-  # `changes.outputs.web`: E2E deliberately runs on preprocess- and browser-only
-  # PRs, and every one of those needs a preview. If you ever want a tighter skip,
-  # the two conditions have to move together — see the note on `e2e`.
+  # `deps_only` AND `e2e_inert` (NEO-627), matching the `e2e` job EXACTLY rather
+  # than the narrower `changes.outputs.web`: E2E deliberately runs on
+  # preprocess- and browser-only PRs, and every one of those needs a preview.
+  # If you ever want a tighter skip, the two conditions have to move together —
+  # see the note on `e2e`. An inert-only PR (see e2e-scope.sh: docs, most of .claude,
+  # root *.md, the fake-bsc recorder) builds no preview and so makes no Convex preview; the cleanup
+  # workflow already treats "no Deployment record" as nothing to clean up.
   #
   # Hosted build, not `vercel build`. The CLI refuses a LOCAL build for a project
   # pinned to Node 24.x ("Found invalid Node.js Version: 24.x"), while Vercel's
@@ -352,6 +416,7 @@ jobs:
       needs.changes.outputs.full == 'true'
       && needs.changes.outputs.pr != ''
       && needs.changes.outputs.deps_only != 'true'
+      && needs.changes.outputs.e2e_inert != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # deployments:write is for the GitHub Deployment record this job creates at
@@ -501,6 +566,7 @@ jobs:
       && needs.changes.outputs.pr != ''
       && needs.changes.outputs.browser_preview == 'true'
       && needs.changes.outputs.deps_only != 'true'
+      && needs.changes.outputs.e2e_inert != 'true'
     runs-on: ubuntu-latest
     # Covers browser.yml's worst case (scope 5 + test 10 + deploy-preview 15
     # min) plus the ~5 min of steps before the wait; the wait step's own
@@ -668,6 +734,7 @@ jobs:
       && needs.changes.outputs.pr != ''
       && needs.changes.outputs.preprocess == 'true'
       && needs.changes.outputs.deps_only != 'true'
+      && needs.changes.outputs.e2e_inert != 'true'
     runs-on: ubuntu-latest
     # 90, not 20 like wire-browser-url: the preprocess preview image is multi-GB
     # (torch + baked SAM) and rebuilds with NO layer cache (~20-25 min), and the
@@ -963,6 +1030,7 @@ jobs:
       && needs.changes.outputs.pr != ''
       && needs.changes.result == 'success'
       && needs.changes.outputs.deps_only != 'true'
+      && needs.changes.outputs.e2e_inert != 'true'
       && needs.web-preview.result == 'success'
       && (needs.wire-preprocess-url.result == 'success' || needs.wire-preprocess-url.result == 'skipped')
     runs-on: ubuntu-latest
@@ -1069,11 +1137,14 @@ jobs:
   # skipped (no false green against dev) and the red wiring job surfaces the
   # problem.
   #
-  # Also skipped for dependency-manifest-only PRs (NEO-87). That skip is the ONE
-  # case ci-gate treats as acceptable — every other skip still fails the gate.
+  # Also skipped for dependency-manifest-only PRs (NEO-87) and for changes whose
+  # every path is inert (NEO-627, e2e-scope.sh). Those two skips are the ONLY
+  # cases ci-gate treats as acceptable (each keyed on its own job output) —
+  # every other skip still fails the gate.
   #
   # NEO-162: `web-preview` is now a hard prerequisite, and its `if:` is
-  # deliberately the SAME `deps_only` condition this job uses. That pairing is
+  # deliberately the SAME `deps_only` AND `e2e_inert` conditions this job uses
+  # (so are the wire-* jobs'). That pairing is
   # load-bearing — the preview build is what creates the Convex preview this
   # suite runs against, so a PR shape that runs E2E without building a preview
   # would fail in `setup` with nothing useful to say. If either condition is ever
@@ -1086,6 +1157,7 @@ jobs:
       && needs.changes.result == 'success'
       && needs.changes.outputs.full == 'true'
       && needs.changes.outputs.deps_only != 'true'
+      && needs.changes.outputs.e2e_inert != 'true'
       && needs.web-preview.result == 'success'
       && (needs.wire-browser-url.result == 'success' || needs.wire-browser-url.result == 'skipped')
       && (needs.wire-preprocess-url.result == 'success' || needs.wire-preprocess-url.result == 'skipped')
@@ -1128,12 +1200,11 @@ jobs:
       HUSKY: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: apps/web/.nvmrc
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-      - run: npm ci
+          persist-credentials: false
+      - uses: ./.github/actions/web-deps
+        with:
+          browser: "false"
       - run: npm run lint
 
   web-typecheck:
@@ -1151,12 +1222,11 @@ jobs:
       HUSKY: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: apps/web/.nvmrc
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-      - run: npm ci
+          persist-credentials: false
+      - uses: ./.github/actions/web-deps
+        with:
+          browser: "false"
       # `tsc -p convex/tsconfig.json` — the same config `npx convex deploy`
       # typechecks against, so a red here is a red the Vercel build would hit
       # later (and silently paper over via vercel.json's `|| npm run build`
@@ -1169,10 +1239,57 @@ jobs:
       # to compare, and E2E runs against that build.
       - run: npm run check:entry-order
 
-  web-unit:
-    name: Unit & component tests (vitest, apps/web)
+  # NEO-628: the suite is ~730 s of test-file time (largest file ~35 s, so no
+  # file caps a shard), run as 3 shards instead of one 4-core job. Each shard
+  # writes a blob report; `web-unit` merges them back into the one JSON that
+  # scripts/verify-test-completeness.mjs reads, so the NEO-164 "no file dropped"
+  # check still sees the WHOLE suite. Not isolate:false, not the threads pool
+  # and not --changed: those trade correctness or coverage for speed.
+  web-unit-shard:
+    name: Unit shard ${{ matrix.shard }}/3 (vitest, apps/web)
     needs: changes
     if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      HUSKY: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/web-deps
+        with:
+          browser: "false"
+      # `default` keeps the failure output in this job's log; the blob is what
+      # web-unit merges.
+      - run: npx vitest run --shard=${{ matrix.shard }}/3 --reporter=default --reporter=blob
+      - name: Upload the blob report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vitest-blob-${{ matrix.shard }}-a${{ github.run_attempt }}
+          path: apps/web/.vitest/blob/
+          # .vitest is a dot-directory; upload-artifact skips hidden paths by default.
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # Keeps its name and result: ci-gate reads it as R_WEB_UNIT. Runs after the
+  # shards whatever their result (always()) and fails unless every one passed,
+  # then merges the blobs and runs the completeness verifier on the merged JSON.
+  web-unit:
+    name: Unit & component tests (vitest, apps/web)
+    needs: [changes, web-unit-shard]
+    if: ${{ always() && needs.changes.outputs.web == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -1183,14 +1300,39 @@ jobs:
     env:
       HUSKY: 0
     steps:
+      - name: Every shard must have passed
+        working-directory: ${{ github.workspace }}
+        env:
+          SHARDS: ${{ needs.web-unit-shard.result }}
+        run: |
+          if [ "$SHARDS" != "success" ]; then
+            echo "::error::The unit shards finished '${SHARDS}', not success. See the 'Unit shard' jobs for the failing tests."
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: apps/web/.nvmrc
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-      - run: npm ci
-      - run: npm run test:unit
+          persist-credentials: false
+      - uses: ./.github/actions/web-deps
+        with:
+          browser: "false"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: vitest-blob-*-a${{ github.run_attempt }}
+          merge-multiple: true
+          path: apps/web/.vitest/blob
+      # Exactly 3 blobs or the merge would silently cover a partial suite (the
+      # verifier would still catch the missing files; this names the cause).
+      - name: Count the blob reports
+        run: |
+          n=$(find .vitest/blob -name 'blob-*.json' | wc -l | tr -d ' ')
+          if [ "$n" != "3" ]; then
+            echo "::error::Expected 3 vitest blob reports, found ${n}."
+            exit 1
+          fi
+      - name: Merge the shard reports
+        run: npx vitest --merge-reports --reporter=default --reporter=json --outputFile=.vitest-results.json
+      - name: Verify test completeness (NEO-164)
+        run: node scripts/verify-test-completeness.mjs
 
   # Mirror of browser.yml `test` (kept in sync intentionally — see note above).
   browser-test:
@@ -1343,6 +1485,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: apps/web/.nvmrc
@@ -1356,6 +1500,8 @@ jobs:
   # Verdict: `changes` + `e2e` MUST succeed; area/wiring jobs pass on
   # success OR skipped (out-of-area); any failure/cancelled fails.
   # NEO-87 carve-out: `e2e` may be `skipped` IFF changes.deps_only == 'true'.
+  # NEO-627 carve-out: or IFF changes.e2e_inert == 'true' (every changed path is
+  # on e2e-scope.sh's inert allow-list), on merge_group too.
   # That pairing is what keeps the NEO-68 vacuous-skip trap closed — a skipped
   # E2E is green only when an authoritative, fail-closed signal says the PR
   # touched nothing but dependency manifests. Every other skip is still red.
@@ -1382,6 +1528,7 @@ jobs:
       && needs.changes.outputs.pr != ''
       && needs.changes.outputs.preprocess == 'true'
       && needs.changes.outputs.deps_only != 'true'
+      && needs.changes.outputs.e2e_inert != 'true'
     runs-on: ubuntu-latest
     # The matrix itself is ~2 min, but this job may first have to wait out the
     # ~25 min preview image build (see the stale-revision guard below), so it
@@ -1830,7 +1977,7 @@ jobs:
 
   ci-gate:
     name: CI Gate
-    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, fake-bsc-test, scripts-test, scanner-test, scanner-build, preprocess-crop-matrix, preprocess-mask-parity, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity, e2e, repo-hygiene, capacity-parity]
+    needs: [changes, web-preview, web-lint, web-typecheck, web-unit-shard, web-unit, browser-test, preprocess-test, fake-bsc-test, scripts-test, scanner-test, scanner-build, preprocess-crop-matrix, preprocess-mask-parity, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity, e2e, repo-hygiene, capacity-parity]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -1867,6 +2014,12 @@ jobs:
           R_WEB_PREVIEW: ${{ needs.web-preview.result }}
           R_E2E: ${{ needs.e2e.result }}
           R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
+          R_E2E_INERT: ${{ needs.changes.outputs.e2e_inert }}
+          R_CHANGED_WEB: ${{ needs.changes.outputs.web }}
+          R_CHANGED_BROWSER: ${{ needs.changes.outputs.browser }}
+          R_CHANGED_BROWSER_PREVIEW: ${{ needs.changes.outputs.browser_preview }}
+          R_CHANGED_SCANNER: ${{ needs.changes.outputs.scanner }}
+          R_CHANGED_SCRIPTS: ${{ needs.changes.outputs.scripts }}
           R_HYGIENE: ${{ needs.repo-hygiene.result }}
           R_CAPACITY_PARITY: ${{ needs.capacity-parity.result }}
         run: bash .github/scripts/ci-gate-verdict.sh

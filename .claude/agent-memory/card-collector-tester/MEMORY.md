@@ -19,3 +19,11 @@
 - [Derived value survival is order-dependent](derived-value-survival-is-order-dependent.md) — "keep while valid" without a picked flag = order decides; test A-then-B and B-then-A
 - [None-answer copy traps](none-answer-copy-traps.md) — "listed" = for sale; new-card overclaim; inherited state in quick-add; one-way toggles; visible control names
 - [Exploratory pass driving recipe](exploratory_pass_driving_recipe.md) — headless persistent-profile driver, reaching Card titles step, Back/blank-history trap
+- [Foil x colour checklist quirks](pro-set-foil-colour-checklist-quirks.md) — doubled names, mini numbers, Auto column, team blank on some rows
+- [Unlicensed city teams and Prospect cells](unlicensed-checklist-city-teams-and-prospect-cells.md) — city/(A)(N) teams, place-name alias poisoning, Prospect (X) by maker, HS/intl edges
+- [Names-first pairing hobby traps](names-first-pairing-hobby-traps.md) — ties pre-kept = duplicates; digit-vs-digit; 38 vs 38a; picker only where numbers truly differ
+- [Home-sport defaults in mixed sets](home-sport-defaults-in-mixed-sets.md) — A&G: created people inherit set sport; name sport+people in copy; "No Team" casing
+- [Review-walk checklist](review-walk-checklist.md) — stop count, Enter after an answer, near-match on misspelling, self-answering rows, title filler
+- [Auto-commit reason lines](auto-commit-reason-lines.md) — skipped-dialog "why" sentence: count-free, before caveats, no "kept" collisions; is the evidence reachable after?
+- [Change picker and stand-in source](change-picker-and-stand-in-source-checks.md) — Change must show current pick; empty-sibling pick; 'base set' copy with no Base; tidy hold before Build
+- [Career-gap swap pill checks](career-gap-swap-pill-checks.md) — look-alike chips, two-team card collapse, year notation, pill order, title filler churn

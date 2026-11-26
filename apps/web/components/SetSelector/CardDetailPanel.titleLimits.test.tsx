@@ -14,16 +14,15 @@
  *      refusal used to belong to a Save button; NEO-216 removed that button
  *      (the drawer autosaves per field on blur/Enter), so the cap is enforced
  *      at commit instead — same constant, same wording, same server backstop.
- *   2. The soft bands are WORDS, not just colours, at 55 and 70. This is the
- *      accessibility requirement, so it is asserted on the text. They are
- *      display truncation, not a rule: a title in either band still saves.
+ *   2. There is no soft band below the cap (NEO-645): a title of 55 or 70
+ *      characters shows a plain `N/80` and no "may clip" warning.
  *   3. Regenerate replaces the field with the server's title, PERSISTS it
  *      through the same single-field path, and shows the facts it was built
  *      from — and asks twice before discarding an edit.
  *   4. A row whose auto-title was cut short says so.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -163,30 +162,32 @@ beforeEach(() => {
   };
 });
 
+/** The pills of the "Left out to fit" list, in order (NEO-665: one per thing). */
+const leftOutPills = () =>
+  within(screen.getByRole("list", { name: "Left out to fit" }))
+    .getAllByRole("listitem")
+    .map((li) => li.firstChild?.textContent);
+
 describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
   it("counts against the cap and stays silent inside the safe band", () => {
     renderPanel(makeCard({ listingTitle: titleOfLength(40) }));
 
     expect(screen.getByText("40/80")).toBeTruthy();
-    expect(screen.queryByText("may clip on mobile")).toBeNull();
     expect(screen.queryByText("may clip in search")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("warns in words, not only colour, at the 55-character mobile band", () => {
+  it("shows a plain count, with no clip warning, at 55 and 70 characters (NEO-645)", () => {
     renderPanel(makeCard({ listingTitle: titleOfLength(55) }));
-
     expect(screen.getByText("55/80")).toBeTruthy();
-    expect(screen.getByText("may clip on mobile")).toBeTruthy();
-    // Still saveable: the soft bands are display truncation, not a rule.
+    expect(screen.queryByText(/may clip/)).toBeNull();
+    expect(screen.queryByText(/on mobile/)).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
-  });
+    cleanup();
 
-  it("warns in words at the 70-character search band", () => {
     renderPanel(makeCard({ listingTitle: titleOfLength(70) }));
-
     expect(screen.getByText("70/80")).toBeTruthy();
-    expect(screen.getByText("may clip in search")).toBeTruthy();
+    expect(screen.queryByText(/may clip/)).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -236,6 +237,30 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     );
   });
 
+  it("NEO-606: over the cap the whole title box is marked in neon pink with the note, and clears when it fits", () => {
+    renderPanel(makeCard({ listingTitle: titleOfLength(81) }));
+
+    const field = titleInput();
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    // The box highlight follows LENGTH (`data-over`), not aria-invalid; happy-dom runs no CSS.
+    expect(field.getAttribute("data-over")).toBe("true");
+    expect(field.className).toContain("data-[over=true]:border-neon-pink-text");
+    expect(field.className).toContain("data-[over=true]:ring-neon-pink-text");
+    // Held (autosave in flight: readOnly + aria-disabled) shows grey, edge kept.
+    expect(field.className).toContain("aria-disabled:data-[over=true]:bg-button-neutral");
+    const alert = screen.getByRole("alert");
+    expect(alert.className).toContain("text-neon-pink-text");
+    expect(alert.className).not.toContain("notice-danger");
+    expect(field.getAttribute("aria-describedby")).toContain(alert.id);
+    // The counter beside it is the same pink.
+    expect(screen.getByText("81/80").parentElement?.className).toContain("text-neon-pink-text");
+
+    fireEvent.change(field, { target: { value: titleOfLength(80) } });
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(field.getAttribute("data-over")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("does not cap the input itself — pasted overflow stays visible so it can be fixed", () => {
     renderPanel(makeCard({ listingTitle: "short" }));
     expect(titleInput().hasAttribute("maxLength")).toBe(false);
@@ -281,7 +306,7 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     // NEO-535: subscribed from the start, so the chips and "Left out to fit"
     // read the stored title before any Regenerate.
     expect(screen.getByLabelText("Title built from")).toBeTruthy();
-    expect(screen.getByText(/^Left out to fit: /)).toBeTruthy();
+    expect(screen.getByRole("list", { name: "Left out to fit" })).toBeTruthy();
 
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Regenerate card title"));
@@ -379,11 +404,12 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     });
 
     await waitFor(() =>
-      expect(
-        screen.getByText(
-          "Left out to fit: Seattle Mariners, SP, Image Variation; Wearing sunglasses, /99",
-        ),
-      ).toBeTruthy(),
+      expect(leftOutPills()).toEqual([
+        "Seattle Mariners",
+        "SP",
+        "Image Variation; Wearing sunglasses",
+        "/99",
+      ]),
     );
     expect(screen.queryByText(/stale server list/)).toBeNull();
 
@@ -394,9 +420,10 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
         target: { value: "2024 Topps Chrome Julio Rodriguez #300b SP /99" },
       });
     });
-    expect(
-      screen.getByText("Left out to fit: Seattle Mariners, Image Variation; Wearing sunglasses"),
-    ).toBeTruthy();
+    expect(leftOutPills()).toEqual([
+      "Seattle Mariners",
+      "Image Variation; Wearing sunglasses",
+    ]);
   });
 
   /**
@@ -527,21 +554,20 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     ]);
   });
 
-  it("says so when the stored auto-title was cut short", () => {
-    // No facts in hand yet, so no "Left out to fit" line to say it instead.
+  it("says nothing when the stored auto-title was cut short and nothing can be named (NEO-665)", () => {
+    // No facts in hand yet, so nothing to name: no pills, and no generic line.
     previewResult = undefined;
     renderPanel(
       makeCard({ listingTitle: titleOfLength(78), listingTitleTruncated: true }),
     );
-    expect(screen.getByText("Auto title was cut short — rewrite it")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Left out to fit" })).toBeNull();
   });
 
   it("NEO-535: a cut-short title says what was cut instead, and an over-cap one only that it is too long", () => {
     renderPanel(
       makeCard({ listingTitle: titleOfLength(78), listingTitleTruncated: true }),
     );
-    expect(screen.getByText(/^Left out to fit: /)).toBeTruthy();
-    expect(screen.queryByText("Auto title was cut short — rewrite it")).toBeNull();
+    expect(screen.getByRole("list", { name: "Left out to fit" })).toBeTruthy();
   });
 
   it("NEO-535: an over-cap title is never also called cut short", () => {
@@ -550,7 +576,6 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
       makeCard({ listingTitle: titleOfLength(90), listingTitleTruncated: true }),
     );
     expect(screen.getByRole("alert").textContent).toContain("10 over the 80-character limit");
-    expect(screen.queryByText("Auto title was cut short — rewrite it")).toBeNull();
   });
 
   it("NEO-535: Regenerate asks the server to rebuild the description as well", async () => {
@@ -642,6 +667,12 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     const variation = screen.getByLabelText(
       "Card variation",
     ) as HTMLInputElement;
+    // NEO-606: the same pink box and note as the title while past 65.
+    // Advisory (it still saves): the pink box, but never aria-invalid.
+    expect(variation.getAttribute("data-over")).toBe("true");
+    expect(variation.getAttribute("aria-invalid")).toBeNull();
+    expect(variation.className).toContain("data-[over=true]:border-neon-pink-text");
+    expect(notice.className).toContain("text-neon-pink-text");
     await editAndCommit(variation, "z".repeat(70));
 
     await waitFor(() => expect(mockUpdateCard).toHaveBeenCalled());
@@ -664,6 +695,9 @@ describe("CardDetailPanel — a cleared title is refused (NEO-358)", () => {
     ).toBeTruthy();
     // The counter follows the restored title, not the cleared field.
     expect(screen.getByText("39/80")).toBeTruthy();
+    // NEO-606: a refused save is an error, not an over-cap title — no pink box.
+    expect(titleInput().getAttribute("aria-invalid")).toBe("true");
+    expect(titleInput().getAttribute("data-over")).toBeNull();
   });
 
   it("the next real title saves and the refusal goes", async () => {

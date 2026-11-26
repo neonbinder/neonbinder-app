@@ -34,7 +34,7 @@
  * `SUBTREE_REFERENCE_GRAPH` below lists every table that can hold an id this
  * wipe deletes, and what happens to it. `wipeVariantTypeSubtree.test.ts`
  * re-derives that list from schema.ts on every run, so a table added later
- * that points at a selector row, a card or a staged review fails the suite
+ * that points at a selector row or a card fails the suite
  * until it is handled here.
  *
  * NEO-358 — collectors' copies (`collectionCopies`) DO point at cards now, and
@@ -149,9 +149,9 @@ import { MAX_LINKS_PER_ROW } from "./lib/publishedChecklistSections";
  */
 export const SUBTREE_REFERENCE_GRAPH = {
   selectorOptions: {
-    fields: ["parentId", "children[]"],
+    fields: ["parentId", "children[]", "parallelSourceId"],
     handling:
-      "subtree rows deleted deepest first; a parent's children cache is filtered as each child goes; the variant type's is cleared",
+      "subtree rows deleted deepest first; a parent's children cache is filtered as each child goes; the variant type's is cleared, and so is its parallelSourceId pick (NEO-673)",
   },
   selectorSyncStatus: {
     fields: ["parentId", "unlinked[].id"],
@@ -262,20 +262,6 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "NEO-361 a record of what an approved request became; a wiped card leaves addedCardId pointing at nothing, which only the review's history reads. addedSetId is set-level. Untouched",
   },
-  entityReviewQueue: {
-    fields: [
-      "selectorOptionId",
-      "sportId",
-      "source.playerRowId",
-      "source.teamRowId",
-    ],
-    handling:
-      "rows keyed on a subtree row deleted, each row's source dependents (same batch, same row) first; sportId is sport-level",
-  },
-  entityReviewSkips: {
-    fields: ["selectorOptionId"],
-    handling: "rows keyed on a subtree row deleted",
-  },
   checklistCandidates: {
     fields: ["selectorOptionId"],
     handling: "rows keyed on a subtree row deleted",
@@ -341,9 +327,7 @@ export const WIPED_TABLES = [
   "cardTeamLinks",
   // NEO-528 — likewise.
   "cardSecondaryPlayerLinks",
-  "entityReviewQueue",
   "checklistCandidates",
-  "entityReviewSkips",
   "selectorSyncStatus",
   // NEO-496 — a wiped row's checklist-section links, deleted with the row.
   "publishedChecklistLinks",
@@ -669,9 +653,7 @@ const tableCountsValidator = v.object({
   }),
   cardChecklist: v.number(),
   cardCrossListings: v.number(),
-  entityReviewQueue: v.number(),
   checklistCandidates: v.number(),
-  entityReviewSkips: v.number(),
   selectorSyncStatus: v.number(),
 });
 
@@ -684,9 +666,7 @@ type TableCounts = {
   };
   cardChecklist: number;
   cardCrossListings: number;
-  entityReviewQueue: number;
   checklistCandidates: number;
-  entityReviewSkips: number;
   selectorSyncStatus: number;
 };
 
@@ -695,9 +675,7 @@ function zeroCounts(): TableCounts {
     selectorOptions: { total: 0, insert: 0, parallel: 0, other: 0 },
     cardChecklist: 0,
     cardCrossListings: 0,
-    entityReviewQueue: 0,
     checklistCandidates: 0,
-    entityReviewSkips: 0,
     selectorSyncStatus: 0,
   };
 }
@@ -895,16 +873,10 @@ export const listChildren = internalQuery({
 });
 
 const refTableValidator = v.union(
-  v.literal("entityReviewQueue"),
   v.literal("checklistCandidates"),
-  v.literal("entityReviewSkips"),
   v.literal("cardCrossListings"),
 );
-type RefTable =
-  | "entityReviewQueue"
-  | "checklistCandidates"
-  | "entityReviewSkips"
-  | "cardCrossListings";
+type RefTable = "checklistCandidates" | "cardCrossListings";
 
 const crossInValidator = v.object({
   id: v.id("cardCrossListings"),
@@ -920,9 +892,7 @@ export const surveyNodeRefs = internalQuery({
   returns: v.array(
     v.object({
       nodeId: v.id("selectorOptions"),
-      entityReviewQueue: v.number(),
       checklistCandidates: v.number(),
-      entityReviewSkips: v.number(),
       crossIn: v.array(crossInValidator),
       selectorSyncStatus: v.number(),
       saturated: v.array(refTableValidator),
@@ -938,11 +908,6 @@ export const surveyNodeRefs = internalQuery({
     const out = [];
     for (const nodeId of args.nodeIds) {
       const saturated: RefTable[] = [];
-      const queue = await ctx.db
-        .query("entityReviewQueue")
-        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", nodeId))
-        .take(limit);
-      if (queue.length === limit) saturated.push("entityReviewQueue");
       const candidates = await ctx.db
         .query("checklistCandidates")
         .withIndex("by_selector_option_and_user", (q) =>
@@ -950,13 +915,6 @@ export const surveyNodeRefs = internalQuery({
         )
         .take(limit);
       if (candidates.length === limit) saturated.push("checklistCandidates");
-      const skips = await ctx.db
-        .query("entityReviewSkips")
-        .withIndex("by_selector_option_and_kind_and_name", (q) =>
-          q.eq("selectorOptionId", nodeId),
-        )
-        .take(limit);
-      if (skips.length === limit) saturated.push("entityReviewSkips");
       const crossIn = await ctx.db
         .query("cardCrossListings")
         .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", nodeId))
@@ -974,9 +932,7 @@ export const surveyNodeRefs = internalQuery({
       }
       out.push({
         nodeId,
-        entityReviewQueue: queue.length,
         checklistCandidates: candidates.length,
-        entityReviewSkips: skips.length,
         crossIn: crossIn.map((link) => ({
           id: link._id,
           cardId: link.cardChecklistId,
@@ -1006,38 +962,10 @@ export const countRefsPage = internalQuery({
     const opts = { cursor: args.cursor, numItems: SURVEY_COUNT_PAGE };
     const nodeId = args.nodeId;
     switch (args.table) {
-      case "entityReviewQueue": {
-        const page = await ctx.db
-          .query("entityReviewQueue")
-          .withIndex("by_selector_option", (q) =>
-            q.eq("selectorOptionId", nodeId),
-          )
-          .paginate(opts);
-        return {
-          count: page.page.length,
-          crossIn: [],
-          isDone: page.isDone,
-          continueCursor: page.continueCursor,
-        };
-      }
       case "checklistCandidates": {
         const page = await ctx.db
           .query("checklistCandidates")
           .withIndex("by_selector_option_and_user", (q) =>
-            q.eq("selectorOptionId", nodeId),
-          )
-          .paginate(opts);
-        return {
-          count: page.page.length,
-          crossIn: [],
-          isDone: page.isDone,
-          continueCursor: page.continueCursor,
-        };
-      }
-      case "entityReviewSkips": {
-        const page = await ctx.db
-          .query("entityReviewSkips")
-          .withIndex("by_selector_option_and_kind_and_name", (q) =>
             q.eq("selectorOptionId", nodeId),
           )
           .paginate(opts);
@@ -1338,9 +1266,8 @@ export const wipeCardsPage = internalMutation({
 });
 
 /**
- * One page of the rows KEYED ON a node: staged reviews, candidate cards,
- * skip rulings, cross-listings of outside cards into it, and its child
- * columns' sync status.
+ * One page of the rows KEYED ON a node: candidate cards, cross-listings of
+ * outside cards into it, and its child columns' sync status.
  */
 export const wipeNodeRefsPage = internalMutation({
   args: {
@@ -1349,9 +1276,7 @@ export const wipeNodeRefsPage = internalMutation({
     limit: v.optional(v.number()),
   },
   returns: v.object({
-    entityReviewQueue: v.number(),
     checklistCandidates: v.number(),
-    entityReviewSkips: v.number(),
     cardCrossListings: v.number(),
     selectorSyncStatus: v.number(),
     hasMore: v.boolean(),
@@ -1363,82 +1288,11 @@ export const wipeNodeRefsPage = internalMutation({
 
     const nodeId = args.nodeId;
     // Two bounds: rows deleted (the caller's page size) and system operations
-    // (`OP_BUDGET`). A staged review row costs ~3 (its two dependent reads and
-    // its delete), everything else 1.
+    // (`OP_BUDGET`). Every row costs 1.
     let rowsLeft = clampPage(args.limit, REF_PAGE_DEFAULT);
     let ops = 10;
     let hasMore = false;
     const spent = () => rowsLeft <= 0 || ops >= OP_BUDGET;
-
-    // A staged row can be the `source` of others in its batch (a player's
-    // career team, a team's league). Those go first, in this transaction, so
-    // no page boundary leaves a `source` pointing at a deleted row.
-    const queueDeleted: Doc<"entityReviewQueue">[] = [];
-    const queueGone = new Set<string>();
-    const dropQueueRow = async (
-      row: Doc<"entityReviewQueue">,
-      depth: number,
-    ): Promise<void> => {
-      if (queueGone.has(row._id)) return;
-      const dependents = [
-        ...(await ctx.db
-          .query("entityReviewQueue")
-          .withIndex("by_source_player", (q) =>
-            q.eq("source.playerRowId", row._id),
-          )
-          .collect()),
-        ...(await ctx.db
-          .query("entityReviewQueue")
-          .withIndex("by_source_team", (q) => q.eq("source.teamRowId", row._id))
-          .collect()),
-      ];
-      ops += 2;
-      for (const dependent of dependents) {
-        if (
-          dependent.selectorOptionId !== nodeId &&
-          !(await isMember(dependent.selectorOptionId))
-        ) {
-          throw new ConvexError(
-            `Refused: staged review row ${dependent._id} depends on ` +
-              `${row._id} but is keyed outside this variant type. This page ` +
-              `wrote nothing.`,
-          );
-        }
-        if (depth >= MAX_DEPTH) {
-          throw new ConvexError(
-            `Refused: staged review rows depending on ${row._id} nest deeper ` +
-              `than ${MAX_DEPTH}, which no review batch builds. This page ` +
-              `wrote nothing.`,
-          );
-        }
-        await dropQueueRow(dependent, depth + 1);
-      }
-      await ctx.db.delete(row._id);
-      queueGone.add(row._id);
-      queueDeleted.push(row);
-      ops += 1;
-      rowsLeft -= 1;
-    };
-
-    const queueLimit = Math.max(
-      1,
-      Math.min(rowsLeft, Math.floor((OP_BUDGET - ops) / 3)),
-    );
-    const queue = await ctx.db
-      .query("entityReviewQueue")
-      .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", nodeId))
-      .take(queueLimit);
-    ops += 1;
-    if (queue.length === queueLimit) hasMore = true;
-    for (const row of queue) {
-      if (queueGone.has(row._id)) continue;
-      // The first row always goes, so a page can never end where it started.
-      if (queueDeleted.length > 0 && spent()) {
-        hasMore = true;
-        break;
-      }
-      await dropQueueRow(row, 0);
-    }
 
     /** Fetch at most what both bounds allow, delete it, and count it. */
     const drain = async <R extends { _id: string }>(
@@ -1471,16 +1325,6 @@ export const wipeNodeRefsPage = internalMutation({
           .take(n),
       (id) => ctx.db.delete(id),
     );
-    const skips = await drain(
-      (n) =>
-        ctx.db
-          .query("entityReviewSkips")
-          .withIndex("by_selector_option_and_kind_and_name", (q) =>
-            q.eq("selectorOptionId", nodeId),
-          )
-          .take(n),
-      (id) => ctx.db.delete(id),
-    );
     const crossIn = await drain(
       (n) =>
         ctx.db
@@ -1508,16 +1352,12 @@ export const wipeNodeRefsPage = internalMutation({
     }
 
     const ids = (rows: Array<{ _id: string }>) => rows.map((row) => row._id);
-    logDeleted(args.variantTypeId, "entityReviewQueue", ids(queueDeleted));
     logDeleted(args.variantTypeId, "checklistCandidates", ids(candidates));
-    logDeleted(args.variantTypeId, "entityReviewSkips", ids(skips));
     logDeleted(args.variantTypeId, "cardCrossListings", ids(crossIn));
     logDeleted(args.variantTypeId, "selectorSyncStatus", ids(statuses));
 
     return {
-      entityReviewQueue: queueDeleted.length,
       checklistCandidates: candidates.length,
-      entityReviewSkips: skips.length,
       cardCrossListings: crossIn.length,
       selectorSyncStatus: statuses.length,
       hasMore,
@@ -1573,18 +1413,8 @@ export const deleteEmptyNodes = internalMutation({
           .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", nodeId))
           .first()) ??
         (await ctx.db
-          .query("entityReviewQueue")
-          .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", nodeId))
-          .first()) ??
-        (await ctx.db
           .query("checklistCandidates")
           .withIndex("by_selector_option_and_user", (q) =>
-            q.eq("selectorOptionId", nodeId),
-          )
-          .first()) ??
-        (await ctx.db
-          .query("entityReviewSkips")
-          .withIndex("by_selector_option_and_kind_and_name", (q) =>
             q.eq("selectorOptionId", nodeId),
           )
           .first()) ??
@@ -1677,8 +1507,8 @@ export const deleteEmptyNodes = internalMutation({
 
 /**
  * The variant type's own tidy-up, once its subtree is gone: its child
- * columns' sync status, and its `children` cache. Its links, labels and
- * metadata are not written.
+ * columns' sync status, its `children` cache and its `parallelSourceId` pick
+ * (NEO-673). Its links, labels and metadata are not written.
  */
 export const finalizeVariantType = internalMutation({
   args: armedArgs,
@@ -1729,8 +1559,12 @@ export const finalizeVariantType = internalMutation({
     const current = target.row.children ?? [];
     const next: Id<"selectorOptions">[] = [];
     const changed = !sameIds(current, next);
-    if (changed) {
-      await ctx.db.patch(args.variantTypeId, { children: next });
+    // NEO-673 — the chosen-source pick points into the subtree just wiped.
+    if (changed || target.row.parallelSourceId !== undefined) {
+      await ctx.db.patch(args.variantTypeId, {
+        children: next,
+        parallelSourceId: undefined,
+      });
     }
     return {
       selectorSyncStatus: statuses.length,
@@ -1792,9 +1626,7 @@ type Holds = {
   crossListingsIn: number;
   crossListingsOut: number;
   crossListingsInternal: number;
-  reviewQueue: number;
   candidates: number;
-  skips: number;
   syncStatus: number;
   externalVariationChildren: number;
   nestedVariations: number;
@@ -1809,9 +1641,7 @@ function emptyHolds(): Holds {
     crossListingsIn: 0,
     crossListingsOut: 0,
     crossListingsInternal: 0,
-    reviewQueue: 0,
     candidates: 0,
-    skips: 0,
     syncStatus: 0,
     externalVariationChildren: 0,
     nestedVariations: 0,
@@ -1831,7 +1661,6 @@ function isBeyondChecklist(holds: Holds): boolean {
   return (
     holds.crossListingsIn > 0 ||
     holds.crossListingsOut > 0 ||
-    holds.reviewQueue > 0 ||
     holds.candidates > 0 ||
     holds.cardsWithImages > 0 ||
     holds.cardsCollected > 0 ||
@@ -1950,9 +1779,7 @@ async function survey(
     const group = nodes.slice(i, i + SURVEY_NODE_GROUP).map((node) => node.id);
     const probes: Array<{
       nodeId: Id<"selectorOptions">;
-      entityReviewQueue: number;
       checklistCandidates: number;
-      entityReviewSkips: number;
       crossIn: Array<{
         id: Id<"cardCrossListings">;
         cardId: Id<"cardChecklist">;
@@ -1965,9 +1792,7 @@ async function survey(
     for (const probe of probes) {
       const holds = holdsById.get(probe.nodeId)!;
       const counted: Record<RefTable, number> = {
-        entityReviewQueue: probe.entityReviewQueue,
         checklistCandidates: probe.checklistCandidates,
-        entityReviewSkips: probe.entityReviewSkips,
         cardCrossListings: probe.crossIn.length,
       };
       let crossIn = probe.crossIn;
@@ -1994,18 +1819,14 @@ async function survey(
         counted[table] = total;
         if (table === "cardCrossListings") crossIn = links;
       }
-      holds.reviewQueue += counted.entityReviewQueue;
       holds.candidates += counted.checklistCandidates;
-      holds.skips += counted.entityReviewSkips;
       holds.syncStatus += probe.selectorSyncStatus;
       for (const link of crossIn) {
         // A junction whose card is also going was counted on the card's row.
         if (!cardIds.has(link.cardId)) holds.crossListingsIn += 1;
         crossListingIds.add(link.id);
       }
-      totals.entityReviewQueue += counted.entityReviewQueue;
       totals.checklistCandidates += counted.checklistCandidates;
-      totals.entityReviewSkips += counted.entityReviewSkips;
       totals.selectorSyncStatus += probe.selectorSyncStatus;
     }
   }
@@ -2096,9 +1917,7 @@ async function applyWipe(
       }
       for (;;) {
         const page: {
-          entityReviewQueue: number;
           checklistCandidates: number;
-          entityReviewSkips: number;
           cardCrossListings: number;
           selectorSyncStatus: number;
           hasMore: boolean;
@@ -2106,15 +1925,11 @@ async function applyWipe(
           internal.wipeVariantTypeSubtree.wipeNodeRefsPage,
           { ...armed, nodeId: node.id, limit: refLimit },
         );
-        deleted.entityReviewQueue += page.entityReviewQueue;
         deleted.checklistCandidates += page.checklistCandidates;
-        deleted.entityReviewSkips += page.entityReviewSkips;
         deleted.cardCrossListings += page.cardCrossListings;
         deleted.selectorSyncStatus += page.selectorSyncStatus;
         const worked =
-          page.entityReviewQueue +
-            page.checklistCandidates +
-            page.entityReviewSkips +
+          page.checklistCandidates +
             page.cardCrossListings +
             page.selectorSyncStatus >
           0;

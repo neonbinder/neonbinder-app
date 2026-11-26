@@ -641,6 +641,46 @@ describe("seedMyTestCredentials", () => {
     expect(easypostPut?.body).toEqual({ apiKey: "EZTK_test_key" });
   });
 
+  // NEO-604: a failed EasyPost key store used to read "no reason reported" on
+  // the seed page. The reason now carries the browser service's HTTP status.
+  test("reports the HTTP status as the reason when the EasyPost key store fails", async () => {
+    process.env.DEV_EASYPOST_API_KEY = "EZTK_test_key";
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    const credentialFetch = makeCredentialFetch({ metadata: { username: SL_USERNAME }, puts });
+    stubFetch(async (url, init) =>
+      init?.method === "PUT" && String(url).includes("/easypost/")
+        ? jsonResponse({ error: "boom EZTK_test_key" }, 500)
+        : credentialFetch(url, init),
+    );
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["sportlots"] });
+
+    expect(result.seeded).toContainEqual({
+      site: "easypost",
+      stored: false,
+      reason: "Failed to store EasyPost key (500)",
+    });
+    // Neither the key nor the response body leaks into the reason.
+    expect(JSON.stringify(result)).not.toContain("EZTK_test_key");
+    expect(JSON.stringify(result)).not.toContain("boom");
+  });
+
+  test("storeEasypostKeyForUser names the status on a non-OK answer", async () => {
+    process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
+    const t = convexTest(schema, modules);
+    stubFetch(async () => jsonResponse({ error: "nope" }, 403));
+
+    const result = await t.action(internal.postage.storeEasypostKeyForUser, {
+      userId: USER_A,
+      apiKey: "EZTK_test_key",
+    });
+
+    expect(result).toEqual({ success: false, message: "Failed to store EasyPost key (403)" });
+  });
+
   test("skips re-store (preserves token) when the stored username is already correct", async () => {
     const t = convexTest(schema, modules);
     const puts: Array<{ url: string; method: string; body: unknown }> = [];
@@ -1857,7 +1897,7 @@ describe("dashboard seeds: a test sale and test sync records (NEO-464)", () => {
     const me = t.withIdentity({ subject: USER_A });
     expect((await me.mutation(api.testing.seedMyTestSale, {})).matched).toBe(false);
     const sales = await me.query(api.dashboard.sales, {});
-    expect(sales.orders[0].lines).toEqual([{ quantity: 1, problem: "unmatched" }]);
+    expect(sales.orders[0].lines).toEqual([{ quantity: 1 }]);
     await expect(me.mutation(api.testing.seedMyTestSync, { pending: true, error: false })).rejects.toThrow(/Add a card to a box/);
   });
 

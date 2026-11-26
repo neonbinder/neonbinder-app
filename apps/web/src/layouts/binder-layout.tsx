@@ -3,7 +3,7 @@ import { Outlet, useLocation } from "react-router";
 import BinderHeader from "@/components/modules/binder-header";
 import BinderTabs, { type NavItem } from "@/components/modules/binder-tabs";
 import MobileNav from "@/components/modules/mobile-nav";
-import { useWidePickPage } from "@/src/hooks/usePickDensity";
+import { isPickListPage } from "@/src/hooks/usePickDensity";
 
 /**
  * SCROLL HEADROOM — 208px of empty, non-interactive space below every page in
@@ -57,10 +57,11 @@ export default function BinderLayout({
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const closeMobileMenu = useCallback(() => setMobileMenuOpen(false), []);
-  // A spacious Pick List is read from across the room: its table takes the wide
-  // page (signed in and in the demo). Condensed, and every other page, keeps the 6xl column.
+  // The Pick List's table takes the wide page whatever the row size, signed in and
+  // in the demo (NEO-598: Condensed fits more text on a line, so it needs the room
+  // too). Every other page keeps the 6xl column.
   const { pathname, search } = useLocation();
-  const wide = useWidePickPage(pathname, search);
+  const wide = isPickListPage(pathname, search);
 
   return (
     <div className="min-h-screen flex flex-col">

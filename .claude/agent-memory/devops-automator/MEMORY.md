@@ -15,3 +15,6 @@
 - [Workflow + gcloud gotchas](patterns_workflow_gcloud_gotchas.md) — deploy-cloudrun merges env (use --remove-env-vars), checkout after auth deletes creds, logging --freshness ignored ascending, gcr.io list path, index children
 - [CI unit suite slow with heavy deps installed](ci-unit-suite-slow-when-heavy-deps-installed.md) — unguarded model load per test in CI; per-test log gaps find it; sysmon coverage
 - [Cloud Run reserved paths](patterns_cloud_run_reserved_paths.md) — /healthz and paths ending in z get a Google 404 on run.app; local tests cannot see it; use another path
+- [Public CI artifacts need redaction](public-ci-artifacts-need-a-redaction-pass.md) — what leaks into public artifacts/summaries; redact-ci-log.sh; masked outputs get dropped
+- [One redactor, shared corpus](patterns_one_redactor_shared_corpus.md) — redact.mjs + node wrapper for CI; redact full then cut; pair-rule and annotation pitfalls
+- [Actions cache scope + vitest blobs](patterns_actions_cache_scope_and_vitest_blobs.md) — cache readable only from own ref + default branch; warm main; hidden-dir artifacts; vitest 5 blob dir; reusable-workflow job names

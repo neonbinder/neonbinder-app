@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   addOrder: vi.fn(),
   clearFaults: vi.fn(),
   clearGate: vi.fn(),
+  pollNow: vi.fn(),
+  cancelLane: vi.fn(),
 }));
 
 vi.mock("@/convex/_generated/api", () => ({
@@ -28,6 +30,8 @@ vi.mock("@/convex/_generated/api", () => ({
       addMyBscOrder: "testing:addMyBscOrder",
       clearMyBscFaults: "testing:clearMyBscFaults",
       clearBscCallGate: "testing:clearBscCallGate",
+      pollMySalesNow: "testing:pollMySalesNow",
+      cancelMyBscTeamChecks: "testing:cancelMyBscTeamChecks",
     },
   },
 }));
@@ -44,6 +48,11 @@ vi.mock("convex/react", () => ({
       "testing:addMyBscOrder": mocks.addOrder,
       "testing:clearMyBscFaults": mocks.clearFaults,
       "testing:clearBscCallGate": mocks.clearGate,
+      "testing:pollMySalesNow": mocks.pollNow,
+    })[ref],
+  useMutation: (ref: string) =>
+    ({
+      "testing:cancelMyBscTeamChecks": mocks.cancelLane,
     })[ref],
 }));
 
@@ -72,6 +81,8 @@ const noAction = () => {
   expect(mocks.addOrder).not.toHaveBeenCalled();
   expect(mocks.clearFaults).not.toHaveBeenCalled();
   expect(mocks.clearGate).not.toHaveBeenCalled();
+  expect(mocks.pollNow).not.toHaveBeenCalled();
+  expect(mocks.cancelLane).not.toHaveBeenCalled();
 };
 
 describe("TestingBscFakePage", () => {
@@ -82,6 +93,8 @@ describe("TestingBscFakePage", () => {
     mocks.addOrder = vi.fn(async (a: { order: { items: unknown[] } }) => ({ items: a.order.items.length }));
     mocks.clearFaults = vi.fn(async () => ({}));
     mocks.clearGate = vi.fn(async () => ({}));
+    mocks.pollNow = vi.fn(async () => ({ ordersRead: 2, ordersStored: 1, linesApplied: 3 }));
+    mocks.cancelLane = vi.fn(async () => ({ cancelled: 28 }));
     vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "true");
   });
 
@@ -123,6 +136,61 @@ describe("TestingBscFakePage", () => {
       expect(mocks.clearGate).toHaveBeenCalledTimes(gate);
       expect(mocks.setFaults).not.toHaveBeenCalled();
       expect(mocks.addOrder).not.toHaveBeenCalled();
+      expect(mocks.cancelLane).not.toHaveBeenCalled();
+    });
+
+    it("?clear=lane (NEO-644) cancels the caller's queued team lookups and nothing else", async () => {
+      renderPage("?clear=lane");
+      const line = await statusText();
+      expect(line).toBe("[testing-bsc-fake] Cleared: lane, 28 queued team lookups.");
+      expect(DONE.test(line)).toBe(true);
+      expect(FAILED.test(line)).toBe(false);
+      expect(mocks.cancelLane).toHaveBeenCalledWith({});
+      expect(mocks.clearFaults).not.toHaveBeenCalled();
+      expect(mocks.clearGate).not.toHaveBeenCalled();
+      expect(mocks.setFaults).not.toHaveBeenCalled();
+    });
+
+    it("a refused ?clear=lane stays on the page as a FAILED 'Error:' line", async () => {
+      mocks.cancelLane = vi.fn(async () => {
+        throw new Error("Not authenticated");
+      });
+      renderPage("?clear=lane");
+      const line = await statusText();
+      expect(line).toBe("[testing-bsc-fake] Error: Not authenticated");
+      expect(FAILED.test(line)).toBe(true);
+      expect(DONE.test(line)).toBe(false);
+    });
+  });
+
+  describe("?poll=1 (NEO-555) runs the caller's BSC sales poll now", () => {
+    // The helper's DONE pattern (playwright/support/bscFake.ts) learns "Polled"
+    // with the spec work that drives this hop; until then the line is pinned here.
+    it("polls the bsc platform and says what it read", async () => {
+      renderPage("?poll=1");
+      const el = await screen.findByText(/^\[testing-bsc-fake\] Polled/);
+      expect(el.textContent).toBe("[testing-bsc-fake] Polled: 2 orders read, 1 stored, 3 lines applied.");
+      expect(mocks.pollNow).toHaveBeenCalledWith({ platform: "bsc" });
+      expect(mocks.setFaults).not.toHaveBeenCalled();
+      expect(mocks.addOrder).not.toHaveBeenCalled();
+    });
+
+    it.each(["", "0", "true"])("?poll=%j is refused and polls nothing", async (value) => {
+      renderPage(`?poll=${value}`);
+      const line = await statusText();
+      expect(line).toBe("[testing-bsc-fake] Give exactly ?poll=1.");
+      expect(FAILED.test(line)).toBe(true);
+      noAction();
+    });
+
+    it("a poll that fails stays on the page as a FAILED 'Error:' line", async () => {
+      mocks.pollNow = vi.fn(async () => {
+        throw new Error("The sales check failed: BSC did not answer");
+      });
+      renderPage("?poll=1");
+      const line = await statusText();
+      expect(line).toBe("[testing-bsc-fake] Error: The sales check failed: BSC did not answer");
+      expect(FAILED.test(line)).toBe(true);
     });
   });
 
@@ -132,10 +200,11 @@ describe("TestingBscFakePage", () => {
       ["rules and order together", `?rules=${enc([])}&order=${enc({})}`],
       ["rules and clear together", `?rules=${enc([])}&clear=all`],
       ["order and clear together", `?order=${enc({})}&clear=gate`],
+      ["poll and clear together", "?poll=1&clear=all"],
     ])("%s: exactly one of rules, order or clear", async (_name, query) => {
       renderPage(query);
       const line = await statusText();
-      expect(line).toBe("[testing-bsc-fake] Give exactly one of ?rules=, ?order= or ?clear=.");
+      expect(line).toBe("[testing-bsc-fake] Give exactly one of ?rules=, ?order=, ?clear= or ?poll=1.");
       expect(FAILED.test(line)).toBe(true);
       expect(DONE.test(line)).toBe(false);
       noAction();
@@ -154,10 +223,10 @@ describe("TestingBscFakePage", () => {
       noAction();
     });
 
-    it.each(["", "everything", "ALL", "faults,gate"])("?clear=%j is refused", async (value) => {
+    it.each(["", "everything", "ALL", "faults,gate", "LANE", "lane,all"])("?clear=%j is refused", async (value) => {
       renderPage(`?clear=${value}`);
       const line = await statusText();
-      expect(line).toBe("[testing-bsc-fake] ?clear= wants faults, gate or all.");
+      expect(line).toBe("[testing-bsc-fake] ?clear= wants faults, gate, all or lane.");
       expect(FAILED.test(line)).toBe(true);
       expect(DONE.test(line)).toBe(false);
       noAction();
@@ -182,6 +251,15 @@ describe("TestingBscFakePage", () => {
     expect(line).toBe("[testing-bsc-fake] Error: This deployment talks to the real BuySportsCards");
     expect(FAILED.test(line)).toBe(true);
     expect(DONE.test(line)).toBe(false);
+  });
+
+  it("the status line is the page's one live region, inside <main>, and its text is unchanged", async () => {
+    renderPage("?clear=all");
+    const line = await statusText();
+    const region = screen.getByRole("status");
+    expect(region.textContent).toBe(line);
+    expect(region.closest("main")).not.toBeNull();
+    expect(screen.getAllByRole("main")).toHaveLength(1);
   });
 
   it("signed out, waits for authentication and calls nothing", async () => {

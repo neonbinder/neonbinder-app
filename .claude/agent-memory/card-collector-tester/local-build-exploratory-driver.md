@@ -21,3 +21,14 @@ Driving the local build headless for a Mode 2 pass:
   classifier; don't try it again.
 - Team picker options are named "Add <team> · <years>", not the bare team name.
 - Delete a hand-made row from its attributes panel: "Delete <name>" then "Yes, delete".
+
+Fast bulk seeding (2026-11-24, NEO-660): a scratch spec calling `addCustomEntry(page, "Inserts", name, { confirm: "required" })`
+in a loop made 53 hand-made inserts in ~30 s. Traps:
+- `waitForURL(/set-selector/)` matches the sign-in URL itself (the redirect param contains it): wait on
+  `u.pathname` instead, or the drill runs before sign-in finishes.
+- A brand-new custom sport did not stick; use Baseball > year > a custom manufacturer. `drillToCustom`
+  then refuses to re-select that set ("Couldn't sync sets" on a manufacturer with no marketplace ids):
+  for later stages pick each column by its `Search <col>` combobox + exact option instead.
+- Chrome MCP `resize_window` may not shrink a maximised window; use a headless `viewport: 390x844` stage
+  for phone width (headless defaults to the light theme).
+- Group Parallels: tick one row, Shift+click the last tick to select the whole run.

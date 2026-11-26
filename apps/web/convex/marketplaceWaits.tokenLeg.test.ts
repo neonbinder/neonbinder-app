@@ -25,7 +25,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { resetBscInflightForTests, type BscWaitEdge } from "./lib/bscCallTelemetry";
+import { __setWaitIdleGraceForTests, resetBscInflightForTests, type BscWaitEdge } from "./lib/bscCallTelemetry";
 
 const st = vi.hoisted(() => ({
   /** How long `getSiteToken` takes (the sign-in). */
@@ -47,19 +47,24 @@ vi.mock("./credentials", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./credentials")>();
   const { internalAction } = await import("./_generated/server");
   const { v } = await import("convex/values");
+  const getSiteToken = internalAction({
+    args: { site: v.string() },
+    returns: v.any(),
+    handler: async () => {
+      st.events.push({ kind: "token:start", at: Date.now() });
+      await pause(st.tokenDelayMs);
+      st.events.push({ kind: "token:end", at: Date.now() });
+      if (st.tokenMode === "throw") throw new Error("sign-in failed");
+      return st.tokenMode === "token" ? { token: "test-bsc-token" } : null;
+    },
+  });
   return {
     ...actual,
-    getSiteToken: internalAction({
-      args: { site: v.string() },
-      returns: v.any(),
-      handler: async () => {
-        st.events.push({ kind: "token:start", at: Date.now() });
-        await pause(st.tokenDelayMs);
-        st.events.push({ kind: "token:end", at: Date.now() });
-        if (st.tokenMode === "throw") throw new Error("sign-in failed");
-        return st.tokenMode === "token" ? { token: "test-bsc-token" } : null;
-      },
-    }),
+    getSiteToken,
+    // NEO-605: the BSC adapter reads the token by calling this directly,
+    // not through `runAction(getSiteToken)`; the same stub answers both.
+    siteTokenForCurrentUser: (ctx: unknown, site: string) =>
+      (getSiteToken as unknown as { _handler: (c: unknown, a: { site: string }) => unknown })._handler(ctx, { site }),
     refreshSiteTokenAfterRejection: internalAction({
       args: { site: v.string() },
       returns: v.object({ refreshed: v.boolean() }),
@@ -77,6 +82,15 @@ vi.mock("./credentials", async (importOriginal) => {
     }),
   };
 });
+
+// Warm the mocked module once, before any test runs. The adapters import
+// "./credentials" and convex-test's function loader imports it too, and when
+// those two first imports overlap (a BSC and a SportLots side fetched together)
+// vitest builds the async factory twice, and one importer can fall through to
+// the REAL module, so the adapter reads a real token and the sync ends in
+// "error". Vitest's own mocker says this does not work for concurrent imports.
+// Awaiting it here caches the mocked module before anything can race.
+await import("./credentials");
 
 // Every edge the adapter's writer hears, in order with the events above; the
 // real writer still writes the row.
@@ -112,7 +126,11 @@ const ADMIN = {
   role: "admin",
 };
 
-const SIGN_IN_MS = 150;
+// The recorder's idle grace is shortened for the file (the production value is
+// 500 ms), and the sign-in and re-auth are made longer than it, so no test waits
+// out the real grace.
+const GRACE_MS = 20;
+const SIGN_IN_MS = 40;
 const KEY = "run_487-token";
 const CHECKLIST_FILTERS = {
   sport: ["baseball"],
@@ -125,6 +143,7 @@ const CHECKLIST_FILTERS = {
 let answers: Array<() => Response>;
 
 beforeEach(() => {
+  __setWaitIdleGraceForTests(GRACE_MS);
   resetBscInflightForTests();
   st.tokenDelayMs = SIGN_IN_MS;
   st.tokenMode = "token";
@@ -144,6 +163,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __setWaitIdleGraceForTests(undefined);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -251,9 +271,9 @@ describe("fetchBscChecklist — the token leg and the 401 re-auth", () => {
   });
 
   test("a 401's re-auth keeps the wait open through the sign-in to the retry: still one wait", async () => {
-    // Longer than the recorder's 500 ms idle grace: uncovered, the wait would
+    // Longer than the recorder's idle grace: uncovered, the wait would
     // close after the 401 and reopen on the retry.
-    st.reauthDelayMs = 700;
+    st.reauthDelayMs = GRACE_MS * 3;
     answers = [() => new Response("", { status: 401 }), () => Response.json([])];
     const t = convexTest(schema, modules);
     const r = await run(t);

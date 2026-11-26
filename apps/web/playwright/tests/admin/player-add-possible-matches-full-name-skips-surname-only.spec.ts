@@ -79,7 +79,7 @@ test(
 
     // Positive anchors first: the same-name row and the close spelling.
     await expect(
-      panel.getByRole("button", { name: `Open ${fullName} — same name`, exact: true }),
+      panel.getByRole("button", { name: `Open ${fullName} · same name`, exact: true }),
     ).toBeVisible();
     await expect(panel.getByRole("button", { name: `Open ${initialled}`, exact: true })).toBeVisible();
     // Exactly those two: a surname-only row would make it three.
@@ -93,7 +93,7 @@ test(
     await expect(panel.getByRole("button", { name: `Open ${fullName}`, exact: true })).toBeVisible();
     await expect(panel.getByRole("button", { name: `Open ${initialled}`, exact: true })).toBeVisible();
     await expect(surnameOnlyRow).toHaveCount(1);
-    await expect(surnameOnlyRow).toHaveAccessibleName(`Open ${surname} — same name`);
+    await expect(surnameOnlyRow).toHaveAccessibleName(`Open ${surname} · same name`);
     await expect(panel.getByRole("listitem")).toHaveCount(3);
   },
 );

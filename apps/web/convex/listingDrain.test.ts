@@ -56,6 +56,7 @@ import { BSC_SELLER_COPY, BSC_SELLER_TIMEOUTS_MS, type BscSellerSession } from "
 import { EBAY_TIMEOUTS_MS } from "./adapters/ebaySeller";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
 import { BSC_SELLER_ID_FETCH_COOLDOWN_MS } from "./bscSellerId";
+import { R2_CALL_TIMEOUT_MS } from "./lib/r2";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -98,6 +99,15 @@ vi.mock("./credentials", async (importOriginal) => {
     }),
   };
 });
+
+// Warm the mocked module once, before any test runs. The adapters import
+// "./credentials" and convex-test's function loader imports it too, and when
+// those two first imports overlap (a BSC and a SportLots side fetched together)
+// vitest builds the async factory twice, and one importer can fall through to
+// the REAL module, so the adapter reads a real token and the sync ends in
+// "error". Vitest's own mocker says this does not work for concurrent imports.
+// Awaiting it here caches the mocked module before anything can race.
+await import("./credentials");
 
 /**
  * convex-test mints ids in its own format ("…0010cardChecklist"), not the
@@ -3253,6 +3263,69 @@ describe("NEO-481: a photo refresh reaches a BSC row that already shows a seller
     expect(bsc.puts).toEqual([]);
     expect(await outbox(s)).toEqual([expect.objectContaining({ cardId: card, refreshPhotos: true })]);
   });
+
+  test.each([
+    ["never answers", "hang"],
+    ["answers 503 twice", "fault"],
+    ["is not there (404)", "missing"],
+  ] as const)(
+    "NEO-592: with the real R2 read, a photo that %s uploads nothing and keeps the refresh queued",
+    async (_name, behaviour) => {
+      const s = await setup();
+      const { v, bsc, att, copyId, card } = await listedWithSellerPhotos(s, ["front"]);
+      await shoot(s, copyId, "front", "tok-front-2");
+      await flag(s, card, v.variantId);
+      for (const [k, val] of Object.entries({
+        R2_ENDPOINT: "https://acct.r2.cloudflarestorage.com",
+        R2_BUCKET: "photos",
+        R2_ACCESS_KEY_ID: "AKIDEXAMPLE",
+        R2_SECRET_ACCESS_KEY: "secret",
+      })) {
+        vi.stubEnv(k, val);
+      }
+      onTestFinished(() => vi.unstubAllEnvs());
+      const r2: string[] = [];
+      const others = globalThis.fetch;
+      vi.stubGlobal("fetch", (async (input: string | URL | Request, init?: RequestInit) => {
+        if (!(input instanceof Request) || !input.url.includes("r2.cloudflarestorage.com")) return await others(input, init);
+        r2.push(input.method);
+        if (behaviour === "fault") return new Response(null, { status: 503 });
+        if (behaviour === "missing") return new Response(null, { status: 404 });
+        // A read that never answers: it ends only when the try's limit aborts it.
+        return await new Promise<Response>((_, reject) => {
+          if (input.signal.aborted) reject(input.signal.reason);
+          else input.signal.addEventListener("abort", () => reject(input.signal.reason));
+        });
+      }) as typeof fetch);
+      // The R2 limit passes at once instead of after 2.5 s; every other timer keeps its delay.
+      const realSetTimeout = globalThis.setTimeout;
+      vi.stubGlobal("setTimeout", ((fn: () => void, ms?: number, ...rest: unknown[]) =>
+        realSetTimeout(fn, ms === R2_CALL_TIMEOUT_MS ? 0 : ms, ...rest)) as typeof setTimeout);
+      const log = vi.spyOn(console, "log");
+      onTestFinished(() => log.mockRestore());
+
+      await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
+
+      // A missing object is final at once; a hang or a fault gets its second try.
+      expect(r2).toEqual(behaviour === "missing" ? ["GET"] : ["GET", "GET"]);
+      expect(att.uploads).toBe(1);
+      expect(bsc.puts).toEqual([]);
+      expect(await outbox(s)).toEqual([expect.objectContaining({ cardId: card, refreshPhotos: true, refreshAttempts: 1 })]);
+      const lines = log.mock.calls
+        .map(([line]) => String(line))
+        .filter((line) => line.includes('"r2_get"'))
+        .map((line) => JSON.parse(line));
+      expect(lines).toEqual([
+        {
+          msg: "r2_get",
+          attempts: behaviour === "missing" ? 1 : 2,
+          status: { hang: null, fault: 503, missing: 404 }[behaviour],
+          durationMs: expect.any(Number),
+          outcome: { hang: "timeout", fault: "error", missing: "missing" }[behaviour],
+        },
+      ]);
+    },
+  );
 
   test("a change landing during the push bumps seq: the row stays, still flagged, for the next run", async () => {
     const s = await setup();

@@ -181,4 +181,44 @@ describe("SetRowActionButton", () => {
     // The icon is part of what the tone means; it never joins the name.
     expect(button.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
   });
+
+  it.each([
+    ["fix", "border-neon-pink-text", "bg-wash-pink", "text-neon-pink-text"],
+    ["check", "border-neon-blue-text", "bg-wash-blue", "text-neon-blue-text"],
+  ] as const)(
+    "%s is the walk's own pill: the level's edge and wash, ink words, its own coloured icon, the same ring",
+    (tone, border, wash, iconInk) => {
+      render(
+        <SetRowActionButton tone={tone} onActivate={vi.fn()}>
+          2 need you
+        </SetRowActionButton>,
+      );
+      const button = screen.getByRole("button", { name: "2 need you" });
+      expect(hasAll(button, SET_ROW_ACTION_TONE_CLASSES[tone])).toBe(true);
+      for (const cls of ["min-h-8", "rounded-full", border, wash, "text-ink", ...RING]) {
+        expect(button.classList.contains(cls)).toBe(true);
+      }
+      expect(button.classList.contains("bg-notice-warn-bg")).toBe(false);
+      expect(button.classList.contains("border-control")).toBe(false);
+      // The two levels differ by shape as well as colour, and the icon never joins the name.
+      const icon = button.querySelector("svg")!;
+      expect(icon.getAttribute("aria-hidden")).toBe("true");
+      expect(icon.classList.contains(iconInk)).toBe(true);
+      expect(button.getAttribute("aria-label")).toBeNull();
+    },
+  );
+
+  it("fix and check draw different icons", () => {
+    const { container: a } = render(
+      <SetRowActionButton tone="fix" onActivate={vi.fn()}>
+        A
+      </SetRowActionButton>,
+    );
+    const { container: b } = render(
+      <SetRowActionButton tone="check" onActivate={vi.fn()}>
+        B
+      </SetRowActionButton>,
+    );
+    expect(a.querySelector("svg")!.innerHTML).not.toBe(b.querySelector("svg")!.innerHTML);
+  });
 });

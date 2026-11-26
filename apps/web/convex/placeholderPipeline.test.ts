@@ -38,6 +38,7 @@ import {
   planCancelChunk,
   PLACEHOLDER_CANCEL_CHUNK,
   DEFAULT_MAX_ACTIVE_JOBS_PER_USER,
+  readFieldsFromResult,
 } from "./placeholderPipeline";
 
 const modules = (import.meta as unknown as {
@@ -2509,5 +2510,21 @@ describe("touchJobActivity", () => {
     await expect(
       t.mutation(internal.placeholderPipeline.touchJobActivity, { jobId: "no-such-job" }),
     ).resolves.toBeNull();
+  });
+});
+
+describe("readFieldsFromResult — NEO-643 names read off a card are cleansed", () => {
+  test("a stray backslash and zero-width character never reach the stored players or team; the card number is untouched", () => {
+    expect(
+      readFieldsFromResult({
+        players: ["Wilmer R\\ios", "Mike\u200b Trout", "\u200b"],
+        team: "Le\\on Mex\u00adico",
+        card_number: "A\\1",
+      }),
+    ).toMatchObject({
+      players: ["Wilmer Rios", "Mike Trout"],
+      team: "Leon Mexico",
+      cardNumber: "A\\1",
+    });
   });
 });

@@ -5,10 +5,10 @@
  * tests. Keep a single test that does a real Wikidata lookup").
  *
  * Every player the product creates is enriched once, through the
- * deployment-wide 5-wide `wikidataPool` that the review wizard's lookups wait
- * in. A minted name (`PM<token>`) always missed the NEO-289 recording and went
- * to Wikidata live, so every such spec held a pool slot behind the wizard specs
- * on its shard.
+ * deployment-wide 5-wide `wikidataPool` that a fetch's lookups wait in. A
+ * minted name (`PM<token>`) always missed the NEO-289 recording and went to
+ * Wikidata live, so every such spec held a pool slot behind the checklist
+ * fetches on its shard.
  *
  * Each name here is a 1996 Line Up Venezuelan Winter League player whose
  * Baseball lookup the recording holds as a genuine no-match (`result: null`,
@@ -44,6 +44,13 @@
  *     the server and the unit tests.
  */
 import type { FlowEnv } from "./env";
+
+/**
+ * The ceiling for a new player's enrichment lookup to answer (180 s): it waits
+ * in the deployment-wide 5-wide `wikidataPool` behind every other run's
+ * lookups. Over the 7 s budget, so each use says why at its call site (R5).
+ */
+export const LOOKUPS = 180_000;
 
 export const RECORDED_NO_MATCH_PLAYERS = {
   "player-management-add-and-career-history": [
@@ -190,34 +197,6 @@ export const RECORDED_NO_MATCH_NAMES = {
       "Suncorp Super Netball",
     ],
   },
-  "checklist-wizard-career-team-entry:league": {
-    kind: "league",
-    sportQid: BASEBALL,
-    names: [
-      "Netball Superleague", "ANZ Premiership", "Bandyallsvenskan", "Currie Cup",
-      "Nicky Rackard Cup", "Lory Meagher Cup", "Tailteann Cup", "Hogan Cup",
-      "Deodhar Trophy", "Rachael Heyhoe Flint Trophy", "Charlotte Edwards Cup",
-      "Sigerson Cup",
-    ],
-  },
-  "checklist-wizard-career-team-entry:first-team": {
-    kind: "team",
-    sportQid: BASEBALL,
-    names: [
-      "Ballygunner", "Kilmallock", "Cuala", "Sixmilebridge", "Clarinbridge",
-      "Portumna", "Slaughtneil", "Toomevara", "Patrickswell", "Kiltormer", "Athenry",
-      "Birr",
-    ],
-  },
-  "checklist-wizard-career-team-entry:second-team": {
-    kind: "team",
-    sportQid: BASEBALL,
-    names: [
-      "Ballyea", "Newtownshandrum", "Cushendall", "Loughgiel", "Ballycran",
-      "Portaferry", "Crossmaglen", "Kilcoo", "Corofin", "Mullinalaghta", "Kilmacud",
-      "Ballyboden",
-    ],
-  },
   "checklist-one-marketplace-match-cards-keeps-every-card": {
     kind: "team",
     sportQid: HOCKEY,
@@ -225,15 +204,6 @@ export const RECORDED_NO_MATCH_NAMES = {
       "Castlehaven", "Craughwell", "Loughrea", "Mullinavat", "Dicksboro",
       "Tullaroan", "Thomastown", "Mooncoin", "Templetuohy", "Borrisoleigh",
       "Kiladangan", "Roscrea",
-    ],
-  },
-  "checklist-wizard-career-team-commits": {
-    kind: "team",
-    sportQid: HOCKEY,
-    names: [
-      "Cappawhite", "Moycarkey", "Nenagh", "Lismore", "Dungarvan", "Fourmilewater",
-      "Kilruane", "Clonoulty", "Ballinderreen", "Dunloy", "Ballyhale",
-      "Carrickshock",
     ],
   },
 } as const satisfies Record<

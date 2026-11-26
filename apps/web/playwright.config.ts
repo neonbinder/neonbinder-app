@@ -31,7 +31,22 @@
  *
  * Budgets: 7 s per action / expect — the suite's UX budget. A step the flow
  * states a longer timeout for (live marketplace round-trips, the launch
- * gate) passes that number on that one call. No retries.
+ * gate) passes that number on that one call.
+ *
+ * Retries (NEO-592, Jason 2026-11-18, GUIDE hard rule 5): CI retries a failed
+ * spec once; locally 0. A spec that passes only on its retry is "flaky" in the
+ * report: the gate counts it as passed, and playwright/support/flaky-reporter.mjs
+ * lists it, with its first attempt's error, in <PW_REPORT_DIR>/flaky.json for the
+ * job summary. `bootstrap` takes the same one retry in CI: it is idempotent
+ * (it begins by resetting its account, then seeds it) and touches only its own
+ * worker's account, so a second run repeats the first. Of the projects, only
+ * the seed (`setup`) never retries (its own `retries: 0` below: a global wipe
+ * and the shared real sets). Every spec retries alike, the BSC fault specs
+ * included: since NEO-628 the BSC call gate a fault opens is the worker's own
+ * against the fake, so a retry reaches no other shard. In CI every red spec on
+ * e2e / e2e-mobile is followed by the failure reset (support/fixtures.ts
+ * `resetAfterFailure`), so a retry starts from a clean account; locally it
+ * runs only with PW_FAILURE_RESET=1.
  */
 import { defineConfig, devices } from "@playwright/test";
 import { ignoredSpecs } from "./playwright/project-scope.mjs";
@@ -51,18 +66,25 @@ export default defineConfig({
   outputDir: "./playwright/results",
   fullyParallel: true,
   workers: 1,
-  retries: 0,
+  retries: CI ? 1 : 0,
   forbidOnly: CI,
   // Budgets are per step; a few specs legitimately wait minutes on a live
   // marketplace sync, so the per-test cap is generous.
   timeout: 1_200_000,
   expect: { timeout: UX_BUDGET },
+  // The report is published from a public repo: no git author name or email
+  // (`commit`), and no source diff (`diff`). The commit SHA still reaches the
+  // report through its CI block (metadata.ci.commitHash), which is not personal.
+  captureGitInfo: { commit: false, diff: false },
   reporter: CI
     ? [
         ["list"],
         ["blob", { outputDir: `${REPORT_DIR}/blob` }],
         ["json", { outputFile: `${REPORT_DIR}/results.json` }],
         ["junit", { outputFile: `${REPORT_DIR}/junit.xml` }],
+        // NEO-592: the specs that passed only on their retry, for the job summary
+        // (.github/scripts/retry-summary.sh shard).
+        ["./playwright/support/flaky-reporter.mjs", { outputFile: `${REPORT_DIR}/flaky.json` }],
       ]
     : [["list"]],
   use: {
@@ -80,7 +102,8 @@ export default defineConfig({
     screenshot: "only-on-failure",
   },
   projects: [
-    { name: "setup", testMatch: SETUP, timeout: 1_500_000 },
+    // The seed is one data-loading track: a red seed stays red and loud, never retried.
+    { name: "setup", testMatch: SETUP, timeout: 1_500_000, retries: 0 },
     { name: "bootstrap", testMatch: BOOTSTRAP },
     {
       name: "e2e",

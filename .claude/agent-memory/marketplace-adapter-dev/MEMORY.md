@@ -70,7 +70,7 @@
 - [test:unit ignores file args](reference_test_unit_ignores_file_args.md) — `npm run test:unit -- files` runs the whole suite (args hit the verify script); iterate with npx vitest run
 - [Client parse rows hit strict arg validators](reference_client_parse_rows_hit_strict_arg_validators.md) — a new parser row field passed straight to an action arg fails v.object at runtime; widen optional + drop server-side
 - [Spy `_handler` to count convex-test calls](reference_convex_test_spy_handler_to_count_calls.md) — nested runQuery goes through `_handler`; an `invokeQuery` spy stays at 0; pair every "never called" with a control
-- [Workpool cancelAll semantics](reference_workpool_cancel_all_semantics.md) — pending/runAt items get `canceled`; a running item finishes with its real result and its re-enqueue escapes
+- [Workpool cancelAll semantics](reference_workpool_cancel_all_semantics.md) — pending/runAt get `canceled`; running finishes, re-enqueue escapes; no list-by-args: keep work ids
 - [settleOnFakeClock drifts on first import](reference_settle_on_fake_clock_drifts_on_first_import.md) — first adapter action in a file moves the fake clock ~26 s before its first read; warm with a throwaway item, reset to NOW
 - [Token leg is BSC wait time](reference_token_leg_is_bsc_wait_time.md) — wrap getBscToken/re-auth in whileWaitingOnBsc (one wait with the calls); recorder before the token read
 - [Checklist row field rides five hops](reference_checklist_row_field_rides_five_hops.md) — compare → apply → validator → Match Cards request → action args/answer fold; the link path drops unknown fields silently
@@ -94,4 +94,16 @@
 - [Cloud Run: load before listen](reference_cloud_run_load_before_listen.md) — throttled CPU starves post-listen boot work; load first, budget optional loads; spy Server.prototype.listen
 - [New listing problem reason touch list](reference_new_listing_problem_reason_touch_list.md) — ~8 lists; tsc catches only types.ts + copy.ts; REPORTABLE and seed SYNC_HELD_REASONS fail silently
 - [Stdio EPIPE is a late 'error' event](reference_stdio_epipe_error_is_a_late_event.md) — closed pipe/tty kills Node via nextTick 'error'; release scoped listeners on setImmediate; spy emit
+- [Capture diff paths are what the fake invents](reference_capture_diff_paths_are_what_the_fake_invents.md) — shape_drift paths = fake-only fields; stored shapes unreadable; CAPTURE_OPTIONAL; name variants by kind not id
+- [Capture optional paths: parent-only](reference_capture_optional_parent_only.md) — fake-bsc prefix exemption hides read fields under a present object; use parentOnly + list children
 - [Cloud Run socket destroy restarts the instance](reference_cloud_run_socket_destroy_restarts_instance.md) — fake faults end in 503, never socket.destroy(); hangCapMs injectable
+- [Names-first core reshapes fetch fixtures](reference_names_first_pair_core_shapes_the_fetch_tests.md) — "T-10" now pairs "10" by number; sibling-card fixtures must be the same player; sourceNumbers on stored rows
+- [Derived numbers skip the number tiers](reference_derived_numbers_skip_the_number_tiers.md) — flag minted/swapped numbers on the wire; resolveExistingIds skips slot+number and no-ref tiers
+- [eBay read path: one clock](ebay-read-path-bounded-by-one-clock.md) — 3 s a try, one retry on timeout; timeout is never a missing policy
+- [Direct helper bypasses action stubs](reference_direct_helper_bypasses_credentials_action_stubs.md) — runAction -> plain helper skips vi.mock action stubs; add a twin stub, spy _handler for no-hop proof
+- [One fake host pin for both marketplaces](reference_one_fake_host_pin_shared_by_both_marketplaces.md) — share isFakeServiceHost/signForFake; fake switch keyed on request not config validity; strict echo guard
+- [Checklist matcher strips letter prefixes](reference_checklist_matcher_strips_letter_prefix_ties_need_digit_first_numbers.md) — "M-1" pairs card "1" by number; name-tie tests need digit-first numbers ("89M-1")
+- [pgrep wait loop matches itself](reference_pgrep_wait_loop_matches_itself.md) — `until ! pgrep -f tool` never ends under the harness; wait on a pid with kill -0
+- [Gate key = rate-limit domain, one value](reference_gate_key_is_the_rate_limit_domain_one_value.md) — key + x-nb-fake-ns from one helper; queuedBy on lane items; defer per-ns blocks; lib helper avoids testing.ts cycle
+- [Convex return record keys must be ASCII](reference_convex_return_record_keys_must_be_ascii.md) — accented record key fails the return validator; return {key, entry}[] and rebuild with jq
+- [convexTest under adapters/ needs a re-keyed glob](reference_convex_test_in_adapters_dir_needs_rekeyed_glob.md) — map ../x to ./x and ./y to ./adapters/y, or "Could not find module"

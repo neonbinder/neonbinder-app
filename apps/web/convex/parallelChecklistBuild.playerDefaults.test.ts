@@ -44,7 +44,11 @@ type StubCard = {
   sourceBscSetSlug?: string;
 };
 
-const bscState = vi.hoisted(() => ({ cards: [] as StubCard[] }));
+const bscState = vi.hoisted(() => ({
+  cards: [] as StubCard[],
+  /** Runs inside the build's BSC fetch: after the hold check, before any copy. */
+  duringFetch: null as null | (() => Promise<void>),
+}));
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adapters/buysportscards")>();
   const { action } = await import("./_generated/server");
@@ -59,13 +63,17 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
         sourceFacet: v.optional(v.string()),
       },
       returns: v.any(),
-      handler: async () => ({ success: true, cards: bscState.cards }),
+      handler: async () => {
+        await bscState.duringFetch?.();
+        return { success: true, cards: bscState.cards };
+      },
     }),
   };
 });
 
 beforeEach(() => {
   bscState.cards = [];
+  bscState.duringFetch = null;
 });
 
 type T = ReturnType<typeof convexTest>;
@@ -119,7 +127,19 @@ async function seed(t: T) {
 }
 type Fx = Awaited<ReturnType<typeof seed>>;
 
-/** An insert card; `players` are linked under their own names. */
+const RULED_TEAMLESS = { teamNoneConfirmedAt: NOW, teamNoneConfirmedByUserId: "user_operator" };
+
+const ownsItsTeamState = (extra: Partial<Doc<"cardChecklist">> | undefined) =>
+  !!extra &&
+  ("teamCheckDoneAt" in extra || "teamNoneConfirmedAt" in extra || "bscTeamName" in extra);
+
+/**
+ * An insert card; `players` are linked under their own names. NEO-661: a card
+ * waiting on its team lookup (a BSC ref, no team, no stamp) or pink holds the
+ * whole build, so a card given neither `teams` nor its own team state in `extra` is one an operator
+ * ruled teamless: tidy, and it owes no lookup. A test about a team on the copy
+ * passes `teams` and `buildThenDropTeams`.
+ */
 async function insertCard(
   t: T,
   fx: Fx,
@@ -145,6 +165,7 @@ async function insertCard(
       platformData: { bsc: { ref: `ins-${n}`, src: "b0" } },
       sortOrder: Number(n),
       lastUpdated: NOW,
+      ...(opts.teams || ownsItsTeamState(opts.extra) ? {} : RULED_TEAMLESS),
       ...opts.extra,
     }),
   );
@@ -174,6 +195,26 @@ async function build(t: T, fx: Fx) {
     .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: fx.parallel });
   expect(result.status).toBe("built");
   return result;
+}
+
+/**
+ * The copy page meeting a source that has lost its team since the hold check
+ * (the only way a teamless, lookup-owing source reaches a copy now): each card
+ * in `numbers` starts with a team, so the hold lets the build through, and has
+ * none by the time BSC's fetch returns, just before the copy pages.
+ */
+async function buildThenDropTeams(t: T, fx: Fx, numbers: string[]) {
+  bscState.duringFetch = () =>
+    t.run(async (ctx) => {
+      const cards = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", fx.insert))
+        .collect();
+      for (const c of cards) {
+        if (numbers.includes(c.cardNumber)) await ctx.db.patch(c._id, { teamOnCardIds: undefined });
+      }
+    });
+  return build(t, fx);
 }
 
 async function copies(t: T, fx: Fx) {
@@ -256,16 +297,21 @@ describe("parallel build — the parallel's player defaults (NEO-528 round 3)", 
     expect(one.cameoIndex).toEqual([fx.ohtani]);
   });
 
-  test("a pending name on the insert card blocks the default player but not the default cameos", async () => {
+  // NEO-645 (J3), widened by NEO-661 to any pink card: a source card with a name
+  // still waiting is pink, and the build refuses it before it deletes or copies
+  // anything, so the default player never lands on a card whose own player is
+  // unanswered.
+  test("a pending name on the insert card blocks the build: nothing is copied, no default lands", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
     await insertCard(t, fx, "1", { extra: { pendingPlayerNames: ["S. Ohtani"] } });
     await store(t, fx.parallel, { defaultPlayerIds: [fx.skenes], defaultCameoIds: [fx.soto] });
-    await build(t, fx);
-    const one = (await copies(t, fx)).get("1")!;
-    expect(one.playerIds).toBeUndefined();
-    expect(one.pendingPlayerNames).toEqual(["S. Ohtani"]);
-    expect(one.secondaryPlayerIds).toEqual([fx.soto]);
+    await stubParallelListing(t, fx);
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: fx.parallel });
+    expect(result.status).toBe("blocked");
+    expect((await copies(t, fx)).size).toBe(0);
   });
 
   // Jason, 2026-11-15: a card whose listing named anyone, even a name entity
@@ -367,10 +413,10 @@ describe("parallel build — the parallel's own Set Team, fill-empty (the Set Te
   test("a copy with no team takes the parallel's; a copy with its own team keeps it", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
-    await insertCard(t, fx, "1", { players: [[fx.ohtani, "Shohei Ohtani"]] });
+    await insertCard(t, fx, "1", { players: [[fx.ohtani, "Shohei Ohtani"]], teams: [fx.yankees] });
     await insertCard(t, fx, "2", { players: [[fx.judge, "Aaron Judge"]], teams: [fx.yankees] });
     await store(t, fx.parallel, { teamIds: [fx.dodgers] });
-    await build(t, fx);
+    await buildThenDropTeams(t, fx, ["1"]);
     const got = await copies(t, fx);
     const one = got.get("1")!;
     expect(one.teamOnCardIds).toEqual([fx.dodgers]);
@@ -381,28 +427,40 @@ describe("parallel build — the parallel's own Set Team, fill-empty (the Set Te
     expect(two.teamIndex).toEqual([fx.yankees]);
   });
 
-  test("never over a pending team name, an operator's no-team ruling, or a listing's unmatched team", async () => {
+  test("never over an operator's no-team ruling", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
-    await insertCard(t, fx, "1", { extra: { pendingTeamNames: ["Dodgers"] } });
     await insertCard(t, fx, "2", { extra: { teamNoneConfirmedAt: NOW } });
-    await insertCard(t, fx, "3", { extra: { bscTeamName: "LA Dodgers", teamCheckDoneAt: NOW } });
     await store(t, fx.parallel, { teamIds: [fx.yankees] });
     await build(t, fx);
     const got = await copies(t, fx);
-    for (const n of ["1", "2", "3"]) {
-      expect(got.get(n)!.teamOnCardIds, n).toBeUndefined();
-      expect(got.get(n)!.teamIndex, n).toEqual([]);
-    }
-    expect(got.get("1")!.pendingTeamNames).toEqual(["Dodgers"]);
+    expect(got.get("2")!.teamOnCardIds).toBeUndefined();
+    expect(got.get("2")!.teamIndex).toEqual([]);
+  });
+
+  // A listing that named a team NB could not match, its lookup already answered
+  // and no team on the card, is pink: the build refuses rather than fill the
+  // parallel's team over a team the data named (invariant 8; NEO-661).
+  test("a listing's unmatched team on a teamless source holds the build: no team is filled over it", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await insertCard(t, fx, "3", { extra: { bscTeamName: "LA Dodgers", teamCheckDoneAt: NOW } });
+    await store(t, fx.parallel, { teamIds: [fx.yankees] });
+    await stubParallelListing(t, fx);
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: fx.parallel });
+    expect(result.status).toBe("blocked");
+    expect(result.blockedReason).toBe(parallelBuild.BLOCKED_SOURCE_NOT_TIDY);
+    expect((await copies(t, fx)).size).toBe(0);
   });
 
   test("a team on the insert row only (not the parallel) is not written: the parallel's own value is read", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
-    await insertCard(t, fx, "1");
+    await insertCard(t, fx, "1", { teams: [fx.yankees] });
     await store(t, fx.insert, { teamIds: [fx.dodgers] });
-    await build(t, fx);
+    await buildThenDropTeams(t, fx, ["1"]);
     expect((await copies(t, fx)).get("1")!.teamOnCardIds).toBeUndefined();
   });
 });

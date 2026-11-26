@@ -43,6 +43,11 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
+
+// NEO-625: the module boundary; the helper has its own tests.
+const reportCaughtError = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/observability/report-caught-error", () => ({ reportCaughtError }));
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -447,9 +452,8 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
       bscOptions: [{ value: "2024 Topps Chrome", platformValue: "topps-chrome" }],
       slOptions: [],
     });
-    mockSetPlatformData.mockRejectedValueOnce(
-      new Error("[Request ID: abc] Server Error: bscLabel"),
-    );
+    const refusal = new Error("[Request ID: abc] Server Error: bscLabel");
+    mockSetPlatformData.mockRejectedValueOnce(refusal);
 
     renderForm();
 
@@ -472,6 +476,12 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     expect(screen.queryByText(/bscLabel/)).toBeNull();
     // Retry IS offered — the picks are recoverable by picking again.
     expect(screen.getByText("Retry")).toBeTruthy();
+    // NEO-625: reported once, so the refusal is not invisible.
+    expect(reportCaughtError).toHaveBeenCalledTimes(1);
+    expect(reportCaughtError).toHaveBeenCalledWith(refusal, {
+      feature: "base-mapping-form",
+      step: "write",
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -648,6 +658,8 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     expect(screen.getByText("Select Base Set")).toBeTruthy();
     expect(mockFetchRawOptions).toHaveBeenCalledTimes(2);
     expect(onClose).not.toHaveBeenCalled();
+    // A stale-mapping refusal is an expected outcome with its own copy, not a failure.
+    expect(reportCaughtError).not.toHaveBeenCalled();
   });
 
   it("renders neither the URL nor the raw message of a failed fetch (NEO-211 F3)", async () => {
@@ -679,9 +691,8 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
   it("renders our own string, not the thrown text, when the action rejects", async () => {
     // The outer catch also covers the writePlatformData calls, so the thrown
     // value is a Convex server error that can carry marketplace detail.
-    mockFetchRawOptions.mockRejectedValueOnce(
-      new Error("[Request ID: xyz] GET https://api.sportlots.com/x?key=SECRET 500"),
-    );
+    const failure = new Error("[Request ID: xyz] GET https://api.sportlots.com/x?key=SECRET 500");
+    mockFetchRawOptions.mockRejectedValueOnce(failure);
 
     renderForm();
 
@@ -690,6 +701,11 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     expect(panel.textContent).not.toContain("sportlots.com");
     expect(panel.textContent).not.toContain("SECRET");
     expect(panel.textContent).not.toContain("Request ID");
+    expect(reportCaughtError).toHaveBeenCalledTimes(1);
+    expect(reportCaughtError).toHaveBeenCalledWith(failure, {
+      feature: "base-mapping-form",
+      step: "fetch",
+    });
   });
 });
 
@@ -707,15 +723,20 @@ describe("BaseMappingForm — waiting on BuySportsCards (PR 451)", () => {
   });
 
   it("the open picker carries one wait line while the fetch is pending, keyed by the key the fetch was given", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     let release!: (v: unknown) => void;
     mockFetchRawOptions.mockImplementation(() => new Promise((r) => (release = r)));
     renderForm();
 
-    await waitFor(() => expect(mockFetchRawOptions).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    expect(mockFetchRawOptions).toHaveBeenCalledTimes(1);
     const sent = mockFetchRawOptions.mock.calls[0][0].waitKey as string;
     expect(sent).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
 
-    const line = await screen.findByText("Waiting on BuySportsCards…", {}, { timeout: 3000 });
+    await act(async () => {
+      vi.advanceTimersByTime(ANNOUNCE_AFTER_MS);
+    });
+    const line = screen.getByText("Waiting on BuySportsCards…");
     expect(line.closest('[role="dialog"]')).not.toBeNull();
     expect(line.closest('[role="status"]')).not.toBeNull();
     expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
@@ -728,6 +749,10 @@ describe("BaseMappingForm — waiting on BuySportsCards (PR 451)", () => {
         slOptions: [{ value: "2024 Topps Chrome", platformValue: "tc2024" }],
       });
     });
-    await waitFor(() => expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull());
+    expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull();
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

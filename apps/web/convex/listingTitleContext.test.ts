@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
+import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
@@ -209,6 +210,35 @@ describe("listingTitleContext internals", () => {
     ).rejects.toThrow();
   });
 
+  test("titleSetFacts refuses more resolved team ids than the gate resolves", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await t.run((ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    const teamId = await t.run((ctx) =>
+      ctx.db.insert("teams", {
+        name: "Red Sox",
+        nameNormalized: "red sox",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const resolvedTeamIds = Array.from({ length: MAX_CHECKLIST_TEAM_TEXTS + 1 }, () => teamId);
+    await expect(
+      t.query(internal.listingTitleContext.titleSetFacts, {
+        selectorOptionId: sportId,
+        sportId,
+        resolvedTeamIds,
+      }),
+    ).rejects.toThrow(/resolved team ids exceeds/);
+  });
+
   test.each(["titleSetFacts", "playerNamesByIds"])(
     "%s is declared internalQuery (it trusts its arguments)",
     (fn) => {
@@ -219,4 +249,65 @@ describe("listingTitleContext internals", () => {
       }
     },
   );
+});
+
+describe("titleContext teamSplits (NEO-606)", () => {
+  test("carries the Location / Name of the set's team and of every resolved printed team, once", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId, athleticsId } = await seedTree(t, { withSetTeam: true });
+    // A second team, resolved by a card's printed name, and one with no location.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("teams", {
+        location: "Seattle",
+        name: "Mariners",
+        nameNormalized: normalizeTeamName("Seattle Mariners"),
+        sportId,
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.insert("teams", {
+        name: "Brooklyn",
+        nameNormalized: normalizeTeamName("Brooklyn"),
+        sportId,
+        lastUpdated: Date.now(),
+      });
+    });
+    expect(athleticsId).toBeTruthy();
+
+    const result = await t.withIdentity(ADMIN_IDENTITY).action(
+      api.selectorOptions.resolveChecklistEntities,
+      {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [
+          previewCard({ teams: ["Oakland Athletics"] }),
+          previewCard({ teams: ["Seattle Mariners", "Brooklyn"] }),
+        ],
+      },
+    );
+    expect(result.unknownTeams).toEqual([]);
+    // The set's own team (Oakland) is listed once even though a card names it too.
+    expect(result.titleContext?.teamSplits).toEqual([
+      { location: "Oakland", name: "Athletics" },
+      { location: "Seattle", name: "Mariners" },
+    ]);
+  });
+
+  test("a context whose teams have no location carries no teamSplits", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("teams", {
+        name: "Brooklyn",
+        nameNormalized: normalizeTeamName("Brooklyn"),
+        sportId,
+        lastUpdated: Date.now(),
+      });
+    });
+    const result = await t.withIdentity(ADMIN_IDENTITY).action(
+      api.selectorOptions.resolveChecklistEntities,
+      { selectorOptionId: leafId, sportId, cards: [previewCard({ teams: ["Brooklyn"] })] },
+    );
+    expect(result.titleContext?.teams).toEqual([{ printed: "Brooklyn", name: "Brooklyn" }]);
+    expect(result.titleContext?.teamSplits).toBeUndefined();
+  });
 });

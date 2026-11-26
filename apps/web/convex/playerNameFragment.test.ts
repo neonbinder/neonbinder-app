@@ -5,8 +5,6 @@
  * Every insert path asks the same question (`players.nameFragmentMatches`):
  *   - `players.findOrCreate` / `players.createByAdmin` refuse with
  *     `data.code === "PLAYER_NAME_FRAGMENT"` unless `oneNamePlayer: true`;
- *   - `entityReviewQueue.recordDecision` refuses a plain create the same way;
- *   - the bulk "Add All Remaining as New" leaves the row undecided;
  *   - the commit prelude holds a create back (no row, the name unreviewed).
  *
  * An exact-name row still links, a mononym with no clash is written as
@@ -19,7 +17,6 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { NAME_FRAGMENT_SCAN_LIMIT, normalizePlayerName } from "./players";
-import { ENTITY_REVIEW_BULK_PAGE } from "./entityReviewQueue";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -292,177 +289,6 @@ describe("NEO-463: findOrCreate and createByAdmin refuse a fragment without the 
 });
 
 // ===========================================================================
-// Entity review: recordDecision and the bulk create
-// ===========================================================================
-
-async function insertReviewRow(
-  t: T,
-  opts: {
-    selectorOptionId: Id<"selectorOptions">;
-    sportId: Id<"selectorOptions">;
-    batchId: string;
-    name: string;
-    kind?: "player" | "team";
-    decision?: { action: "create"; oneNamePlayer?: true };
-  },
-): Promise<Id<"entityReviewQueue">> {
-  return t.run(async (ctx) =>
-    ctx.db.insert("entityReviewQueue", {
-      selectorOptionId: opts.selectorOptionId,
-      batchId: opts.batchId,
-      createdByUserId: ADMIN_IDENTITY.subject,
-      kind: opts.kind ?? "player",
-      name: opts.name,
-      sportId: opts.sportId,
-      status: "ready",
-      ...(opts.decision ? { decision: opts.decision } : {}),
-    }),
-  );
-}
-
-describe("NEO-463: entity review refuses a plain create on a fragment", () => {
-  test("recordDecision refuses a plain create and stores the confirmed one", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const sportId = await seedSport(t);
-    await insertPlayer(t, sportId, "Larry Walker");
-    const rowId = await insertReviewRow(t, {
-      selectorOptionId: sportId,
-      sportId,
-      batchId: "b1",
-      name: "Walker",
-    });
-
-    const data = await refusalData(
-      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
-        reviewRowId: rowId,
-        action: "create",
-      }),
-    );
-    expect(data).toMatchObject({ code: "PLAYER_NAME_FRAGMENT" });
-    expect((await t.run(async (ctx) => ctx.db.get(rowId)))!.decision).toBeUndefined();
-
-    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
-      reviewRowId: rowId,
-      action: "create",
-      oneNamePlayer: true,
-    });
-    expect((await t.run(async (ctx) => ctx.db.get(rowId)))!.decision).toEqual({
-      action: "create",
-      oneNamePlayer: true,
-    });
-  });
-
-  test("recordDecision refuses the flag on a team row", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const sportId = await seedSport(t);
-    const rowId = await insertReviewRow(t, {
-      selectorOptionId: sportId,
-      sportId,
-      batchId: "b1",
-      name: "Padres",
-      kind: "team",
-    });
-    await expect(
-      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
-        reviewRowId: rowId,
-        action: "create",
-        oneNamePlayer: true,
-      }),
-    ).rejects.toThrow(/one-name player/);
-  });
-
-  test("Add All Remaining as New skips a fragment and decides the rest", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const sportId = await seedSport(t);
-    await insertPlayer(t, sportId, "Larry Walker");
-    const fragment = await insertReviewRow(t, {
-      selectorOptionId: sportId,
-      sportId,
-      batchId: "bulk",
-      name: "Walker",
-    });
-    const fine = await insertReviewRow(t, {
-      selectorOptionId: sportId,
-      sportId,
-      batchId: "bulk",
-      name: "Daulton Varsho",
-    });
-
-    const result = await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
-      selectorOptionId: sportId,
-      batchId: "bulk",
-    });
-    expect(result.decided).toBe(1);
-    expect((await t.run(async (ctx) => ctx.db.get(fragment)))!.decision).toBeUndefined();
-    expect((await t.run(async (ctx) => ctx.db.get(fine)))!.decision).toEqual({
-      action: "create",
-    });
-  });
-
-  test("a page of held fragments stops on its budget and the next page resumes", async () => {
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    await insertPlayer(t, sportId, "Larry Walker");
-    const { decide } = ENTITY_REVIEW_BULK_PAGE.create;
-    const fragments: Array<Id<"entityReviewQueue">> = [];
-    for (let i = 0; i < decide + 5; i++) {
-      fragments.push(
-        await insertReviewRow(t, { selectorOptionId: sportId, sportId, batchId: "held", name: "Walker" }),
-      );
-    }
-    const fine = await insertReviewRow(t, {
-      selectorOptionId: sportId,
-      sportId,
-      batchId: "held",
-      name: "Daulton Varsho",
-    });
-    const rowTime = async (id: Id<"entityReviewQueue">) =>
-      (await t.run(async (ctx) => ctx.db.get(id)))!._creationTime;
-    const list = (cursor?: number) =>
-      t.query(internal.entityReviewQueue.listBulkCandidates, {
-        selectorOptionId: sportId,
-        batchId: "held",
-        ...(cursor !== undefined ? { cursor } : {}),
-        action: "create",
-        callerId: ADMIN_IDENTITY.subject,
-      });
-
-    // Every held fragment cost a search: the walk stops after `decide` of
-    // them, though it scanned far fewer than `scan` rows and decided none.
-    const first = await list();
-    expect(first.ids).toEqual([]);
-    expect(first.hasMore).toBe(true);
-    expect(first.cursor).toBe(await rowTime(fragments[decide - 1]));
-
-    const second = await list(first.cursor!);
-    expect(second.ids).toEqual([fine]);
-    expect(second.hasMore).toBe(false);
-  });
-
-  test("ten one-word names with no clash still bulk-create", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const sportId = await seedSport(t);
-    await insertPlayer(t, sportId, "Mike Trout");
-    const names = [
-      "Pelé", "Takuya", "Boomer", "Ichiro", "Kaka", "Ronaldinho", "Hulk", "Neymar", "Garrincha", "Zico",
-    ];
-    for (const name of names) {
-      await insertReviewRow(t, { selectorOptionId: sportId, sportId, batchId: "ten", name });
-    }
-
-    const result = await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
-      selectorOptionId: sportId,
-      batchId: "ten",
-    });
-    expect(result.decided).toBe(10);
-  });
-});
-
-// ===========================================================================
 // The commit backstop
 // ===========================================================================
 
@@ -524,25 +350,16 @@ function card(cardNumber: string, players: string[]) {
 }
 
 describe("NEO-463: the commit holds a fragment back instead of writing it", () => {
-  test("a plain create on a fragment writes no player and lists the name as unreviewed", async () => {
+  test("a fragment name writes no player and is listed as unreviewed", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, variantTypeId } = await seedSet(t);
     await insertPlayer(t, sportId, "Larry Walker");
-    // A decision recorded before the rule, or one a fuller name arrived behind.
-    await insertReviewRow(t, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      batchId: "c1",
-      name: "Walker",
-      decision: { action: "create" },
-    });
 
     const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [card("1", ["Walker"]), card("2", [])],
-      batchId: "c1",
     });
 
     // The commit still lands.
@@ -561,35 +378,4 @@ describe("NEO-463: the commit holds a fragment back instead of writing it", () =
     expect(one.playerIds ?? []).toEqual([]);
   });
 
-  test("a confirmed one-name create is written and linked", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { sportId, variantTypeId } = await seedSet(t);
-    await insertPlayer(t, sportId, "Larry Walker");
-    await insertReviewRow(t, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      batchId: "c2",
-      name: "Walker",
-      decision: { action: "create", oneNamePlayer: true },
-    });
-
-    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: variantTypeId,
-      sportId,
-      cards: [card("1", ["Walker"])],
-      batchId: "c2",
-    });
-
-    expect(result.unreviewedNameCount).toBe(0);
-    const [walker] = await playersNamed(t, "Walker");
-    expect(walker).toBeDefined();
-    const [one] = await t.run(async (ctx) =>
-      ctx.db
-        .query("cardChecklist")
-        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
-        .collect(),
-    );
-    expect(one.playerIds).toEqual([walker._id]);
-  });
 });

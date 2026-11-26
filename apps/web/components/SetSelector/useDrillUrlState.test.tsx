@@ -13,13 +13,15 @@
  * it answers.
  */
 
-import { act, render } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import React from "react";
 import {
+  BrowserRouter,
   MemoryRouter,
   useLocation,
   useNavigate,
   useNavigationType,
+  useSearchParams,
 } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -54,6 +56,8 @@ import {
   useDrillUrlState,
   type DrillUrlState,
 } from "./useDrillUrlState";
+import { useTidyWalkUrl } from "./tidy/useTidyWalkUrl";
+import { forgetSearchWrite, liveSearchParams, noteSearchWrite } from "./live-search-params";
 
 /** The resolver that says every asked id is real. */
 const allValid = (ids: string[]) => ids.map((_id) => ({ _id }));
@@ -164,6 +168,41 @@ describe("serializeDrillPath", () => {
 
   it("an empty path with no base is an empty query", () => {
     expect(serializeDrillPath([]).toString()).toBe("");
+  });
+
+  // NEO-645: the Tidy Up walk opens by appending `tidy`, so a drill that moved
+  // it to the front was a second writer racing the walk's own replace. The
+  // drill's keys stay where the first of them sat; nothing else moves.
+  it("NEO-645: `tidy` at the end is already canonical (opening the walk is not a reorder)", () => {
+    const base = new URLSearchParams("sport=s&year=y&brand=b&set=t&type=v&tidy=first");
+    expect(serializeDrillPath(["s", "y", "b", "t", "v"], base).toString()).toBe(base.toString());
+  });
+
+  it("NEO-645: `tidy` in front of the drill is canonical too, and a replace of it stays put", () => {
+    const base = new URLSearchParams("tidy=c1&sport=s&year=y");
+    expect(serializeDrillPath(["s", "y"], base).toString()).toBe("tidy=c1&sport=s&year=y");
+  });
+
+  it("NEO-645: a deeper pick lands beside the drill's keys, not behind `tidy`", () => {
+    const base = new URLSearchParams("sport=s&year=y&tidy=c1");
+    expect(serializeDrillPath(["s", "y", "b"], base).toString()).toBe(
+      "sport=s&year=y&brand=b&tidy=c1",
+    );
+  });
+
+  it("keeps every other param in its own order around the drill's keys", () => {
+    const base = new URLSearchParams("a=1&year=old&b=2&sport=old&c=3");
+    expect(serializeDrillPath(["s", "y"], base).toString()).toBe("a=1&sport=s&year=y&b=2&c=3");
+  });
+
+  it("duplicate drill keys in the base collapse to one placement, at the first one's spot", () => {
+    expect(serializeDrillPath(["a"], new URLSearchParams("sport=a&sport=b")).toString()).toBe("sport=a");
+    expect(serializeDrillPath(["a"], new URLSearchParams("sport=a&x=1&sport=b")).toString()).toBe("sport=a&x=1");
+  });
+
+  it("appends the drill's keys when the base has none, and drops them when the path is empty", () => {
+    expect(serializeDrillPath(["s"], new URLSearchParams("utm=1")).toString()).toBe("utm=1&sport=s");
+    expect(serializeDrillPath([], new URLSearchParams("sport=s&utm=1&year=y")).toString()).toBe("utm=1");
   });
 });
 
@@ -624,6 +663,20 @@ describe("useDrillUrlState — other query parameters", () => {
     expect(h.search()).toBe("?utm=1&keep=me");
   });
 
+  it("NEO-645: a drill change drops the open Tidy Up card; a write that keeps the path keeps it", async () => {
+    const h = mount("/?sport=sp&year=yr&tidy=card1");
+    await act(async () => {});
+    expect(paramsOf(h.search()).get("tidy")).toBe("card1");
+    // Picking the same row again is a no-op and never touches the walk.
+    await act(async () => h.state().select("year", "yr"));
+    expect(paramsOf(h.search()).get("tidy")).toBe("card1");
+    // Going somewhere else leaves the walk behind: the card belongs to the
+    // checklist it was opened on.
+    await act(async () => h.state().select("year", "yr2"));
+    expect(paramsOf(h.search()).get("tidy")).toBeNull();
+    expect(paramsOf(h.search()).get("year")).toBe("yr2");
+  });
+
   it("survive the resolver's truncation rewrite", async () => {
     mockResolver = () => [];
     const h = mount("/?utm=1&sport=gone");
@@ -758,5 +811,344 @@ describe("useDrillUrlState — a correction drops the trust it invalidates", () 
     await act(async () => h.navigate(-1));
     expect(resolverCalls).toHaveLength(0);
     expect(h.state().selection).toMatchObject({ yearId: "yr", variantTypeId: "vt" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-645: the walk opening races the drill's correction effect
+// ---------------------------------------------------------------------------
+
+/**
+ * Production does not run StrictMode, so effects run once. Under StrictMode the
+ * mount effects run twice and the second pass hides this race, which is why the
+ * bug only showed on a deployed build. NONE of these tests may be wrapped in
+ * StrictMode, and none may be moved under a wrapper that adds it: they would
+ * stay green with the fix reverted. The one StrictMode test at the end of this
+ * block is the control that shows the masking, and it is meant to pass either way.
+ *
+ * `Walk` is the resolve logic of `TidyUpWalk` (its effect, which replaces
+ * `tidy=first` with the first card); the real component has its own test.
+ */
+describe("useDrillUrlState + useTidyWalkUrl — opening the Tidy Up walk (NEO-645)", () => {
+  const START = "/admin/set-builder?sport=s&year=y&brand=b&set=t&type=v";
+  const CARDS = ["c1", "c2"];
+  const probe: { search: string; open: (() => void) | null; showCalls: string[] } = {
+    search: "",
+    open: null,
+    showCalls: [],
+  };
+
+  /**
+   * The walk's resolve effect, as `TidyUpWalk` had it before the belt-and-braces:
+   * its deps are only `needsResolve` and `firstTarget`, so it does NOT re-run when
+   * another writer restores `tidy=first`. That is deliberate. These tests pin the
+   * drill's half alone (the real component's own `entryKey` dependency, which
+   * would paper over the drill, is pinned in `TidyUpWalk.test.tsx`).
+   */
+  function useWalkResolve(firstCard: string) {
+    const { location, showCard, showDone } = useTidyWalkUrl();
+    const current =
+      location.kind === "card" && CARDS.includes(location.cardId) ? location.cardId : undefined;
+    const needsResolve = location.kind === "first" || (location.kind === "card" && !current);
+    const firstTarget = needsResolve ? firstCard : null;
+    React.useEffect(() => {
+      if (!needsResolve) return;
+      probe.showCalls.push(String(firstTarget));
+      if (firstTarget) showCard(firstTarget);
+      else showDone();
+    }, [needsResolve, firstTarget, showCard, showDone]);
+    return location;
+  }
+
+  function Walk() {
+    useWalkResolve("c1");
+    return null;
+  }
+
+  /** The checklist: owns the Open button and mounts the walk once `tidy` is set. */
+  function Checklist() {
+    const tidy = useTidyWalkUrl();
+    probe.open = tidy.open;
+    probe.search = useLocation().search;
+    return tidy.location.kind !== "closed" ? <Walk /> : null;
+  }
+
+  /** The drill is an ANCESTOR: the walk's effect runs first, the drill's after it. */
+  function AncestorPage() {
+    useDrillUrlState();
+    return <Checklist />;
+  }
+
+  /** One component, drill hooks FIRST: the drill's effect runs before the walk's. */
+  function DrillThenWalk() {
+    useDrillUrlState();
+    const tidy = useTidyWalkUrl();
+    probe.open = tidy.open;
+    probe.search = useLocation().search;
+    useWalkResolve("c1");
+    return null;
+  }
+
+  /** One component, walk hooks FIRST: the walk's effect runs before the drill's. */
+  function WalkThenDrill() {
+    const tidy = useTidyWalkUrl();
+    probe.open = tidy.open;
+    probe.search = useLocation().search;
+    useWalkResolve("c1");
+    useDrillUrlState();
+    return null;
+  }
+
+  beforeEach(() => {
+    probe.search = "";
+    probe.open = null;
+    probe.showCalls = [];
+    forgetSearchWrite();
+  });
+
+  const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+
+  async function openWalk() {
+    await settle();
+    await act(async () => {
+      probe.open!();
+      await new Promise((r) => setTimeout(r, 50));
+    });
+  }
+
+  const DRILL_QUERY = "sport=s&year=y&brand=b&set=t&type=v";
+
+  it("the drill as an ancestor of the walk: the walk's card replace is not undone", async () => {
+    render(
+      <MemoryRouter initialEntries={[START]}>
+        <AncestorPage />
+      </MemoryRouter>,
+    );
+    await openWalk();
+    await waitFor(() => expect(probe.search).toBe(`?${DRILL_QUERY}&tidy=c1`));
+  });
+
+  it("the same, under the browser's own history (BrowserRouter)", async () => {
+    window.history.replaceState(null, "", START);
+    render(
+      <BrowserRouter>
+        <AncestorPage />
+      </BrowserRouter>,
+    );
+    await openWalk();
+    await waitFor(() => expect(probe.search).toBe(`?${DRILL_QUERY}&tidy=c1`));
+    expect(window.location.search).toBe(`?${DRILL_QUERY}&tidy=c1`);
+  });
+
+  it("the drill's effect running BEFORE the walk's (reverse order) lands on the card too", async () => {
+    render(
+      <MemoryRouter initialEntries={[START]}>
+        <DrillThenWalk />
+      </MemoryRouter>,
+    );
+    await openWalk();
+    await waitFor(() => expect(probe.search).toBe(`?${DRILL_QUERY}&tidy=c1`));
+  });
+
+  it("the drill's effect running AFTER the walk's, in one component, lands on the card", async () => {
+    render(
+      <MemoryRouter initialEntries={[START]}>
+        <WalkThenDrill />
+      </MemoryRouter>,
+    );
+    await openWalk();
+    await waitFor(() => expect(probe.search).toBe(`?${DRILL_QUERY}&tidy=c1`));
+  });
+
+  it("opening the walk is one push and one replace: no reorder write from the drill", async () => {
+    const visits: Array<{ search: string; type: string }> = [];
+    function Visits() {
+      const location = useLocation();
+      const type = useNavigationType();
+      React.useEffect(() => {
+        visits.push({ search: location.search, type });
+      }, [location, type]);
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={[START]}>
+        <Visits />
+        <AncestorPage />
+      </MemoryRouter>,
+    );
+    await openWalk();
+    await waitFor(() => expect(probe.search).toBe(`?${DRILL_QUERY}&tidy=c1`));
+    expect(visits.map((v) => [v.search, v.type])).toEqual([
+      [`?${DRILL_QUERY}`, "POP"],
+      [`?${DRILL_QUERY}&tidy=first`, "PUSH"],
+      [`?${DRILL_QUERY}&tidy=c1`, "REPLACE"],
+    ]);
+  });
+
+  it("CONTROL: the original scenario under StrictMode ends on the card, fixed or not", async () => {
+    // StrictMode runs every mount effect twice, and the second pass hides the
+    // original race, which is why the opening tests above (and the walk's, in
+    // TidyUpWalk.test.tsx) must stay outside it. Against the product as it was
+    // before the fix this stays green while the AncestorPage test above goes
+    // red. It proves nothing about the fix, only what StrictMode hides. (It reads
+    // the `tidy` param, not the string: the pre-fix product also reordered it.)
+    render(
+      <React.StrictMode>
+        <MemoryRouter initialEntries={[START]}>
+          <AncestorPage />
+        </MemoryRouter>
+      </React.StrictMode>,
+    );
+    await openWalk();
+    await waitFor(() => expect(new URLSearchParams(probe.search).get("tidy")).toBe("c1"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-645: the correction effect's write-in-flight rule, and the control
+// ---------------------------------------------------------------------------
+
+describe("useDrillUrlState: the correction and other writers (NEO-645)", () => {
+  const CANON = "sport=s&year=y&brand=b&set=t&type=v";
+  // The same drill, its keys out of order: not canonical.
+  const SHUFFLED = "type=v&sport=s&year=y&brand=b&set=t";
+  const hold: { go: ((to: string, replace?: boolean) => void) | null } = { go: null };
+  const visits: Array<[string, string]> = [];
+
+  function Drill() {
+    useDrillUrlState();
+    const navigate = useNavigate();
+    hold.go = (to, replace) => navigate(to, { replace });
+    return null;
+  }
+  function Visits() {
+    const location = useLocation();
+    const type = useNavigationType();
+    React.useEffect(() => {
+      visits.push([location.search, type]);
+    }, [location, type]);
+    return null;
+  }
+
+  beforeEach(() => {
+    hold.go = null;
+    visits.length = 0;
+    forgetSearchWrite();
+  });
+
+  const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+
+  it("a foreign write in flight that is not canonical: the correction writes nothing, then corrects once when it lands", async () => {
+    render(
+      <MemoryRouter initialEntries={[`/?${CANON}`]}>
+        <Visits />
+        <Drill />
+      </MemoryRouter>,
+    );
+    await settle();
+    expect(visits).toEqual([[`?${CANON}`, "POP"]]);
+
+    // Another writer has asked for SHUFFLED (noted, not yet rendered) ...
+    noteSearchWrite(new URLSearchParams(SHUFFLED));
+    // ... and an unrelated navigation renders first, re-running the correction.
+    await act(async () => {
+      hold.go!(`/?${CANON}&utm=1`);
+    });
+    await settle();
+    expect(visits).toEqual([
+      [`?${CANON}`, "POP"],
+      [`?${CANON}&utm=1`, "PUSH"],
+    ]);
+
+    // The in-flight write lands: the correction runs again, once, from what landed.
+    await act(async () => {
+      hold.go!(`/?${SHUFFLED}`);
+    });
+    await settle();
+    expect(visits).toEqual([
+      [`?${CANON}`, "POP"],
+      [`?${CANON}&utm=1`, "PUSH"],
+      [`?${SHUFFLED}`, "PUSH"],
+      [`?${CANON}`, "REPLACE"],
+    ]);
+  });
+
+  it("a later writer in the same flush sees the correction, not the stale render", async () => {
+    const seen: Array<{ rendered: string; live: string }> = [];
+    function Later() {
+      const [rendered] = useSearchParams();
+      React.useEffect(() => {
+        seen.push({ rendered: rendered.toString(), live: liveSearchParams(rendered).toString() });
+      }, [rendered]);
+      return null;
+    }
+    render(
+      <MemoryRouter initialEntries={[`/?${SHUFFLED}`]}>
+        <Drill />
+        <Later />
+      </MemoryRouter>,
+    );
+    await settle();
+    // First flush: the page rendered the shuffled URL, and the drill's correction
+    // (an earlier effect) has already noted the canonical one for the next writer.
+    expect(seen[0]).toEqual({ rendered: SHUFFLED, live: CANON });
+  });
+
+  /**
+   * The drill has a real correction to make (shuffled keys) at the very render
+   * where the walk resolves `first`: the drill's resolver answers in the render
+   * that also releases the walk. The walk's effect (a child) runs first and
+   * replaces `tidy=first`; the drill's, built on the rendered `tidy=first`,
+   * would put it back.
+   */
+  async function raceOneFlush(wrap: (tree: React.ReactElement) => React.ReactElement) {
+    mockResolver = undefined;
+    const ctl: { release: (() => void) | null; open: (() => void) | null; search: string } = {
+      release: null,
+      open: null,
+      search: "",
+    };
+    function GatedWalk({ ready }: { ready: boolean }) {
+      const { location, showCard } = useTidyWalkUrl();
+      const needs = location.kind === "first";
+      React.useEffect(() => {
+        if (needs && ready) showCard("c1");
+      }, [needs, ready, showCard]);
+      return null;
+    }
+    function Page() {
+      const [ready, setReady] = React.useState(false);
+      useDrillUrlState();
+      const tidy = useTidyWalkUrl();
+      ctl.open = tidy.open;
+      ctl.search = useLocation().search;
+      ctl.release = () => {
+        mockResolver = allValid;
+        setReady(true);
+      };
+      return tidy.location.kind !== "closed" ? <GatedWalk ready={ready} /> : null;
+    }
+    render(
+      wrap(
+        <MemoryRouter initialEntries={[`/?${SHUFFLED}`]}>
+          <Page />
+        </MemoryRouter>,
+      ),
+    );
+    await settle();
+    await act(async () => {
+      ctl.open!();
+    });
+    await act(async () => {
+      ctl.release!();
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    await waitFor(() => expect(ctl.search).toBe(`?${CANON}&tidy=c1`));
+    await settle();
+    expect(ctl.search).toBe(`?${CANON}&tidy=c1`);
+  }
+
+  it("the walk's card replace and the drill's pending correction in ONE flush: the card wins", async () => {
+    await raceOneFlush((tree) => tree);
   });
 });

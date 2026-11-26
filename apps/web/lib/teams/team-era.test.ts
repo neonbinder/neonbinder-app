@@ -16,8 +16,13 @@ import { describe, expect, test } from "vitest";
 import {
   eraCoversYear,
   eraLabel,
+  eraOverlapReason,
   erasOverlap,
+  isWellFormedEra,
+  pickCardTeam,
   pickTeamForYear,
+  stintOverlapsEra,
+  teamEraProblem,
   teamOptionLabel,
   teamsActiveInYear,
 } from "./team-era";
@@ -244,5 +249,537 @@ describe("teamOptionLabel", () => {
 
   test("leaves an undated row as its plain name", () => {
     expect(teamOptionLabel("Winnipeg Jets", undefined)).toBe("Winnipeg Jets");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-602 — who decides between several rows for a CARD
+// ---------------------------------------------------------------------------
+
+describe("stintOverlapsEra", () => {
+  const era = { from: 1968, to: 2024 };
+
+  test("a dated stint inside the era overlaps", () => {
+    expect(stintOverlapsEra({ teamId: "t", fromYear: 1979, toYear: 1984 }, era)).toBe(true);
+  });
+
+  test("a dated stint after the era ended does not", () => {
+    expect(stintOverlapsEra({ teamId: "t", fromYear: 2025, toYear: 2026 }, era)).toBe(false);
+  });
+
+  test("a dated stint before the era began does not", () => {
+    expect(stintOverlapsEra({ teamId: "t", fromYear: 1950, toYear: 1960 }, era)).toBe(false);
+  });
+
+  test("an undated stint overlaps every era", () => {
+    expect(stintOverlapsEra({ teamId: "t" }, era)).toBe(true);
+  });
+
+  test("a stint missing only its end runs open to the right", () => {
+    expect(stintOverlapsEra({ teamId: "t", fromYear: 2020 }, era)).toBe(true);
+    expect(stintOverlapsEra({ teamId: "t", fromYear: 2030 }, era)).toBe(false);
+  });
+
+  test("a stint missing only its start runs open to the left", () => {
+    expect(stintOverlapsEra({ teamId: "t", toYear: 1970 }, era)).toBe(true);
+    expect(stintOverlapsEra({ teamId: "t", toYear: 1960 }, era)).toBe(false);
+  });
+
+  test("an undated era overlaps every stint", () => {
+    expect(stintOverlapsEra({ teamId: "t", fromYear: 1500, toYear: 1501 }, undefined)).toBe(true);
+  });
+});
+
+describe("pickCardTeam", () => {
+  // "Oakland Athletics": the PRIMARY name of the 1968-2024 Oakland row and an
+  // ALIAS of the 2025- Athletics row.
+  const OAK = { _id: "oak", yearsActive: { from: 1968, to: 2024 } };
+  const ATH = { _id: "ath", yearsActive: { from: 2025 } };
+  const NO_ALIAS = new Set<string>();
+  const ATH_BY_ALIAS = new Set(["ath"]);
+  const oak = (fromYear: number, toYear: number) => ({ teamId: "oak", fromYear, toYear });
+  const ath = (fromYear: number, toYear?: number) => ({
+    teamId: "ath",
+    fromYear,
+    ...(toYear !== undefined ? { toYear } : {}),
+  });
+
+  test("Rickey Henderson (stints 1979-84 and 1989-93 on Oakland) on a 2025 card is Oakland, by his players, against the year", () => {
+    const pick = pickCardTeam([OAK, ATH], {
+      setYear: 2025,
+      aliasOnlyIds: ATH_BY_ALIAS,
+      cards: [[[oak(1979, 1984), oak(1989, 1993)]]],
+    });
+    expect(pick).toEqual({ row: OAK, via: "players", agreesWithYear: false });
+  });
+
+  test("the same players on a card whose year covers Oakland agree with the year", () => {
+    const pick = pickCardTeam([OAK, ATH], {
+      setYear: 1990,
+      aliasOnlyIds: ATH_BY_ALIAS,
+      cards: [[[oak(1979, 1984)]]],
+    });
+    expect(pick).toEqual({ row: OAK, via: "players", agreesWithYear: true });
+  });
+
+  test("a player on the 2025- row picks it on a 2025 card", () => {
+    const pick = pickCardTeam([OAK, ATH], {
+      setYear: 2025,
+      aliasOnlyIds: ATH_BY_ALIAS,
+      cards: [[[ath(2025, 2026)]]],
+    });
+    expect(pick).toEqual({ row: ATH, via: "players", agreesWithYear: true });
+  });
+
+  test("a player with stints on both rows is a tie: null, and the year does not break it", () => {
+    expect(
+      pickCardTeam([OAK, ATH], {
+        setYear: 2025,
+        aliasOnlyIds: NO_ALIAS,
+        cards: [[[oak(2020, 2024), ath(2025, 2026)]]],
+      }),
+    ).toBeNull();
+  });
+
+  test("two players on one card, one per row, is a tie: null", () => {
+    expect(
+      pickCardTeam([OAK, ATH], {
+        setYear: 2025,
+        aliasOnlyIds: NO_ALIAS,
+        cards: [[[oak(1979, 1984)], [ath(2025, 2026)]]],
+      }),
+    ).toBeNull();
+  });
+
+  test("cards whose players disagree: null", () => {
+    expect(
+      pickCardTeam([OAK, ATH], {
+        setYear: 2025,
+        aliasOnlyIds: NO_ALIAS,
+        cards: [[[oak(1979, 1984)]], [[ath(2025, 2026)]]],
+      }),
+    ).toBeNull();
+  });
+
+  test("cards whose players agree: that row", () => {
+    const pick = pickCardTeam([OAK, ATH], {
+      setYear: 2025,
+      aliasOnlyIds: NO_ALIAS,
+      cards: [[[oak(1979, 1984)]], [[oak(1989, 1993)]]],
+    });
+    expect(pick?.row).toBe(OAK);
+    expect(pick?.via).toBe("players");
+  });
+
+  test("a card the players say nothing about abstains: the card that names a row decides", () => {
+    // Was a veto (NEO-602 regression): a recent trade whose NB stints predate
+    // the move left its card silent and sent the whole name to the operator.
+    const pick = pickCardTeam([OAK, ATH], {
+      setYear: 1990,
+      aliasOnlyIds: NO_ALIAS,
+      cards: [[[oak(1979, 1984)]], [[]]],
+    });
+    expect(pick).toEqual({ row: OAK, via: "players", agreesWithYear: true });
+  });
+
+  describe("silent cards abstain (the 2026 Topps Chrome Baltimore Orioles shape)", () => {
+    // Three rows share the name: 1954-present, 1901-1902, 1882-1899.
+    const NOW = { _id: "bal-now", yearsActive: { from: 1954 } };
+    const OLD = { _id: "bal-old", yearsActive: { from: 1901, to: 1902 } };
+    const AA = { _id: "bal-aa", yearsActive: { from: 1882, to: 1899 } };
+    const now = (fromYear: number, toYear?: number) => ({
+      teamId: "bal-now",
+      fromYear,
+      ...(toYear !== undefined ? { toYear } : {}),
+    });
+    const old = (fromYear: number, toYear: number) => ({ teamId: "bal-old", fromYear, toYear });
+    const six = [2018, 2019, 2020, 2021, 2022, 2023].map((y) => [[now(y, y + 1)]]);
+    const four = [[[]], [[]], [[]], [[]]]; // Baz, Alonso, Bassitt, Ward: no stint on any row
+    const base = { setYear: 2026, aliasOnlyIds: NO_ALIAS };
+
+    test("six voters for 1954-, four silent: 1954-, and the year agrees", () => {
+      const pick = pickCardTeam([NOW, OLD, AA], { ...base, cards: [...six, ...four] });
+      expect(pick).toEqual({ row: NOW, via: "players", agreesWithYear: true });
+    });
+
+    test("order does not matter: silent cards first", () => {
+      const pick = pickCardTeam([NOW, OLD, AA], { ...base, cards: [...four, ...six] });
+      expect(pick?.row).toBe(NOW);
+    });
+
+    test("silent cards plus one voter for the OLD era: null, one card's evidence is not applied to the silent ones against the year", () => {
+      expect(
+        pickCardTeam([NOW, OLD, AA], {
+          ...base,
+          cards: [...four, [[old(1901, 1902)]]],
+        }),
+      ).toBeNull();
+    });
+
+    test("every card votes OLD: the old era, and the year disagrees", () => {
+      const pick = pickCardTeam([NOW, OLD, AA], {
+        ...base,
+        cards: [[[old(1901, 1902)]], [[old(1901, 1902)]]],
+      });
+      expect(pick).toEqual({ row: OLD, via: "players", agreesWithYear: false });
+    });
+
+    test("two voters that disagree: null, silent cards do not break the tie", () => {
+      expect(
+        pickCardTeam([NOW, OLD, AA], {
+          ...base,
+          cards: [...four, [[now(2020, 2021)]], [[old(1901, 1902)]]],
+        }),
+      ).toBeNull();
+    });
+
+    test("one voter tied across both rows, others silent: null", () => {
+      expect(
+        pickCardTeam([NOW, OLD, AA], {
+          ...base,
+          cards: [...four, [[now(2020, 2021), old(1901, 1902)]]],
+        }),
+      ).toBeNull();
+    });
+
+    test("an undated stint on a row still supports it (retro card of a past player)", () => {
+      const pick = pickCardTeam([NOW, OLD, AA], {
+        ...base,
+        cards: [[[{ teamId: "bal-old" }]]],
+      });
+      expect(pick?.row).toBe(OLD);
+      expect(pick?.via).toBe("players");
+    });
+
+    test("every card silent: the year decides, as before", () => {
+      const pick = pickCardTeam([NOW, OLD, AA], { ...base, cards: four });
+      expect(pick).toEqual({ row: NOW, via: "year", agreesWithYear: true });
+    });
+  });
+
+  test("a stint dated outside the row's era does not support it", () => {
+    // Oakland's only stint ends in 1960 - before the 1968 franchise. With no
+    // supporting stint anywhere, the year decides (2025 -> Athletics, own name).
+    const pick = pickCardTeam([OAK, ATH], {
+      setYear: 2025,
+      aliasOnlyIds: NO_ALIAS,
+      cards: [[[oak(1955, 1960)]]],
+    });
+    expect(pick).toEqual({ row: ATH, via: "year", agreesWithYear: true });
+  });
+
+  test("a stint on a team that is not a candidate is ignored", () => {
+    const pick = pickCardTeam([OAK, ATH], {
+      setYear: 2025,
+      aliasOnlyIds: NO_ALIAS,
+      cards: [[[{ teamId: "elsewhere", fromYear: 2025, toYear: 2026 }]]],
+    });
+    expect(pick?.via).toBe("year");
+    expect(pick?.row).toBe(ATH);
+  });
+
+  test("a row that begins after the set year is never picked, even with a stint on it", () => {
+    const early = { _id: "early", yearsActive: { from: 1950 } };
+    const future = { _id: "future", yearsActive: { from: 2030 } };
+    // The only stint is on the future row: it is not evidence, so the year
+    // decides and lands on the early row.
+    const onFutureOnly = pickCardTeam([early, future], {
+      setYear: 2025,
+      aliasOnlyIds: NO_ALIAS,
+      cards: [[[{ teamId: "future", fromYear: 2030, toYear: 2031 }]]],
+    });
+    expect(onFutureOnly).toEqual({ row: early, via: "year", agreesWithYear: true });
+    // A player with stints on both is NOT a tie: the future one is excluded.
+    const onBoth = pickCardTeam([early, future], {
+      setYear: 2025,
+      aliasOnlyIds: NO_ALIAS,
+      cards: [
+        [[
+          { teamId: "early", fromYear: 1990, toYear: 1995 },
+          { teamId: "future", fromYear: 2030, toYear: 2031 },
+        ]],
+      ],
+    });
+    expect(onBoth?.row).toBe(early);
+    expect(onBoth?.via).toBe("players");
+  });
+
+  test("when every row begins after the set year: null", () => {
+    expect(
+      pickCardTeam([{ _id: "a", yearsActive: { from: 2030 } }, { _id: "b", yearsActive: { from: 2040 } }], {
+        setYear: 2025,
+        aliasOnlyIds: NO_ALIAS,
+      }),
+    ).toBeNull();
+  });
+
+  test("no player evidence: the set year picks (2025 -> Athletics, 2000 -> Oakland), both by their own name", () => {
+    expect(pickCardTeam([OAK, ATH], { setYear: 2025, aliasOnlyIds: NO_ALIAS })).toEqual({
+      row: ATH,
+      via: "year",
+      agreesWithYear: true,
+    });
+    expect(pickCardTeam([OAK, ATH], { setYear: 2000, aliasOnlyIds: NO_ALIAS })).toEqual({
+      row: OAK,
+      via: "year",
+      agreesWithYear: true,
+    });
+  });
+
+  test("empty cards array behaves as no evidence", () => {
+    expect(pickCardTeam([OAK, ATH], { setYear: 2000, aliasOnlyIds: NO_ALIAS, cards: [] })?.via).toBe(
+      "year",
+    );
+  });
+
+  test("no stints at all, year pick reached only by alias while the other row owns the name: null (option A)", () => {
+    expect(pickCardTeam([OAK, ATH], { setYear: 2025, aliasOnlyIds: ATH_BY_ALIAS })).toBeNull();
+    expect(
+      pickCardTeam([OAK, ATH], {
+        setYear: 2025,
+        aliasOnlyIds: ATH_BY_ALIAS,
+        cards: [[[]]],
+      }),
+    ).toBeNull();
+  });
+
+  test("the alias-only guard does not fire when the year picks the own-name row", () => {
+    // 2000: the year lands on Oakland, which owns the name; Athletics is the
+    // alias-only candidate but is not the pick.
+    expect(pickCardTeam([OAK, ATH], { setYear: 2000, aliasOnlyIds: ATH_BY_ALIAS })?.row).toBe(OAK);
+  });
+
+  test("the alias-only guard needs ANOTHER eligible row with its own name", () => {
+    // Both rows reached by alias only: nothing owns the name, the year picks.
+    expect(
+      pickCardTeam([OAK, ATH], { setYear: 2025, aliasOnlyIds: new Set(["oak", "ath"]) })?.row,
+    ).toBe(ATH);
+    // The own-name row begins after the set year, so it is not eligible and
+    // cannot hold the alias pick back.
+    const futureOwner = { _id: "owner", yearsActive: { from: 2040 } };
+    expect(
+      pickCardTeam([futureOwner, ATH], { setYear: 2025, aliasOnlyIds: ATH_BY_ALIAS })?.row,
+    ).toBe(ATH);
+  });
+
+  test("no set year: the players still decide; without them nothing is narrowed and it is a question", () => {
+    expect(
+      pickCardTeam([OAK, ATH], {
+        setYear: undefined,
+        aliasOnlyIds: NO_ALIAS,
+        cards: [[[oak(1979, 1984)]]],
+      })?.row,
+    ).toBe(OAK);
+    expect(pickCardTeam([OAK, ATH], { setYear: undefined, aliasOnlyIds: NO_ALIAS })).toBeNull();
+  });
+
+  test("a lone row keeps the old rule: its era, or its past, never its future", () => {
+    expect(pickCardTeam([OAK], { setYear: 2000, aliasOnlyIds: NO_ALIAS })).toEqual({
+      row: OAK,
+      via: "year",
+      agreesWithYear: true,
+    });
+    // A card shows a team's past.
+    expect(pickCardTeam([OAK], { setYear: 2030, aliasOnlyIds: NO_ALIAS })?.row).toBe(OAK);
+    // ...never its future.
+    expect(pickCardTeam([OAK], { setYear: 1950, aliasOnlyIds: NO_ALIAS })).toBeNull();
+  });
+
+  test("a lone row asks no player: evidence pointing elsewhere does not change it", () => {
+    expect(
+      pickCardTeam([OAK], {
+        setYear: 2000,
+        aliasOnlyIds: NO_ALIAS,
+        cards: [[[ath(2025, 2026)]]],
+      })?.via,
+    ).toBe("year");
+  });
+
+  test("no rows: null", () => {
+    expect(pickCardTeam([], { setYear: 2025, aliasOnlyIds: NO_ALIAS })).toBeNull();
+  });
+
+  test("undated rows are not excluded: an undated row keeps the name a question", () => {
+    const undated = { _id: "undated" };
+    expect(pickCardTeam([undated, ATH], { setYear: 2025, aliasOnlyIds: NO_ALIAS })).toBeNull();
+  });
+});
+
+describe("pickCardTeam — a printed PLACE (playersMustDecide, NEO-591)", () => {
+  // "Seattle" in a 2001 set: the one-season 1969 Pilots and the 1977- Mariners.
+  const PILOTS = { _id: "pilots", yearsActive: { from: 1969, to: 1969 } };
+  const MARINERS = { _id: "mariners", yearsActive: { from: 1977 } };
+  const NO_ALIAS = new Set<string>();
+  const place = (cards?: Parameters<typeof pickCardTeam>[1]["cards"], setYear = 2001) =>
+    pickCardTeam([PILOTS, MARINERS], {
+      setYear,
+      aliasOnlyIds: NO_ALIAS,
+      playersMustDecide: true,
+      ...(cards ? { cards } : {}),
+    });
+
+  test("no player evidence at all: null, where a printed name would fall to the year's Mariners", () => {
+    expect(place()).toBeNull();
+    expect(place([[]])).toBeNull();
+    // Players whose stints are on neither row say nothing either.
+    expect(place([[[{ teamId: "elsewhere", fromYear: 1990, toYear: 1995 }]]])).toBeNull();
+    // Control: the same rows as a NAME are settled by the year.
+    expect(pickCardTeam([PILOTS, MARINERS], { setYear: 2001, aliasOnlyIds: NO_ALIAS })?.row).toBe(
+      MARINERS,
+    );
+  });
+
+  test("a player with a Pilots stint is the Pilots, against the year (a visible, changeable answer)", () => {
+    expect(place([[[{ teamId: "pilots", fromYear: 1969, toYear: 1969 }]]])).toEqual({
+      row: PILOTS,
+      via: "players",
+      agreesWithYear: false,
+    });
+  });
+
+  test("a player with a Mariners stint is the Mariners, agreeing with the year", () => {
+    expect(place([[[{ teamId: "mariners", fromYear: 1995, toYear: 1999 }]]])).toEqual({
+      row: MARINERS,
+      via: "players",
+      agreesWithYear: true,
+    });
+  });
+
+  test("a split (one card per row) and a player on both rows are null", () => {
+    expect(
+      place([
+        [[{ teamId: "pilots", fromYear: 1969 }]],
+        [[{ teamId: "mariners", fromYear: 1995 }]],
+      ]),
+    ).toBeNull();
+    expect(
+      place([[[{ teamId: "pilots", fromYear: 1969 }, { teamId: "mariners", fromYear: 1977 }]]]),
+    ).toBeNull();
+  });
+
+  test("a silent card abstains only while the voters' row is the year's row", () => {
+    const mariners = [[{ teamId: "mariners", fromYear: 1995, toYear: 1999 }]];
+    const pilots = [[{ teamId: "pilots", fromYear: 1969, toYear: 1969 }]];
+    expect(place([mariners, []])?.row).toBe(MARINERS);
+    expect(place([pilots, []])).toBeNull();
+    expect(place([pilots, pilots])?.row).toBe(PILOTS);
+  });
+
+  test("a team that did not exist yet is never an answer, whatever a stint says", () => {
+    expect(place([[[{ teamId: "mariners", fromYear: 1995 }]]], 1970)).toBeNull();
+  });
+});
+
+describe("eraOverlapReason", () => {
+  const dated = { from: 1968, to: 2024 };
+
+  test("two dated teams: the years overlap", () => {
+    expect(eraOverlapReason(dated, { from: 2000 })).toBe("the two teams' years overlap");
+  });
+
+  test("neither team dated", () => {
+    expect(eraOverlapReason(undefined, undefined)).toBe(
+      "neither team has years on file, so they may overlap",
+    );
+  });
+
+  test("this team undated", () => {
+    expect(eraOverlapReason(undefined, dated)).toBe(
+      "this team has no years on file, so they may overlap",
+    );
+  });
+
+  test("that team undated", () => {
+    expect(eraOverlapReason(dated, undefined)).toBe(
+      "that team has no years on file, so they may overlap",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-602 (S2) — a malformed era is undated: overlapping, never excluded.
+// ---------------------------------------------------------------------------
+
+const MALFORMED: Array<[string, { from: number; to?: number }]> = [
+  ["NaN start", { from: Number.NaN }],
+  ["Infinity start", { from: Number.POSITIVE_INFINITY }],
+  ["NaN end", { from: 1990, to: Number.NaN }],
+  ["Infinity end", { from: 1990, to: Number.POSITIVE_INFINITY }],
+  ["fractional start", { from: 1990.5 }],
+  ["fractional end", { from: 1990, to: 2001.5 }],
+  ["inverted span", { from: 2001, to: 1990 }],
+];
+
+describe("isWellFormedEra", () => {
+  test("whole years, open or closed, ending no earlier than they start", () => {
+    expect(isWellFormedEra({ from: 1972 })).toBe(true);
+    expect(isWellFormedEra({ from: 1972, to: 1972 })).toBe(true);
+    expect(isWellFormedEra({ from: 1972, to: 1996 })).toBe(true);
+  });
+
+  test("undefined, NaN, Infinity, fractions and inverted spans are not", () => {
+    expect(isWellFormedEra(undefined)).toBe(false);
+    for (const [, era] of MALFORMED) expect(isWellFormedEra(era)).toBe(false);
+  });
+});
+
+describe("a malformed era fails safe (reads as undated)", () => {
+  const DISJOINT = { from: 2025 };
+
+  test.each(MALFORMED)("erasOverlap: %s overlaps everything, in both orders", (_label, era) => {
+    expect(erasOverlap(era, DISJOINT)).toBe(true);
+    expect(erasOverlap(DISJOINT, era)).toBe(true);
+    expect(erasOverlap({ from: 1911, to: 1957 }, era)).toBe(true);
+  });
+
+  test("…while a real disjoint pair still does not overlap", () => {
+    expect(erasOverlap({ from: 1911, to: 1957 }, DISJOINT)).toBe(false);
+  });
+
+  test.each(MALFORMED)("eraCoversYear: %s covers any year", (_label, era) => {
+    expect(eraCoversYear(era, 1800)).toBe(true);
+    expect(eraCoversYear(era, 2100)).toBe(true);
+  });
+
+  test.each(MALFORMED)("stintOverlapsEra: a stint overlaps %s", (_label, era) => {
+    expect(stintOverlapsEra({ teamId: "a", fromYear: 1979, toYear: 1984 }, era)).toBe(true);
+  });
+
+  test("pickCardTeam does not drop a malformed row as 'starts after the set year'", () => {
+    const bad = { _id: "bad", yearsActive: { from: Number.POSITIVE_INFINITY } };
+    const good = { _id: "good", yearsActive: { from: 1990 } };
+    const pick = pickCardTeam([bad, good], {
+      setYear: 2000,
+      aliasOnlyIds: new Set<string>(),
+      cards: [[[{ teamId: "bad", fromYear: 1995, toYear: 1999 }]]],
+    });
+    expect(pick?.row._id).toBe("bad");
+  });
+});
+
+describe("teamEraProblem", () => {
+  const NOW = new Date("2026-11-18T12:00:00Z");
+
+  test("null for a whole-year era in range, open or closed", () => {
+    expect(teamEraProblem({ from: 1911, to: 1957 }, NOW)).toBeNull();
+    expect(teamEraProblem({ from: 2025 }, NOW)).toBeNull();
+    expect(teamEraProblem({ from: 1869 }, NOW)).toBeNull();
+    expect(teamEraProblem({ from: 2027 }, NOW)).toBeNull();
+  });
+
+  test.each(MALFORMED)("refuses %s", (_label, era) => {
+    expect(teamEraProblem(era, NOW)).not.toBeNull();
+  });
+
+  test("names the bound, in the operator's words", () => {
+    expect(teamEraProblem({ from: 1800 }, NOW)).toBe(
+      "A team start year must be a whole year between 1869 and 2027.",
+    );
+    expect(teamEraProblem({ from: 1990, to: 2100 }, NOW)).toBe(
+      "A team end year must be a whole year between 1869 and 2027.",
+    );
+    expect(teamEraProblem({ from: 2001, to: 1990 }, NOW)).toBe(
+      "A team cannot stop playing before it starts.",
+    );
   });
 });

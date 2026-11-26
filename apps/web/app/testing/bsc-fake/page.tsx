@@ -1,4 +1,4 @@
-import { useAction, useConvexAuth } from "convex/react";
+import { useAction, useConvexAuth, useMutation } from "convex/react";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
@@ -6,7 +6,10 @@ import { api } from "@/convex/_generated/api";
 // Test-only hop (NEO-552). An E2E spec visits
 //   /testing/bsc-fake?rules=<url-encoded JSON array of fault rules>   set the caller's fake BSC faults
 //   /testing/bsc-fake?order=<url-encoded JSON order>                  add one order to the caller's fake seller history
+//                                                                    (an item may name the card by `listedCardNumber`; the server resolves it, exactly one, NEO-555)
 //   /testing/bsc-fake?clear=faults|gate|all                           drop the faults and/or the deployment's BSC call gate
+//   /testing/bsc-fake?clear=lane                                      cancel the caller's own queued BSC team lookups (NEO-644)
+//   /testing/bsc-fake?poll=1                                          run the caller's BSC sales poll now and wait for it (NEO-555)
 // This page waits for the Convex client to pick up the Clerk session, calls
 // the matching auth-scoped testing action (the caller's own fake BuySportsCards
 // account only), prints the outcome and STAYS: the spec reads the status line,
@@ -23,16 +26,20 @@ import { api } from "@/convex/_generated/api";
 type Op =
   | { kind: "rules"; rules: unknown }
   | { kind: "order"; order: unknown }
-  | { kind: "clear"; what: "faults" | "gate" | "all" };
+  | { kind: "clear"; what: "faults" | "gate" | "all" }
+  | { kind: "lane" }
+  | { kind: "poll" };
 
 /** The one operation the URL asks for, or the reason it is malformed. */
 function readOp(params: URLSearchParams): Op | string {
-  const asked = (["rules", "order", "clear"] as const).filter((k) => params.has(k));
-  if (asked.length !== 1) return "Give exactly one of ?rules=, ?order= or ?clear=.";
+  const asked = (["rules", "order", "clear", "poll"] as const).filter((k) => params.has(k));
+  if (asked.length !== 1) return "Give exactly one of ?rules=, ?order=, ?clear= or ?poll=1.";
   const [which] = asked;
+  if (which === "poll") return params.get("poll") === "1" ? { kind: "poll" } : "Give exactly ?poll=1.";
   if (which === "clear") {
     const what = params.get("clear");
-    return what === "faults" || what === "gate" || what === "all" ? { kind: "clear", what } : "?clear= wants faults, gate or all.";
+    if (what === "lane") return { kind: "lane" };
+    return what === "faults" || what === "gate" || what === "all" ? { kind: "clear", what } : "?clear= wants faults, gate, all or lane.";
   }
   try {
     const parsed: unknown = JSON.parse(params.get(which) ?? "");
@@ -48,6 +55,8 @@ function TestingBscFakeContent() {
   const addOrder = useAction(api.testing.addMyBscOrder);
   const clearFaults = useAction(api.testing.clearMyBscFaults);
   const clearGate = useAction(api.testing.clearBscCallGate);
+  const pollNow = useAction(api.testing.pollMySalesNow);
+  const cancelLane = useMutation(api.testing.cancelMyBscTeamChecks);
   const [searchParams] = useSearchParams();
   const query = searchParams.toString();
   const [status, setStatus] = useState("Initializing...");
@@ -82,6 +91,14 @@ function TestingBscFakeContent() {
           setStatus("Adding the order...");
           const done = await addOrder({ order: op.order as Parameters<typeof addOrder>[0]["order"] });
           setStatus(`Order added: ${done.items} items.`);
+        } else if (op.kind === "poll") {
+          setStatus("Polling...");
+          const done = await pollNow({ platform: "bsc" });
+          setStatus(`Polled: ${done.ordersRead} orders read, ${done.ordersStored} stored, ${done.linesApplied} lines applied.`);
+        } else if (op.kind === "lane") {
+          setStatus("Clearing...");
+          const done = await cancelLane({});
+          setStatus(`Cleared: lane, ${done.cancelled} queued team lookups.`);
         } else {
           setStatus("Clearing...");
           if (op.what === "faults" || op.what === "all") await clearFaults({});
@@ -93,14 +110,14 @@ function TestingBscFakeContent() {
         setStatus(`Error: ${msg}`);
       }
     })();
-  }, [isAuthenticated, isLoading, query, setFaults, addOrder, clearFaults, clearGate]);
+  }, [isAuthenticated, isLoading, query, setFaults, addOrder, clearFaults, clearGate, pollNow, cancelLane]);
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-surface">
-      <p className="text-ink-3 font-mono text-sm">
+    <main className="flex items-center justify-center min-h-screen bg-surface">
+      <p role="status" className="text-ink-3 font-mono text-sm">
         [testing-bsc-fake] {status}
       </p>
-    </div>
+    </main>
   );
 }
 
@@ -108,9 +125,9 @@ export default function TestingBscFakePage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center min-h-screen bg-surface">
-          <p className="text-ink-3 font-mono text-sm">[testing-bsc-fake] Loading…</p>
-        </div>
+        <main className="flex items-center justify-center min-h-screen bg-surface">
+          <p role="status" className="text-ink-3 font-mono text-sm">[testing-bsc-fake] Loading…</p>
+        </main>
       }
     >
       <TestingBscFakeContent />

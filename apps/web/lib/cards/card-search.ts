@@ -43,7 +43,7 @@
  *              "Islanders".
  * - attention — whether the card needs a person, by the one rule the
  *              checklist's "N need you" pill and its walker count with
- *              (`needsAttention`, `convex/features/cardAttention.ts`). Read
+ *              (`deriveCardAttention`, `convex/features/cardAttention.ts`). Read
  *              only by the exact term "attention", which, like the platform
  *              keywords, matches this flag and nothing else and ANDs with the
  *              other terms ("attention bills"). Deliberately unadvertised: no
@@ -64,10 +64,11 @@
  */
 
 import {
-  needsAttention,
+  deriveCardAttention,
   type AttentionCardRow,
+  type LiveAttention,
 } from "../../convex/features/cardAttention";
-import { foldDiacritics } from "../entities/normalize-name";
+import { foldNameForCompare } from "../entities/normalize-name";
 
 /**
  * The parts of a checklist row the search reads. Structural, so any row shape
@@ -124,7 +125,7 @@ export type CardSearchFields = {
 
 /** Case- and accent-fold one string for comparison. */
 export function foldSearchText(raw: string): string {
-  return foldDiacritics(raw).toLowerCase();
+  return foldNameForCompare(raw);
 }
 
 /**
@@ -239,7 +240,7 @@ export type CardSearchHaystack = {
   text: string;
   /** The platform aliases of the filled slots, folded ("bsc", "sl", …). */
   platforms: readonly string[];
-  /** `needsAttention(card)` — what the "attention" keyword reads. */
+  /** `deriveCardAttention(card).level !== "none"` — what the "attention" keyword reads. */
   attention: boolean;
 };
 
@@ -266,6 +267,8 @@ const ATTENTION_KEYWORD = "attention";
 export function cardSearchHaystack(
   card: SearchableCard,
   lookups: CardSearchLookups = EMPTY_CARD_SEARCH_LOOKUPS,
+  /** NEO-656: the career gaps read live for this card; none without them. */
+  live?: LiveAttention,
 ): CardSearchHaystack {
   const fields = cardSearchFields(card, lookups);
   return {
@@ -279,7 +282,8 @@ export function cardSearchHaystack(
       ].join("\n"),
     ),
     platforms: fields.platforms.map(foldSearchText),
-    attention: needsAttention(card),
+    // NEO-645: pink (to fix) or blue (to check), the pill's own rule.
+    attention: deriveCardAttention(card, live).level !== "none",
   };
 }
 
@@ -305,9 +309,10 @@ export function cardMatchesSearch(
   card: SearchableCard,
   query: string,
   lookups: CardSearchLookups = EMPTY_CARD_SEARCH_LOOKUPS,
+  live?: LiveAttention,
 ): boolean {
   return haystackMatches(
-    cardSearchHaystack(card, lookups),
+    cardSearchHaystack(card, lookups, live),
     parseCardSearchTerms(query),
   );
 }

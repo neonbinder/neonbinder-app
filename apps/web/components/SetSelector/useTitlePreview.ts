@@ -3,7 +3,12 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 // Pure and browser-safe: the same generator the server titled the card with.
-import { assessListingTitle, leftOutOfTitle } from "../../convex/features/generateListing";
+import {
+  assessListingTitle,
+  leftOutOfTitle,
+  singularTypeName,
+} from "../../convex/features/generateListing";
+import { withoutWaitingNames } from "../../convex/features/setNameInTitles";
 import { variantTypeKindFromTitle } from "../../convex/variantRole";
 
 /**
@@ -78,6 +83,12 @@ type PreviewResult = {
      * set's short name for titles. Optional: an older deploy predates them.
      */
     insertName?: string;
+    /**
+     * NEO-609 — every level of the chain with its variant type's name, top
+     * level first. One chip each, labelled with the type's name. Optional: an
+     * older deploy predates it, and the Insert / Parallel chips stand.
+     */
+    titleLevels?: Array<{ name: string; typeName?: string; base?: true }>;
     setShortName?: string;
     parallelName?: string;
     /** NEO-335 — the leaf's parallel ROLE (earns the "Parallel" label). */
@@ -95,6 +106,13 @@ type PreviewResult = {
      * inside a modal dialog takes the whole dialog with it.
      */
     teamNames?: string[];
+    /**
+     * NEO-606 — the Location / Name of those teams that have one. The title
+     * gives a team's location up before the team, and `leftOutOfTitle` reads
+     * the same split, so the note and the title agree. Optional: an older
+     * deploy predates it, and without it a team is only ever dropped whole.
+     */
+    teamSplits?: Array<{ location: string; name: string }>;
     /** e.g. "Baseball". Optional for the same reason, and genuinely absent for
      * a set whose sport was never resolved. */
     sport?: string;
@@ -196,11 +214,24 @@ function pushDescription(
   // Keyed on the flag, never on the manufacturer's name.
   if (!inputs.manufacturerBrandUnknown) push("Maker", inputs.manufacturer);
   push("Set", inputs.setName);
-  push("Insert", inputs.insertName);
+  // NEO-609 — one chip per level the title names, labelled with its variant
+  // type's own name (a level with no type above it has no label: the chip is
+  // just its name). The
+  // Base word is cut first and is no source fact worth a chip.
+  const levels = inputs.titleLevels?.filter((l) => !l.base);
+  if (levels) {
+    for (const level of levels) push(singularTypeName(level.typeName ?? ""), level.name);
+  } else {
+    push("Insert", inputs.insertName);
+  }
   // NEO-535 — "Base" names no parallel (the Base kind's word, read through the
-  // role helper, never a literal), so a base card shows no Parallel chip.
+  // role helper, never a literal), so a base card shows no Parallel chip. With
+  // levels, a parallel they already carry has its chip.
   const parallel = inputs.parallelName?.trim();
-  if (parallel && variantTypeKindFromTitle(parallel) !== "base") push("Parallel", parallel);
+  const carried = levels?.some((l) => l.name.trim().toLowerCase() === parallel?.toLowerCase());
+  if (parallel && !carried && variantTypeKindFromTitle(parallel) !== "base") {
+    push("Parallel", parallel);
+  }
 }
 
 export type TitlePreview = {
@@ -212,7 +243,13 @@ export type TitlePreview = {
    * until a preview is fetched; never the generator's own assessment, so
    * retyping a cut word takes it off the note.
    */
-  leftOutOf: (text: string) => string[];
+  /**
+   * "Left out to fit" for `text`. `notYetNamed`: names the card prints that are
+   * still waiting for an answer (a player or team not made yet). They are not
+   * in the stored title because they are not answered, not because they did
+   * not fit, so they are never listed (NEO-645).
+   */
+  leftOutOf: (text: string, notYetNamed?: ReadonlyArray<string>) => string[];
   /** A regenerate is in flight (or its query has not resolved yet). */
   loading: boolean;
   /**
@@ -283,7 +320,8 @@ export function useTitlePreview(
 
   const inputs = preview?.inputs;
   const leftOutOf = useCallback(
-    (text: string) => (inputs ? leftOutOfTitle(inputs, text.trim()) : []),
+    (text: string, notYetNamed?: ReadonlyArray<string>) =>
+      inputs ? leftOutOfTitle(withoutWaitingNames(inputs, notYetNamed), text.trim()) : [],
     [inputs],
   );
 

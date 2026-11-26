@@ -214,7 +214,9 @@ test(
     await searchBox.fill(`"${words.length > 1 ? [...words].reverse().join(" ") : `${player} xylophone`}"`);
     await expect(quick.getByText("Not in the catalog yet.")).toBeVisible();
     await expect(hitRow(quick)).toHaveCount(0);
-    await expectAccessible(page, { label: "Checklists, search finds nothing" });
+    // NEO-628: the page was checked whole with the checklist loaded (above); only the
+    // search's own region changed.
+    await expectAccessible(page, { within: quick, label: "Checklists, search finds nothing" });
 
     // --- A player suggestion lists every card of that player -----------------
     await searchBox.fill(player);
@@ -224,7 +226,7 @@ test(
     await showCardRow(quick);
     // The search has settled on its hits (not "Flipping through the catalog…").
     await expect(quick.getByRole("status").filter({ hasText: /\d+ cards? match|The first \d+ matches/ })).toBeVisible();
-    await expectAccessible(page, { label: "Checklists, search hits with suggestions" });
+    await expectAccessible(page, { within: quick, label: "Checklists, search hits with suggestions" });
     await everyButton.click();
     const every = page.getByRole("region", { name: `Every ${player} card` });
     await expect(every).toBeVisible();
@@ -329,10 +331,10 @@ test(
     // Remove every copy: the card needs again.
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Very Good ×2`, exact: true }).click();
     await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)" })).toBeVisible();
-    await confirmRemoved(drawer);
+    await confirmRemoved(drawer, `Removed ${short}, Raw, Very Good ×2`);
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-    await confirmRemoved(drawer);
+    await confirmRemoved(drawer, `Removed ${short}, Raw, Excellent`);
     await expect(drawer.getByText("Need it")).toBeVisible();
 
     await drawer.getByRole("button", { name: "Close card detail" }).click();

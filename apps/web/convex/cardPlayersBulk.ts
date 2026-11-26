@@ -62,6 +62,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
 import { generateListingDescription } from "./features/generateListing";
+import { generatedTitleTruncatedFlag } from "./features/listingInputs";
 import { variantTypeKind } from "./variantRole";
 import { syncCardPlayerLinks } from "./cardPlayerLinks";
 import { playerBelongsToSport } from "./players";
@@ -139,7 +140,7 @@ export const BULK_MISSING_PLAYER = "Can't find that player anymore. Pick them ag
  */
 export const BULK_CHECKLIST_CHANGED = "This checklist changed mid-way. Give it another go.";
 /** The row asked about is gone. */
-export const DEFAULT_ROW_MISSING = "That part of the set isn't in NB anymore.";
+export const DEFAULT_ROW_MISSING = "That part of the set isn't in Neon Binder anymore.";
 /** A cameo store past the cap. */
 export const DEFAULT_CAMEOS_FULL = `Every card can carry at most ${MAX_CARD_PLAYERS} cameos.`;
 /** A cameo store of the row's own stored player. */
@@ -873,7 +874,7 @@ async function putPlayerOnCard(
       text.listingTitle = after.title;
       // As the commit writes it: flagged only when the generator had to cut
       // the core; undefined in a patch clears a flag the old title carried.
-      text.listingTitleTruncated = after.coreFits ? undefined : true;
+      text.listingTitleTruncated = generatedTitleTruncatedFlag(after);
     }
     if (descriptionUntouched) {
       text.listingDescription = generateListingDescription(after.inputs, {

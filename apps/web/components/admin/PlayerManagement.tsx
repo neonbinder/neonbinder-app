@@ -348,7 +348,7 @@ function rowSignature(row: Player): string {
  *
  * The primary button says this label as its visible text. A panel row says
  * it only when it has no facts to speak (see `panelPickLabel`), and the panel
- * then adds `— same name` to a same-name row, so a row never reads exactly
+ * then adds `· same name` to a same-name row, so a row never reads exactly
  * like the primary even though the primary's row is now in the list too.
  */
 function openLabelsFor(matches: ReadonlyArray<NearMatch>): Map<string, string> {
@@ -622,7 +622,7 @@ function AddPlayerForm({
    * row, tagged "same name" and described like the others (b. 1960 · Padres
    * 1982–2001), and the primary stays as the keyboard shortcut (Enter) to the
    * same row. The two controls keep distinct accessible names: the row adds
-   * its facts and `— same name`, the primary does not. The wizard still filters
+   * its facts and `· same name`, the primary does not. The wizard still filters
    * its promoted row out; this screen no longer mirrors it.
    */
   /**
@@ -639,7 +639,7 @@ function AddPlayerForm({
    * and a label from here would say the birth year twice. A row with none
    * keeps this map's label, so two fact-less Bob Allens read
    * `…, no birth year (1 of 2)` on the primary and
-   * `…, no birth year (1 of 2) — same name` / `(2 of 2) — same name` in the
+   * `…, no birth year (1 of 2) · same name` / `(2 of 2) · same name` in the
    * list. See `panelPickLabel`.
    */
   const openLabels = openLabelsFor(matches ?? []);
@@ -654,7 +654,7 @@ function AddPlayerForm({
    * hit (no "same name" tag) with nothing on file. That row says the words its
    * second line shows, "nothing on file yet", so the two controls never share
    * a name. A same-name row needs no such help: the panel always ends its name
-   * with `— same name`, and the primary never does.
+   * with `· same name`, and the primary never does.
    */
   const panelPickLabel = (name: string, m: NearMatch) => {
     if (speakPlayerDescription({ birthYear: m.birthYear, career: m.career })) {
@@ -1330,10 +1330,28 @@ function PlayerCardsSection({ player }: { player: Player }) {
       ]),
     [player.sportId, player.alsoSportIds],
   );
+  const cardsHeadingId = useId();
+  // Only a list that actually scrolls takes a tab stop. Measured, never a
+  // card count: at 200% text or a 320px reflow fewer rows fit the box.
+  const cardsScrollerRef = useRef<HTMLDivElement>(null);
+  const [cardsOverflow, setCardsOverflow] = useState(false);
+  useLayoutEffect(() => {
+    const el = cardsScrollerRef.current;
+    if (!el) return;
+    const measure = () => setCardsOverflow(el.scrollHeight > el.clientHeight);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    if (el.firstElementChild) ro.observe(el.firstElementChild);
+    return () => ro.disconnect();
+  }, [cards]);
 
   return (
     <div className="space-y-3 border-t border-rule pt-4">
-      <h3 className="text-base font-semibold">Cards</h3>
+      <h3 id={cardsHeadingId} className="text-base font-semibold">
+        Cards
+      </h3>
       {cards === undefined ? (
         <p className="text-sm text-ink-3">Loading cards…</p>
       ) : cards.length === 0 ? (
@@ -1343,37 +1361,49 @@ function PlayerCardsSection({ player }: { player: Player }) {
         </p>
       ) : (
         <>
-          <ul
-            aria-label={`Cards for ${player.name}`}
-            className="max-h-72 divide-y divide-rule overflow-y-auto rounded-md border border-rule"
+          {/* A scroller a keyboard cannot focus cannot be scrolled from the
+              keyboard (axe scrollable-region-focusable): a named group
+              holds the scroll and takes a tab stop once the list overflows,
+              as ParallelBuildPanel's results do. */}
+          <div
+            ref={cardsScrollerRef}
+            role="group"
+            aria-labelledby={cardsHeadingId}
+            tabIndex={cardsOverflow ? 0 : undefined}
+            className={`max-h-72 overflow-y-auto rounded-md border border-rule${cardsOverflow ? " focus-outline" : ""}`}
           >
-            {cards.map((card) => (
-              <li
-                key={card.cardId}
-                className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-2 px-3 py-1.5 text-sm"
-              >
-                <span className="tabular-nums text-ink-3">
-                  {card.cardNumber ? `#${card.cardNumber}` : ""}
-                </span>
-                <span className="min-w-0">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="truncate text-ink-2">
-                      {card.cardName || "Untitled card"}
+            <ul
+              aria-label={`Cards for ${player.name}`}
+              className="divide-y divide-rule"
+            >
+              {cards.map((card) => (
+                <li
+                  key={card.cardId}
+                  className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-2 px-3 py-1.5 text-sm"
+                >
+                  <span className="tabular-nums text-ink-3">
+                    {card.cardNumber ? `#${card.cardNumber}` : ""}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="truncate text-ink-2">
+                        {card.cardName || "Untitled card"}
+                      </span>
+                      {!ownSports.has(card.sportId as string) && (
+                        <SportTag label={card.sportValue} className="shrink-0" />
+                      )}
                     </span>
-                    {!ownSports.has(card.sportId as string) && (
-                      <SportTag label={card.sportValue} className="shrink-0" />
-                    )}
+                    <span
+                      className="block truncate text-xs text-ink-3"
+                      title={card.setLabel}
+                    >
+                      {card.setLabel}
+                    </span>
                   </span>
-                  <span
-                    className="block truncate text-xs text-ink-3"
-                    title={card.setLabel}
-                  >
-                    {card.setLabel}
-                  </span>
-                </span>
-              </li>
-            ))}
-          </ul>
+                </li>
+              ))}
+            </ul>
+          </div>
           {cards.length >= PLAYER_CARDS_CAP && (
             <p className="text-xs text-ink-3">
               Showing the first {PLAYER_CARDS_CAP} cards.
@@ -1485,6 +1515,8 @@ function PlayerDetail({
   );
   const [pendingTeam, setPendingTeam] = useState<Id<"teams"> | null>(null);
   const [pendingFrom, setPendingFrom] = useState("");
+  /** NEO-617: where focus goes once the stint's team is picked. */
+  const fromYearRef = useRef<HTMLInputElement>(null);
   const [pendingTo, setPendingTo] = useState("");
   const [stintError, setStintError] = useState<string | null>(null);
   const [nameTakenId, setNameTakenId] = useState<Id<"players"> | null>(null);
@@ -1854,7 +1886,7 @@ function PlayerDetail({
               href={qidUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-sm text-neon-blue-text underline underline-offset-2 focus-outline rounded-sm"
+              className="inline-flex min-h-6 items-center text-sm text-neon-blue-text underline underline-offset-2 focus-outline rounded-sm"
             >
               Wikidata {qid}
               <span className="sr-only"> (opens in new tab)</span>
@@ -2068,7 +2100,7 @@ function PlayerDetail({
             {stints.map((stint, index) => (
               <li
                 key={`${stint.teamId}-${stint.fromYear}`}
-                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-1.5 text-sm text-ink-2"
+                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-1 text-sm text-ink-2"
               >
                 {/* NEO-235 — the stint row is a way INTO the team.
                     Correcting a stint usually means the team behind it needs
@@ -2083,15 +2115,17 @@ function PlayerDetail({
                     would split it into two text nodes for both of those. The
                     visible text IS the accessible name, so no aria-label —
                     `title` carries the destination for a pointer instead. */}
-                <span className="truncate">
-                  <Link
-                    to={`/admin/teams?team=${stint.teamId}`}
-                    title={`Open ${teamName(stint.teamId)} in Team Management`}
-                    className="rounded-sm text-neon-blue-text underline underline-offset-2 transition-colors hover:decoration-2 focus-outline"
-                  >
-                    {teamName(stint.teamId)} · {stintRange(stint)}
-                  </Link>
-                </span>
+                {/* NEO-645 — the link is its own 24px-tall target and its text
+                    wraps. It used to sit in a `truncate` span as a bare line
+                    of text (~20px tall), which axe's target-size rule fails on
+                    a phone; a long team name was also clipped there. */}
+                <Link
+                  to={`/admin/teams?team=${stint.teamId}`}
+                  title={`Open ${teamName(stint.teamId)} in Team Management`}
+                  className="inline-flex min-h-6 min-w-0 items-center justify-self-start rounded-sm text-neon-blue-text underline underline-offset-2 transition-colors wrap-anywhere hover:decoration-2 focus-outline"
+                >
+                  {teamName(stint.teamId)} · {stintRange(stint)}
+                </Link>
                 <button
                   type="button"
                   onClick={() => removeStint(index)}
@@ -2123,14 +2157,15 @@ function PlayerDetail({
             <span className={STINT_LABEL_CLASS}>Team</span>
             <div className={`flex items-center ${FIELD_BOX_HEIGHT}`}>
               <TeamPicker
-                // Single stint at a time, so the picker's array is collapsed to
-                // its most recent pick rather than accumulating chips: a stint
-                // has one team, and the multi-select is the shared component's
-                // contract, not this field's.
+                // NEO-617: a stint has exactly one team.
+                single
+                // The team is the first question, the start year the next:
+                // a pick moves straight to it instead of back to the trigger.
+                onPicked={() => fromYearRef.current?.focus()}
                 value={pendingTeam ? [pendingTeam] : []}
                 onChange={(next) => {
                   setStintError(null);
-                  setPendingTeam(next.length > 0 ? next[next.length - 1] : null);
+                  setPendingTeam(next[0] ?? null);
                 }}
                 sportId={player.sportId}
               />
@@ -2147,6 +2182,7 @@ function PlayerDetail({
             <span className={STINT_LABEL_CLASS}>Stint from year</span>
             <Input
               bare
+              ref={fromYearRef}
               type="number"
               value={pendingFrom}
               onChange={(e) => setPendingFrom(e.target.value)}

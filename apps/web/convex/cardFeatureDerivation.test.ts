@@ -240,7 +240,7 @@ describe("addCustomCard generates listingTitle/listingDescription (NEO-24/71-74)
   // NEO-101 — the packed title, on the hand-add path. A custom card has no
   // `teamOnCardIds` yet: the team the operator typed sits in
   // `pendingTeamNames` until a sync resolves it, and that pending name is
-  // already treated as an answer everywhere else (see `deriveCardAttention`),
+  // already treated as an answer everywhere else (see `deriveLegacyCardAttention`),
   // so it is what the title says. The sport comes from the ancestor walk that
   // also resolves the set name — one pass, not two.
   test("a custom card's typed team and its sport reach the generated title", async () => {
@@ -283,7 +283,7 @@ describe("addCustomCard generates listingTitle/listingDescription (NEO-24/71-74)
     const card = cards[0];
 
     expect(card.listingTitle).toBe(
-      "2024 Topps Chrome Julio Rodriguez #12 RC Seattle Mariners Rookie Baseball",
+      "2024 Topps Chrome Base Julio Rodriguez #12 RC Seattle Mariners Rookie Baseball",
     );
     // Sold listings average 70 characters; NB's used to average 34.
     expect(card.listingTitle!.length).toBeGreaterThanOrEqual(60);

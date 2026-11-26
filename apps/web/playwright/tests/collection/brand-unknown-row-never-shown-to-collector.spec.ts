@@ -334,7 +334,7 @@ test(
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     // "Removed ..." is the server's answer; the card can only be deleted once it has landed.
-    await confirmRemoved(drawer);
+    await confirmRemoved(drawer, `Removed ${short}, Raw, Excellent`);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
 

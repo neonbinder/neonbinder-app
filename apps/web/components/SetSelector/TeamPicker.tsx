@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { CheckIcon, NoSymbolIcon } from "@heroicons/react/16/solid";
 import { Input } from "../primitives/Input";
@@ -45,6 +45,13 @@ export type TeamPickerLabels = {
    * voice-control user says what they see). Default "Add team" → "+ Add team".
    */
   trigger: string;
+  /**
+   * NEO-617 — the trigger's name AND visible text once a `single` picker holds
+   * its team (no "+": nothing is being added, the team is being swapped).
+   * Optional so existing whole-set overrides stay valid; absent, the default
+   * "Change team" is used. Unused by a multi picker.
+   */
+  change?: string;
   /** The popover's search input. Default "Search teams". */
   search: string;
   /** The popover listbox. Default "Team typeahead results". */
@@ -54,6 +61,7 @@ export type TeamPickerLabels = {
 export const DEFAULT_TEAM_PICKER_LABELS: TeamPickerLabels = {
   root: "Team picker",
   trigger: "Add team",
+  change: "Change team",
   search: "Search teams",
   results: "Team typeahead results",
 };
@@ -139,6 +147,18 @@ export type TeamPickerNoTeam = {
  *     carries the two boundary hops itself rather than leaving them to DOM
  *     order; see `PickerPopover`.
  *
+ * NEO-617 — `single` mode, for a field that holds exactly one team (a career
+ * stint). Everything above stays; what changes is the multi-pick affordance:
+ *   - picking a team REPLACES the current one (`onChange([id])`), closes the
+ *     popover and returns focus to the trigger, instead of staying open for a
+ *     second pick;
+ *   - while a team is held there is no "+ Add team" invitation. The one chip
+ *     stays, with its × to clear it, and the dashed trigger beside it reads
+ *     "Change team" (no "+") and reopens the same popover. Clearing the chip
+ *     brings "+ Add team" back;
+ *   - Backspace on an empty input still clears the one chip.
+ * Default is multi, so every existing caller is unchanged.
+ *
  * Pointer users get an outside-click close as well — see the effect below for
  * why that is not just polish.
  */
@@ -167,6 +187,8 @@ export default function TeamPicker({
   ariaDescribedBy,
   contextOptionId,
   noTeam,
+  single = false,
+  onPicked,
 }: {
   value: Array<Id<"teams">>;
   onChange: (next: Array<Id<"teams">>) => void;
@@ -210,8 +232,53 @@ export default function TeamPicker({
    * has its own "No team on this card" button). See `TeamPickerNoTeam`.
    */
   noTeam?: TeamPickerNoTeam;
+  /**
+   * NEO-617 — this field holds ONE team. See the header comment. Default false
+   * (multi-team card behaviour).
+   */
+  single?: boolean;
+  /**
+   * NEO-617 — where focus goes after a pick, for a `single` picker whose next
+   * question is elsewhere (the stint row: the team is chosen, now the years).
+   * When set, a pick (click, Enter, or the New Team dialog's create) closes the
+   * popover and calls this INSTEAD of returning focus to the trigger; the
+   * caller moves focus (by a ref, not an id). Because focus then lands away
+   * from the picker, a polite live region announces "Team: X selected" — the
+   * trigger's description would only be read if focus returned to it. Ignored
+   * in multi mode (the popover stays open there) and never called for clearing
+   * a chip with its ×, which keeps focus on the trigger.
+   */
+  onPicked?: () => void;
 }) {
   const noTeamOn = noTeam?.value === true;
+  const chipIdBase = useId();
+  /**
+   * NEO-617 — the team last picked while `onPicked` moved focus away. Its name
+   * is read at render, once `getManyByIds` has it, so a team just created in
+   * the New Team dialog (id known, row not yet loaded) is announced when its
+   * name arrives instead of never.
+   */
+  const [announcedId, setAnnouncedId] = useState<Id<"teams"> | null>(null);
+  // The pick the effect below acts on; `n` makes a repeat pick of the same team
+  // a new value.
+  const [picked, setPicked] = useState<{ id: Id<"teams">; n: number } | null>(
+    null,
+  );
+  // The latest callback without making it an effect dependency: callers pass
+  // an inline arrow, which would otherwise re-fire the focus move every render.
+  const onPickedRef = useRef(onPicked);
+  useEffect(() => {
+    onPickedRef.current = onPicked;
+  });
+  useEffect(() => {
+    if (!picked) return;
+    onPickedRef.current?.();
+    // The announcement is set HERE, one commit after the focus move, not with
+    // the pick: VoiceOver drops a polite update that lands in the same commit
+    // as a focus change, and speaks one that arrives after it.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the point is a commit of its own, after the focus move
+    setAnnouncedId(picked.id);
+  }, [picked]);
   // Resolve currently-selected ids → display rows for the chip labels.
   // Convex deduplicates this between sibling pickers on the same page.
   const selectedRows = useQuery(api.teams.getManyByIds, { ids: value });
@@ -522,6 +589,13 @@ export default function TeamPicker({
   const removeChip = (idToRemove: Id<"teams">) => {
     if (disabled) return;
     onChange(value.filter((id) => id !== idToRemove));
+    // NEO-617: clearing the one chip unmounts the × that holds focus, which
+    // would drop it to <body>. Hand it to the trigger (now "+ Add team"). Not
+    // while the popover is open: Backspace there removes the chip from the
+    // search box, which stays mounted and keeps focus.
+    if (single && !popoverOpen) {
+      setTimeout(() => triggerRef.current?.focus(), 0);
+    }
   };
 
   const addChip = (id: Id<"teams">) => {
@@ -530,20 +604,41 @@ export default function TeamPicker({
     // NEO-556: a team picked over No Team REPLACES it. The list is only the
     // new team (No Team carries none), and that non-empty list is the one
     // signal the caller needs — see `TeamPickerNoTeam`.
-    onChange(noTeamOn ? [id] : [...value, id]);
+    onChange(noTeamOn || single ? [id] : [...value, id]);
     setQuery("");
     setHighlightIdx(0);
+    if (single) {
+      // NEO-617: one team per field, so the pick is the whole answer. Close,
+      // then hand focus to the caller's next field, or back to the trigger
+      // (now "Change team") when the caller has none.
+      if (onPicked) {
+        setPopoverOpen(false);
+        setQuery("");
+        // Run from an effect after the commit, NOT a timer. On the New Team
+        // path this runs from an async handler: a timer can fire before React
+        // has committed the dialog's removal, while it is still holding the
+        // rest of the page inert, and a focus() there silently does nothing.
+        // The effect runs after the popover and the dialog are gone (and after
+        // the dialog's own focus-restore cleanup, which runs first). The blur
+        // from the popover's removal is harmless: `handleRootBlur` only
+        // closes, and never moves focus.
+        setPicked((p) => ({ id, n: (p?.n ?? 0) + 1 }));
+      } else {
+        closePopover();
+      }
+      return;
+    }
     // Stay open so the user can pick a second team on a dual-team
     // card without re-clicking the trigger. Re-focus the input.
     setTimeout(() => inputRef.current?.focus(), 0);
   };
 
-  const closePopover = () => {
+  function closePopover() {
     setPopoverOpen(false);
     setQuery("");
     // Return focus to the trigger so Tab order stays predictable.
     setTimeout(() => triggerRef.current?.focus(), 0);
-  };
+  }
 
   /**
    * Close on Tab (or Shift+Tab) out of the picker while the popover is open —
@@ -590,6 +685,24 @@ export default function TeamPicker({
     }, 0);
   };
 
+  // NEO-617: a single picker that holds its team swaps rather than adds.
+  const changing = single && value.length > 0;
+  // The held team's name, as the trigger's DESCRIPTION: focus comes back to
+  // "Change team" after a pick, and the name alone would never say which team
+  // is now held. The accessible name stays put (the E2E keys on it).
+  const chipTextId = (id: Id<"teams">) => `${chipIdBase}-${id}`;
+  const announcedName =
+    onPicked && announcedId && value.includes(announcedId)
+      ? labelById.get(announcedId as unknown as string)
+      : undefined;
+  const triggerDescribedBy =
+    [ariaDescribedBy, changing ? chipTextId(value[0]) : undefined]
+      .filter((token): token is string => !!token)
+      .join(" ") || undefined;
+  const triggerLabel = changing
+    ? (labels.change ?? DEFAULT_TEAM_PICKER_LABELS.change!)
+    : labels.trigger;
+
   return (
     <div
       ref={rootRef}
@@ -597,12 +710,19 @@ export default function TeamPicker({
       aria-label={labels.root}
       onBlur={handleRootBlur}
     >
+      {onPicked && single && (
+        // Always mounted (a live region must exist before its text changes);
+        // empty until a pick, and again once that team is cleared.
+        <span role="status" aria-live="polite" className="sr-only">
+          {announcedName ? `Team: ${announcedName} selected` : ""}
+        </span>
+      )}
       {value.map((id) => (
         <span
           key={id}
           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-chip text-xs"
         >
-          <span className="truncate max-w-[140px]" aria-label={`Team: ${labelById.get(id as unknown as string) ?? "Loading…"}`}>
+          <span id={chipTextId(id)} className="truncate max-w-[140px]" aria-label={`Team: ${labelById.get(id as unknown as string) ?? "Loading…"}`}>
             {labelById.get(id as unknown as string) ?? "Loading…"}
           </span>
           {guestSportById.has(id as unknown as string) && (
@@ -656,8 +776,8 @@ export default function TeamPicker({
             e.stopPropagation();
             first.focus();
           }}
-          aria-label={labels.trigger}
-          aria-describedby={ariaDescribedBy}
+          aria-label={triggerLabel}
+          aria-describedby={triggerDescribedBy}
           aria-expanded={popoverOpen}
           // a11y (SC 1.4.11 Non-text Contrast): the dashed border IS this
           // control's boundary, and `dark:border-gray-600` measures 2.35:1 on
@@ -669,7 +789,7 @@ export default function TeamPicker({
               instance that renames the trigger renames what people see, so
               "Add set team" reads on screen as "+ Add set team" and a voice
               command of what is shown still lands (SC 2.5.3). */}
-          + {labels.trigger}
+          {changing ? triggerLabel : `+ ${triggerLabel}`}
         </button>
 
         {popoverOpen && (

@@ -1,0 +1,27 @@
+{
+  "file": "2026-donruss-insert-retro-1997-donruss-signature-series-autographs.csv",
+  "mode": "leaf",
+  "options": {"setYear":"2026","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"1","players":["Frank Thomas"],"teams":["Chicago White Sox"]},
+      {"number":"2","players":["Jacob Wilson"],"teams":["Oakland A's"]},
+      {"number":"3","players":["Matt Shaw"],"teams":["Chicago Cubs"]},
+      {"number":"4","players":["Heston Kjerstad"],"teams":["Baltimore Orioles"]},
+      {"number":"5","players":["Jackson Chourio"],"teams":["Milwaukee Brewers"]},
+      {"number":"6","players":["Dylan Crews"],"teams":["Washington Nationals"]},
+      {"number":"7","players":["Konnor Griffin"],"teams":["Pittsburgh Pirates"]},
+      {"number":"8","players":["Bobby Witt Jr."],"teams":["Kansas City Royals"]},
+      {"number":"10","players":["George Lombard Jr."],"teams":["New York Yankees"]},
+      {"number":"11","players":["Rhett Lowder"],"teams":["Cincinnati Reds"]},
+      {"number":"13","players":["Aidan Miller"],"teams":["Philadelphia Phillies"]},
+      {"number":"14","players":["Kristian Campbell"],"teams":["Boston Red Sox"]},
+      {"number":"16","players":["Jacob Misiorowski"],"teams":["Milwaukee Brewers"]},
+      {"number":"17","players":["Mike Lowell"],"teams":["Boston Red Sox"]}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

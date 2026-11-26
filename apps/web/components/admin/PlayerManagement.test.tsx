@@ -127,16 +127,20 @@ vi.mock("convex/react", () => ({
 }));
 
 let lastPickerSportId: string | null = null;
+let lastPickerSingle = false;
 vi.mock("@/components/SetSelector/TeamPicker", () => ({
   default: ({
     onChange,
     sportId,
+    single,
   }: {
     value: string[];
     onChange: (next: string[]) => void;
     sportId?: string;
+    single?: boolean;
   }) => {
     lastPickerSportId = sportId ?? null;
+    lastPickerSingle = single === true;
     return (
       <div>
         <button type="button" onClick={() => onChange(["t-mariners"])}>
@@ -819,7 +823,7 @@ describe("PlayerManagement — the add form", () => {
     });
 
     // EXACTLY ONE `Open Ken Griffey Jr.` control: the primary. NEO-462 keeps
-    // the exact row in the panel too, but its name ends `— same name`, so two
+    // the exact row in the panel too, but its name ends `· same name`, so two
     // controls never share one accessible name.
     await waitFor(() =>
       expect(
@@ -827,7 +831,7 @@ describe("PlayerManagement — the add form", () => {
       ).toHaveLength(1),
     );
     expect(
-      screen.getByRole("button", { name: "Open Ken Griffey Jr. — same name" }),
+      screen.getByRole("button", { name: "Open Ken Griffey Jr. · same name" }),
     ).toBeTruthy();
     expect(
       screen.getByLabelText("Create player Ken Griffey Jr. anyway"),
@@ -1574,10 +1578,55 @@ describe("PlayerManagement — the detail panel", () => {
     ]);
   });
 
+  it("keeps each stint link a 24px target that wraps instead of clipping (NEO-645)", () => {
+    // axe `target-size` failed on a phone: the link was a bare ~20px line of
+    // text inside a `truncate` span. happy-dom does not lay out, so this pins
+    // the classes that carry the fix: a 24px floor on the link itself, and no
+    // clipping ancestor between the link and its row.
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    const rows = screen
+      .getByRole("list", { name: "Career history" })
+      .querySelectorAll("li");
+    expect(rows.length).toBeGreaterThan(0);
+    for (const li of Array.from(rows)) {
+      const link = li.querySelector("a");
+      expect(link?.className).toContain("min-h-6");
+      expect(link?.className).toContain("wrap-anywhere");
+      expect(link?.parentElement).toBe(li);
+      expect(li.querySelector(".truncate")).toBeNull();
+    }
+  });
+
   it("scopes the team picker to the player's sport", () => {
     render(<PlayerManagement />);
     selectGriffey();
     expect(lastPickerSportId).toBe("sport-baseball");
+  });
+
+  it("asks the team picker for ONE team per stint (NEO-617)", () => {
+    render(<PlayerManagement />);
+    selectGriffey();
+    expect(lastPickerSingle).toBe(true);
+  });
+
+  it("a second pick replaces the first: the stint is added for the last team picked", async () => {
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    fireEvent.click(screen.getByRole("button", { name: "Pick Seattle Mariners" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pick Cincinnati Reds" }));
+    fireEvent.change(screen.getByLabelText("Stint from year"), {
+      target: { value: "2000" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add stint" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mockSavePlayerFields).toHaveBeenCalledTimes(1));
+    const sent = mockSavePlayerFields.mock.calls[0][0].teamYears;
+    expect(sent).toContainEqual({ teamId: "t-reds", fromYear: 2000 });
+    expect(sent).toHaveLength(3);
   });
 
   it("refuses a repeat (team, start year) inline and sends nothing", () => {
@@ -1804,6 +1853,8 @@ describe("PlayerManagement — the detail panel", () => {
     );
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    // NEO-645: a 24px floor on the link itself (axe target-size on a phone).
+    expect(link.className).toContain("min-h-6");
   });
 
   it("shows a malformed stored Wikidata id as text, never as a link", () => {
@@ -2054,7 +2105,7 @@ describe("PlayerManagement — accessibility", () => {
     const list = screen.getByRole("list", { name: "Possible player matches" });
     const rows = within(list).getAllByRole("button");
     expect(rows.map((b) => b.getAttribute("aria-label"))).toEqual([
-      "Open Ken Griffey Jr. — same name",
+      "Open Ken Griffey Jr. · same name",
       "Open Ken Griffey",
     ]);
     // ...and picking that row opens him, as the primary would.
@@ -2107,7 +2158,7 @@ describe("PlayerManagement — accessibility", () => {
       .getAllByRole("button")
       .map((b) => b.getAttribute("aria-label"));
     expect(names).toEqual([
-      "Open Tony Gwynn, born 1960, Padres 1982 to 2001 — same name",
+      "Open Tony Gwynn, born 1960, Padres 1982 to 2001 · same name",
       "Open Tony Gwynn Jr., born 1982, Brewers 2006 to 2008",
     ]);
     // Never the primary's name on a row.
@@ -2571,15 +2622,15 @@ describe("NEO-254: birth year", () => {
         screen.getByRole("button", { name: "Open Bob Allen, b. 1960" }),
       ).toBeTruthy(),
     );
-    // The panel appends its own "— same name" tag to an exact row's
+    // The panel appends its own "· same name" tag to an exact row's
     // accessible name (NEO-212: a warning only sighted operators receive is
     // not a warning). Uniqueness holds with or without it.
     // NEO-462 — BOTH men are rows, the primary's included, in server order.
     expect(
-      screen.getByRole("button", { name: "Open Bob Allen, born 1960 — same name" }),
+      screen.getByRole("button", { name: "Open Bob Allen, born 1960 · same name" }),
     ).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Open Bob Allen, born 1975 — same name" }),
+      screen.getByRole("button", { name: "Open Bob Allen, born 1975 · same name" }),
     ).toBeTruthy();
     // The ambiguous label is gone entirely — including from the promoted
     // primary, which would otherwise not say which man it opens.
@@ -2620,12 +2671,12 @@ describe("NEO-254: birth year", () => {
     // NEO-462 — the primary's own row is listed too; the tag keeps it apart.
     expect(
       screen.getByRole("button", {
-        name: "Open Bob Allen, no birth year (1 of 2) — same name",
+        name: "Open Bob Allen, no birth year (1 of 2) · same name",
       }),
     ).toBeTruthy();
     expect(
       screen.getByRole("button", {
-        name: "Open Bob Allen, no birth year (2 of 2) — same name",
+        name: "Open Bob Allen, no birth year (2 of 2) · same name",
       }),
     ).toBeTruthy();
   });
@@ -2660,12 +2711,12 @@ describe("NEO-254: birth year", () => {
     );
     expect(
       screen.getByRole("button", {
-        name: "Open Bob Allen, no birth year (2 of 3) — same name",
+        name: "Open Bob Allen, no birth year (2 of 3) · same name",
       }),
     ).toBeTruthy();
     expect(
       screen.getByRole("button", {
-        name: "Open Bob Allen, Padres 1961 to present — same name",
+        name: "Open Bob Allen, Padres 1961 to present · same name",
       }),
     ).toBeTruthy();
   });
@@ -2699,7 +2750,7 @@ describe("NEO-254: birth year", () => {
     ).toBe("Open Ken Griffey Jr.");
     expect(
       screen.getByRole("button", {
-        name: "Open Ken Griffey Jr., born 1969 — same name",
+        name: "Open Ken Griffey Jr., born 1969 · same name",
       }),
     ).toBeTruthy();
   });
@@ -2989,6 +3040,43 @@ describe("NEO-313: the Cards list", () => {
     // A sport that is neither IS a guest appearance and gets the tag.
     expect(within(list).getByText("Hockey")).toBeTruthy();
   });
+
+  // NEO-656: axe's scrollable-region-focusable. happy-dom has no layout, so the
+  // box's heights are stubbed: a list that overflows takes a tab stop, one that
+  // fits does not.
+  it.each([
+    { scrollHeight: 600, clientHeight: 288, tabStop: true },
+    { scrollHeight: 120, clientHeight: 120, tabStop: false },
+  ])(
+    "the Cards box is a tab stop only when it scrolls ($scrollHeight over $clientHeight)",
+    ({ scrollHeight, clientHeight, tabStop }) => {
+      const sh = vi
+        .spyOn(HTMLElement.prototype, "scrollHeight", "get")
+        .mockReturnValue(scrollHeight);
+      const ch = vi
+        .spyOn(HTMLElement.prototype, "clientHeight", "get")
+        .mockReturnValue(clientHeight);
+      try {
+        cardsForPlayerById["p-bo"] = [
+          {
+            cardId: "c1",
+            cardName: "1990 Score",
+            cardNumber: "5",
+            setLabel: "1990 Score Baseball",
+            sportId: "sport-baseball",
+            sportValue: "Baseball",
+          },
+        ];
+        renderWithBo();
+        const box = screen.getByRole("group", { name: "Cards" });
+        expect(within(box).getByRole("list", { name: "Cards for Bo Jackson" })).toBeTruthy();
+        expect(box.getAttribute("tabindex")).toBe(tabStop ? "0" : null);
+      } finally {
+        sh.mockRestore();
+        ch.mockRestore();
+      }
+    },
+  );
 
   it("shows the 'Also: {sport}' chip in the master list for a multi-sport player", () => {
     renderWithBo();

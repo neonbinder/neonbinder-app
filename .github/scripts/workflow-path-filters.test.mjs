@@ -189,3 +189,182 @@ test("fake-bsc paths gate browser tests but not the browser preview", () => {
 test("scripts filter includes the workflow files", () => {
   assert.ok(nonEmpty(pipelineFilters.scripts, "pipeline scripts").includes(".github/workflows/**"));
 });
+
+// NEO-555 (B2): the seller jobs and their queue are retired, and the fake eBay
+// wiring is in place. These pins keep a revert or a half-removal red.
+test("the marketplace-seller jobs, queue and spec list are fully retired", async () => {
+  const { readdirSync, existsSync } = await import("node:fs");
+  const dir = join(REPO_ROOT, ".github");
+  assert.ok(!existsSync(join(dir, "scripts", "seller-queue.sh")));
+  assert.ok(!existsSync(join(dir, "scripts", "seller-queue.test.mjs")));
+  const files = [];
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (p !== fileURLToPath(import.meta.url)) files.push(p);
+    }
+  };
+  walk(dir);
+  for (const f of files) {
+    const text = readFileSync(f, "utf8");
+    assert.doesNotMatch(text, /seller-queue|SELLER_SPECS|R_SELLER|seller-(desktop|mobile)|marketplace-seller|testingSellerCleanup|shard-plan\.mjs --seller/, f);
+  }
+});
+
+test("e2e.yml points the desktop seed at the fake eBay and both seeds assert it", () => {
+  const text = read("e2e.yml").join("\n");
+  const count = (re) => (text.match(re) || []).length;
+  // NEO-628: seed-mobile no longer rewrites the env switches (the desktop seed
+  // set them on the same preview); it only re-asserts the eBay target.
+  assert.equal(count(/- name: Point the Convex preview at the fake eBay/g), 1);
+  assert.equal(count(/env set EBAY_ENVIRONMENT fake /g), 1);
+  assert.equal(count(/env remove "\$name"/g), 1);
+  for (const n of ["DEV_EBAY_REFRESH_TOKEN", "EBAY_CLIENT_ID", "EBAY_RU_NAME"]) assert.equal(count(new RegExp(`for name in [^\\n]*${n}`, "g")), 1, n);
+  assert.equal(count(/fakeBsc:ebayTarget '\{\}'/g), 2);
+  assert.equal(count(/credentials:deleteFakeSessionsFromCli/g), 1);
+  assert.doesNotMatch(text, /deleteFakeBscSessionsFromCli/);
+  // The eBay env is written after the BSC base it depends on.
+  assert.ok(text.indexOf("env set EBAY_ENVIRONMENT") > text.indexOf("env set NEONBINDER_BSC_API_BASE"));
+});
+
+// NEO-628: seed-mobile starts right after the desktop seed and waits for the
+// desktop pass by polling, so a revert to a `needs` edge, a dropped wait or a
+// miscounted pattern turns red here instead of in a wiped preview.
+test("seed-mobile starts early and waits for the desktop shards by name", () => {
+  const text = read("e2e.yml").join("\n");
+  const a = text.indexOf("\n  seed-mobile:\n");
+  const job = text.slice(a, text.indexOf("\n  shard-mobile:\n"));
+  assert.match(job, /\n {4}needs: \[setup, seed\]\n/);
+  assert.match(job, /\n {6}actions: read\n/);
+  assert.match(job, /wait-for-jobs\.sh/);
+  assert.match(job, /--pattern '\^shard-desktop \\\(' --count \d+/);
+  assert.doesNotMatch(job, /--pattern '(?!\^shard-desktop)/, "the shards are the only awaited jobs");
+  assert.ok(job.indexOf("wait-for-jobs.sh") < job.indexOf("e2e-seed-reset.sh"), "wait precedes the reset");
+  assert.ok(job.indexOf("wait-for-jobs.sh") < job.indexOf("Enrichment fixture coverage (desktop shards drained)"), "wait precedes the drained-coverage read");
+  assert.doesNotMatch(job, /convex-env-retry\.sh" env (set|remove)/, "no env writes in seed-mobile");
+  assert.match(job, /fakeBsc:ebayTarget/);
+  // The jobs it waits for are named exactly so, and are never skipped when it runs.
+  assert.match(text, /\n {2}shard-desktop:\n/);
+  assert.match(text, /\n {2}shard-desktop:[\s\S]*?\n {4}if: \$\{\{ !cancelled\(\) && needs\.setup\.result == 'success' && needs\.seed\.result == 'success' \}\}\n/);
+  assert.doesNotMatch(text, /\n {2}[a-z-]*brea[k]er[a-z-]*:\n/, "no carve-out job (the BSC gate is per user)");
+});
+
+test("the e2e gate depends on no seller job", () => {
+  const gate = read("e2e.yml").find((l) => /^ {4}needs: \[setup, seed, shard-desktop, seed-mobile, shard-mobile\]$/.test(l));
+  assert.ok(gate, "the gate needs list is the shard and seed jobs only");
+});
+
+test("the dev and preview browser deploys carry no sandbox eBay config", () => {
+  const preview = read("browser.yml").join("\n");
+  const deploy = read("browser-deploy.yml").join("\n");
+  assert.doesNotMatch(preview, /EBAY_CLIENT_ID_SANDBOX|EBAY_RU_NAME_SANDBOX|EBAY_ENVIRONMENT=sandbox|Preflight eBay config/);
+  const devLane = deploy.split("\n  ")[0] && deploy.slice(0, deploy.indexOf("EBAY_CLIENT_ID_PRODUCTION"));
+  assert.doesNotMatch(devLane, /EBAY_CLIENT_ID_SANDBOX|EBAY_RU_NAME_SANDBOX|EBAY_ENVIRONMENT=sandbox/);
+  assert.match(preview, /--remove-env-vars=EBAY_CLIENT_ID,EBAY_RU_NAME,EBAY_ENVIRONMENT --remove-secrets=EBAY_CLIENT_SECRET/);
+  assert.match(deploy, /--remove-env-vars=PREVIEW_SHA,EBAY_CLIENT_ID,EBAY_RU_NAME,EBAY_ENVIRONMENT --remove-secrets=EBAY_CLIENT_SECRET/);
+  // The prod lane keeps its production eBay config.
+  assert.match(deploy, /EBAY_ENVIRONMENT=production/);
+});
+
+// NEO-628: the unit-test fan-out. Three numbers must agree or the lane
+// silently covers a partial suite (or never goes green): the matrix length,
+// N in `--shard=<i>/N`, and the blob count `web-unit` waits for.
+const jobSection = (lines, name) => {
+  const start = lines.findIndex((l) => l === `  ${name}:`);
+  assert.notEqual(start, -1, `job ${name} not found`);
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (!isBlankOrComment(lines[i]) && indentOf(lines[i]) <= 2) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(start, end).join("\n");
+};
+
+test("pipeline web-unit-shard matrix length equals the --shard=<i>/N total and web-unit's blob count", () => {
+  const shardJob = jobSection(pipeline, "web-unit-shard");
+  const matrix = shardJob.match(/\n {8}shard: \[([^\]]*)\]\n/);
+  assert.ok(matrix, "web-unit-shard matrix.shard list not found");
+  const entries = matrix[1].split(",").map((s) => s.trim()).filter(Boolean);
+  assert.ok(entries.length > 1, "matrix extracted (sharding needs at least 2)");
+  assert.deepEqual(entries, entries.map((_, i) => String(i + 1)), "shards are 1..N");
+  const flag = shardJob.match(/--shard=\$\{\{ matrix\.shard \}\}\/(\d+)/);
+  assert.ok(flag, "no --shard=<i>/N in the vitest command");
+  assert.equal(Number(flag[1]), entries.length, "--shard total equals the matrix length");
+
+  const unitJob = jobSection(pipeline, "web-unit");
+  const expected = unitJob.match(/if \[ "\$n" != "(\d+)" \]/);
+  assert.ok(expected, "no blob-count comparison in web-unit");
+  assert.equal(Number(expected[1]), entries.length, "web-unit expects one blob per shard");
+  const msg = unitJob.match(/Expected (\d+) vitest blob reports/);
+  assert.ok(msg, "no blob-count error message in web-unit");
+  assert.equal(Number(msg[1]), entries.length, "the error message names the same count");
+});
+
+test("pipeline web-unit runs after failed shards and fails unless every shard succeeded", () => {
+  const unitJob = jobSection(pipeline, "web-unit");
+  assert.match(unitJob, /\n {4}needs: \[changes, web-unit-shard\]\n/);
+  assert.match(unitJob, /\n {4}if: \$\{\{ always\(\) && needs\.changes\.outputs\.web == 'true' \}\}\n/);
+  assert.match(unitJob, /SHARDS: \$\{\{ needs\.web-unit-shard\.result \}\}/);
+  assert.match(unitJob, /if \[ "\$SHARDS" != "success" \]; then[\s\S]*?exit 1/);
+  assert.ok(unitJob.indexOf('"$SHARDS" != "success"') < unitJob.indexOf("download-artifact"), "the shard gate precedes the merge");
+});
+
+test("pipeline web-unit-shard uploads the dot-directory blob even when the run failed", () => {
+  const shardJob = jobSection(pipeline, "web-unit-shard");
+  const step = shardJob.slice(shardJob.indexOf("- name: Upload the blob report"));
+  assert.ok(step.startsWith("- name: Upload the blob report"), "upload step found");
+  assert.match(step, /if: \$\{\{ !cancelled\(\) \}\}/);
+  assert.match(step, /path: apps\/web\/\.vitest\/blob\//);
+  assert.match(step, /\n {10}include-hidden-files: true\n/);
+  assert.match(step, /if-no-files-found: error/);
+});
+
+// NEO-628: seed-mobile's wait counts the desktop shard jobs; the count is the
+// matrix size, not a literal that can outlive a resized matrix.
+test("e2e.yml seed-mobile waits for exactly as many shard-desktop jobs as the matrix has entries", () => {
+  const e2e = read("e2e.yml");
+  const desktop = jobSection(e2e, "shard-desktop");
+  const entries = [...desktop.matchAll(/\n {10}- \{ shard: (\d+), worker: (\d+) \}/g)];
+  assert.ok(entries.length > 1, "shard-desktop matrix.include extracted");
+  assert.deepEqual(entries.map((m) => Number(m[1])), entries.map((_, i) => i + 1), "shards are 1..N");
+  const wait = jobSection(e2e, "seed-mobile").match(/--pattern '\^shard-desktop \\\(' --count (\d+)/);
+  assert.ok(wait, "seed-mobile wait-for-jobs.sh --count not found");
+  assert.equal(Number(wait[1]), entries.length);
+});
+
+// NEO-628: the jobs this work touched check out with the token NOT written to
+// .git/config, so a later step (or a spec's subprocess) cannot push with it.
+// A job with no checkout fails too: a rename must not empty the loop.
+const checkoutSteps = (jobText) => {
+  const lines = jobText.split("\n");
+  const steps = [];
+  lines.forEach((l, i) => {
+    if (!/^ {6}- uses: actions\/checkout@/.test(l)) return;
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (/^ {6}- /.test(lines[j])) {
+        end = j;
+        break;
+      }
+    }
+    steps.push(lines.slice(i, end).join("\n"));
+  });
+  return steps;
+};
+
+for (const [file, jobs] of [
+  ["e2e.yml", ["seed", "shard-desktop", "seed-mobile", "shard-mobile", "e2e"]],
+  ["pr-pipeline.yml", ["web-lint", "web-typecheck", "web-unit-shard", "web-unit"]],
+]) {
+  test(`${file}: every actions/checkout in ${jobs.join(", ")} sets persist-credentials: false`, () => {
+    const lines = read(file);
+    for (const job of jobs) {
+      const steps = checkoutSteps(jobSection(lines, job));
+      assert.ok(steps.length > 0, `${file} ${job}: no actions/checkout step found`);
+      for (const step of steps) assert.match(step, /\n {10}persist-credentials: false\b/, `${file} ${job}`);
+    }
+  });
+}

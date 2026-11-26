@@ -1,0 +1,60 @@
+# Convex-Test and Unit Tests
+
+Vitest, convex-test, happy-dom, mock and fixture gotchas for unit and component tests.
+
+- [Adapter mocked fixtures hide gate divergence](reference_adapter_mocked_fixtures_hide_gate_divergence.md) — Checklist tests that vi.mock the whole BSC/SL adapter let a seeded chain model a shape the real adapter refuses — so tightening a chain-level gate surfaces failures in…
+- [Convex components unregistered in convex test](reference_convex_components_unregistered_in_convex_test.md) — No test in apps/web calls t.registerComponent, so draining any schedule that reaches a component (wikidataPool, workpool) swaps EnvironmentTeardownError for "Component…
+- [convex-test transactionLimits pin the read set](reference_convex_test_transaction_limits_pin_the_read_set.md) — `documentsRead` caps turn a read RANGE into an assertion; the only way to test an OCC narrowing whose answer is unchanged
+- [Convex test creationtime fake timer clamp](reference_convex_test_creationtime_fake_timer_clamp.md) — convex-test stamps _creationTime from Date.now() but clamps it strictly-increasing, so testing a time-based sweep with fake timers needs a base AFTER real wall-clock n…
+- [Teardown leak attribution](reference_teardown_leak_attribution.md) — How to attribute and fix a convex-test EnvironmentTeardownError — the trace's third frame names the test file, the module name is a red herring, it reproduces ~1 full…
+- [Vitest components project only tsx](reference_vitest_components_project_only_tsx.md) — apps/web's `components` vitest project globs only `*.test.tsx`, so a pure-logic `.test.ts` next to a component is never collected — name co-located pure tests `.test.t…
+- [Vitest throwing console spy](reference_vitest_throwing_console_spy.md) — Two shared-fork-worker vitest flakes in apps/web from console output racing the worker lifecycle — a throwing console spy ("Worker exited unexpectedly" + lower count),…
+- [Component tests hand-build the api mock](reference_component_tests_hand_build_the_api_mock.md) — `api.<newModule>` in a tested component fails every test at render; sibling-component mocks export only `default`; route reads through slot props, sentinels in pure modules
+- [Shared-component pre-check survives sibling mocks](reference_shared_component_precheck_survives_sibling_mocks.md) — skip-gated useQuery, undefined = proceed, never useConvex(); refusal code as fallback
+- [Component test at a real cap times out](reference_component_test_at_a_real_cap_times_out.md) — a 1,000-row happy-dom fixture passes alone and times out in the suite; inject the cap as a prop
+- [Vi mock a constant needs a getter](reference_vi_mock_a_constant_needs_a_getter.md) — lowering a MAX_* cap for a convex-test run: spread the original and expose it as a getter, or it freezes at import
+- [Vitest console hidden in passing tests](reference_vitest_console_hidden_in_passing_tests.md) — console.log from a passing test prints nothing; scratch probes log via appendFileSync
+- [Required-field flip breaks test fixtures](reference_required_field_flip_breaks_test_fixtures.md) — convex-test validates raw fixture inserts; grep insert("<table>") first; required args pre-empt auth-guard tests
+- [Source-slice tests key on export names](reference_source_slice_tests_key_on_export_names.md) — deleting/renaming an export breaks readFileSync slice tests (indexOf -1 = whole file); grep before deleting
+- [Search mock must honour query args](reference_search_mock_must_honour_query_args.md) — a useQuery mock ignoring args hides a client re-filter; emulate the server before trusting its rows
+- [vi.mock stub component needs a name](reference_vi_mock_stub_component_needs_a_name.md) — stateful stub in a vi.mock factory must be `function StubX` or lint fails rules-of-hooks
+- [Convex-free page harness](reference_convex_free_page_harness.md) — screenshot a page behind ProtectedLayout: temp harness + MemoryRouter, spare-port Vite, Playwright; out-of-tree scratchpad variant + main/ baseline; measure the real column (side nav gutter at lg)
+- [Lazy component test preload](reference_lazy_component_test_preload.md) — lazy() child + findBy times out under load; import the module in beforeAll
+- [happy-dom target=_blank click fetches](reference_happy_dom_target_blank_click_fetches.md) — new window fetches the href (ECONNREFUSED noise); preventDefault on document for that click
+- [happy-dom has no window.confirm](reference_happy_dom_has_no_window_confirm.md) — define it per test; a new convex/react export in the store breaks every hand-built mock
+- [vitest CSS ?raw import is empty](reference_vitest_css_raw_import_is_empty.md) — CSS imports stub to ""; read stylesheets with readFileSync(join(__dirname, ...))
+- [Render a component from its unit test](reference_render_a_component_from_its_unit_test.md) — dump happy-dom markup via a scratch vitest config (sequence.hooks "list"), render with real CSS; for screens the backend cannot serve
+- [convex-test scale walks cost per range read](reference_convex_test_scale_walks_cost_per_range_read.md) — paged walk over 5k distinct keys ~26s; use few keys x many rows
+- [Card fixtures insert through insertTestCard](reference_card_fixtures_insert_through_insert_test_card.md) — required listingTitle/sportId; raw test inserts fail at runtime; t.run drops closures
+- [Unit axe helper](reference_unit_axe_helper.md) — lib/testing/axe.ts: axe in happy-dom, E2E tags, light+dark, no contrast; for states E2E cannot stage
+- [Mocked useConvex must be stable](reference_mocked_useconvex_must_be_stable.md) — fresh client per render loops an on-demand read effect; hoist it; inline .then in the effect
+- [Intake tab test mocks the store wholesale](reference_intake_tab_test_mocks_store_wholesale.md) — new store hooks or a mode.tsx import (ParamLink) break RealAddCardsTab.test at import; mock ../mode; ParamLink needs CollectionModeProvider
+- [Convex hook mocks need stable identities](reference_convex_hook_mocks_need_stable_identities.md) — a fresh vi.fn per useAction call loops effects; cache per getFunctionName
+- [happy-dom pads inline span in a11y name](reference_happy_dom_pads_inline_span_in_accessible_name.md) — "Label , done" in vitest vs "Label, done" in Chrome; normalise in the test
+- [No jest-dom matchers](reference_no_jest_dom_matchers_in_unit_tests.md) — toBeInTheDocument/toHaveAttribute throw; use getByRole, getAttribute, textContent
+- [Happy-dom XHR bypasses the fetch guard](reference_happy_dom_xhr_bypasses_fetch_guard.md) — photo uploads use XHR since NEO-466; stubbing fetch no longer covers them, inject `transport`; attach xhr.upload listeners before send()
+- [New precondition on a shared mutation goes in the world fixture](reference_new_precondition_on_a_shared_mutation_goes_in_the_world_fixture.md) — satisfy it in world(), opt out per test; priceEveryVariant skips priced variants, so re-pricing is a silent no-op
+- [convex-test same-ms stamps](reference_convex_test_same_ms_stamps.md) — back-to-back mutations share a Date.now() ms; await a 3 ms setTimeout before a strict-gt stamp assertion
+- [t.run turns undefined into null](reference_convex_test_run_turns_undefined_into_null.md) — absent optional field read via t.run is null; use `?? null` + toBeNull
+- [vitest spies handle returned promises](reference_vitest_spies_handle_returned_promises.md) — a vi.fn rejection is never unhandled; an unhandled-rejection test through a mock can't go red
+- [Leak assertion matches the epoch](reference_leak_assertion_matches_the_epoch.md) — bscSeller.telemetry "555" check trips on the epoch-ms `at`; rerun before blaming
+- [Wait line mounting breaks test mocks](reference_wait_line_mounting_breaks_test_mocks.md) — useQuery/watchQuery stubs, one-status pins, waitKey toEqual; 50 rows per key
+- [Duplicate React key regression test](reference_duplicate_react_key_regression_test.md) — spy console.error for "same key"; text assertions pass with the bug
+- [Seam signature change breaks call-text pins](reference_seam_signature_change_breaks_call_text_pins.md) — pin tests regex exact seam calls; new required opts crash untyped tests; optional cache + fallback
+- [t.run returns undefined as null](reference_convex_test_run_returns_undefined_as_null.md) — a bare optional field returned from t.run comes back null; `?? null` + toBeNull
+- [useConvex mock must be stable](reference_useconvex_mock_must_be_stable.md) — fresh client per render loops an effect listing `convex`; bare 5s timeout; hoist the mock client
+- [New table naming a variant has six pins](reference_new_table_naming_a_variant_has_six_pins.md) — wipe graph, reset batch + exact count pin, cli.mjs list, test reset, api.d.ts, auth registry
+- [convex-test: stub a module via the glob map](reference_convex_test_stub_a_module_via_the_glob_map.md) — add a "./x.ts" key to the modules map; check {ok:false} results; mutation→action flip breaks .mutation() call sites repo-wide
+- [Late scheduled jobs cross convex-test instances](reference_late_scheduled_jobs_cross_convex_test_instances.md) — an undrained job lands in a later test's spy; ids repeat across instances
+- [Numbers-differ fixtures need non-prefix pairs](reference_numbers_differ_fixtures_need_non_prefix_pairs.md) — "12" vs "OV-12" AGREE; ABSORB re-folds initialData so seed-only mutations stay green
+- [Restore setTimeout spy before real timers](reference_restore_spy_before_real_timers.md) — spy restored after useRealTimers hangs the afterAll hook 10 s with green tests; monotonic ref ids for notices
+- [Bounded-fetch test: timer arms before the stub](reference_bounded_fetch_test_timer_arms_before_the_stub_is_reached.md) — sign() is async; stub sees an aborted signal; wait on stalled-body count; wrap setTimeout for drain tests
+- [Source pins trip on stamp/playerIds spellings](reference_source_pins_trip_on_stamp_and_playerids_spellings.md) — noTeamDefault.pin + playerLinksPin reject new `teamNoneConfirmedAt:` / `playerIds:` spellings; shorthand, early return
+- [convex-test typed harness](convex-test-typed-harness-alias.md) — makeT factory alias, not bare ReturnType<typeof convexTest>
+- [Wizard plan waits on teamless-sport mock](reference_wizard_plan_waits_on_teamless_sport_mock.md) — test useQuery mock must answer listTeamlessSportIds or the bar stays 0; how to port a new step onto trackSteps
+- [Proxy api mock, live-region waits](reference_proxy_api_mock_and_live_region_waits.md) — component tests: Proxy `api` returning "module.fn"; findByText for announced lead-ins; derive pre-fill in render, not an effect
+- [Retire a flow: stand-in mock first](reference_retire_a_flow_by_deleting_its_tests_after_a_stand_in_mock.md) — stand-in the replacement, JSON-report failures by describe, script-delete retired `it(` blocks
+- [Pin regexes match planner inputs](reference_pin_regexes_match_plan_inputs_not_just_writes.md) — rename planner keys, do not loosen source-slice pins
+- [Render-phase open needs batch in state](reference_render_phase_open_needs_batch_in_state_and_fixture_batch_ids.md) — NEO-640 early open: previousBatchId in state; pre-streamed test fixtures never trip it; matched w/o pairedBy opens
+- [Pair confidence is server-stamped](reference_pair_confidence_stamped_by_server_fixtures_must_match.md) — clean-pair fixtures: pairedBy name/stored/crossRef at 1; number/variation pairs are 0.9 (NEO-640)
+- [Fake ActionCtx from convex-test](reference_fake_actionctx_from_convex_test.md) — drive an exported runQuery/runMutation-only action helper via t.query/t.mutation; make a parity fixture bite

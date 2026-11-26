@@ -337,13 +337,30 @@ export const selectorOptionMetadataFields = {
    * the one it writes with, so saving A, then B, then A again leaves one live
    * chain, not two.
    *
-   * Written only by `saveTitleFixes`, beside the box. Every other writer of
+   * Written by `saveTitleFixes`, beside the box, and by
+   * `tidyCards.applySetNameToTitles` (NEO-645), which starts a chain of its own
+   * the same way (two quick saves leave one live chain). Every other writer of
    * `listingShortName` (the attributes panel, the wizard commit, the
    * short-name backfill) spreads `metadata` and leaves it as it is: none of
    * them starts a chain, and a box they change stops the live one by itself.
    * Absent on every row the dialog never saved; no backfill.
    */
   listingShortNameSavedAt: v.optional(v.number()),
+  /**
+   * NEO-619 — on an INSERT-role row (an insert-level row under an Insert type):
+   * the parallels beneath it (its sub-variants) name themselves in a card's
+   * title, leaving the insert's name out ("2026 Pulse Aura Aeon Special Gold",
+   * not "... Aeon Special Purple Gold"). The insert's own cards still name the
+   * insert. One switch covers every parallel beneath it, later ones included.
+   *
+   * Writer: `setSelectorOptionParallelsNameThemselves` (the set attributes
+   * panel), the only door. Reader: `titleChainFacts`, which drops the insert's
+   * level and skips the insert's own `listingShortName` for a parallel leaf.
+   * An operator choice: never derived, never written by a sync. `true` or
+   * absent; off deletes the key. Existing titles are never rewritten when it
+   * flips (write-once titles); Regenerate reads the new value.
+   */
+  parallelsNameThemselves: v.optional(v.boolean()),
 };
 
 export const selectorOptionFields = {
@@ -440,6 +457,19 @@ export const selectorOptionFields = {
   })),
   parentId: v.optional(v.id("selectorOptions")), // For hierarchical relationships
   children: v.optional(v.array(v.id("selectorOptions"))), // Child options
+  /**
+   * NEO-673 — meaningful only on a Parallel-kind variantType row: the insert
+   * (a base parallel, e.g. Silver) the type's other parallels are built from
+   * when the set has no Base. Absent = no pick (no backfill). Re-verified on
+   * every read (the row exists, `level === "insert"`, `parentId` is this
+   * type); anything invalid reads as absent. Only writer:
+   * `parallelTypeSource.setParallelTypeSource`. Only reader:
+   * `sourceOfParallelType` (parallelChecklistBuild.ts), and only when the set
+   * has zero Bases: a real Base always wins. NB data only: no adapter or sync
+   * reads it. No index (read by `db.get` on the type row). Cleared when the
+   * type's subtree is wiped.
+   */
+  parallelSourceId: v.optional(v.id("selectorOptions")),
   /**
    * @deprecated NEO-239 — DEAD FIELD. Nothing reads it and nothing writes it.
    *
@@ -638,6 +668,34 @@ export const selectorOptionFields = {
     v.object({ setAt: v.number(), setByUserId: v.string() }),
   ),
   /**
+   * NEO-426 — this SPORT has no teams (Non Sport, Golf, Tennis): a card whose
+   * every player's HOME sport (`players.sportId`; extra `playerSports` never
+   * count) carries this stamp saves as "No team" by default, with nothing to
+   * answer in the wizard's Teams step.
+   *
+   * Meaningful on `level: "sport"` rows only, and set only there
+   * (`sportTeamless.setTeamlessSport` refuses any other level). Same shape as
+   * `noTeamDefault`, for the same reason: `setAt` / `setByUserId` are
+   * server-stamped (the time and `requireAdmin`'s subject), because a
+   * background path (`applyBscTeamResolution`) stamps the card on the
+   * operator's behalf and needs someone to credit.
+   *
+   * A DEFAULT, never a block: one more reason to stamp, decided by
+   * `noTeamCardVerdict` on the card as it is born (so a listing that names a
+   * team, a pending team name, or a lookup still owed holds it back — product
+   * invariant 8). Nothing refuses, strips or hides a team because of it; a
+   * team from any source wins. Read only through `convex/lib/teamlessSport.ts`,
+   * never by the sport's display name (invariant 4).
+   *
+   * ABSENT means "this sport has teams"; switching it off removes the field
+   * (a stored `false` would be a second way to say the same thing). Touches
+   * no existing card. NB data only: no adapter or sync reads or writes it. No
+   * index (sports are a handful of rows under `by_level`); no backfill.
+   */
+  teamlessSport: v.optional(
+    v.object({ setAt: v.number(), setByUserId: v.string() }),
+  ),
+  /**
    * NEO-528 round 3 — "Player on every card": the player every NEW card
    * beneath this row is born with, when it arrives with no player of its own
    * (no resolved player and no name waiting for review).
@@ -773,6 +831,22 @@ export const selectorOptionFields = {
    * NB data only: no adapter or sync reads or writes it.
    */
   lastCardAt: v.optional(v.number()),
+  /**
+   * NEO-616 — the print run this variant's cards share ("/5"): set when the
+   * most common run among the row's own cards covers at least 90% of them
+   * (variations and unnumbered cards count in the total), cleared otherwise.
+   * Meaningful on the card-bearing levels (`variantType`, `insert`,
+   * `parallel`); absent elsewhere and on a row whose cards share no run.
+   *
+   * Derived from the cards, never typed: `convex/variantPrintRun.ts` computes
+   * it (`refreshVariantPrintRun`) at the end of a parallel build, after a card
+   * edit, delete or add, and after a re-sync changes a card's run; the armed
+   * backfill (`backfillVariantPrintRun`) fills and repairs the rest. It is
+   * NOT a card count: it moves no `lastUpdated` and takes no ledger.
+   *
+   * NB data only: no adapter or sync reads or writes it.
+   */
+  printRun: v.optional(v.number()),
   lastUpdated: v.number(),
 };
 
@@ -832,9 +906,10 @@ export const saleItemFromValidator = v.object({
  * `title` (below).
  *
  * Kept on the SALE only. It is never written to an NB card, set, player or
- * team row, and nothing outside the Pick List's labels and walking order, and
+ * team row, and nothing outside the Pick List's labels and walking order,
  * (NEO-520) the Sales tab's `listed.title` label read through
- * `listingSync.publicSale`, reads it. `sportId` is NB's own sport row, resolved once when the line is stored
+ * `listingSync.publicSale`, and (NEO-590) the dashboard's Out the Door label
+ * for a line with no card (`dashboard.sales`), reads it. `sportId` is NB's own sport row, resolved once when the line is stored
  * from the platform's item-level sport id against the sport rows'
  * `platformData.bsc` slots (exactly one match, else absent); `sport` is the
  * platform's own word, a fallback label only. Every field is optional: the
@@ -853,11 +928,14 @@ export const saleItemListedValidator = v.object({
    * NEO-520 — eBay only: the order line's own title as the buyer saw it
    * (`lineItems[].title`), stored on every eBay line whose title was
    * readable, and shown only where NB holds no card for the line (a listing
-   * NB did not make): the Pick List, and the Sales tab via
-   * `listingSync.publicSale`. Bounded at the
+   * NB did not make): the Pick List, the Sales tab via
+   * `listingSync.publicSale`, and the dashboard's Out the Door
+   * (`dashboard.sales`, NEO-590). Bounded at the
    * sync boundary (`lib/ebayListing.ts`): trimmed, control characters
-   * refused, an over-long title dropped, never cut. Never parsed, matched or
-   * written to any NB row. BSC lines never carry it.
+   * refused, an over-long title dropped, never cut. Parsed for Pick List
+   * order only (NEO-590: its year, its set words and the sport of an NB
+   * player or team it names), never matched to a card or written to any NB
+   * row. BSC lines never carry it.
    */
   title: v.optional(v.string()),
 });
@@ -1284,7 +1362,16 @@ export const listingSyncProgressValidator = v.object({
 /**
  * NEO-496 — one stored row of a publisher checklist (`publishedChecklistChunks`).
  * The server re-check (`convex/lib/publishedChecklistCheck.ts`) is the only
- * thing that builds one: `noNumber` / `noTeam` are only ever stored as `true`.
+ * thing that builds one: `noNumber` / `noTeam` / `prospect` are only ever
+ * stored as `true`.
+ *
+ * NEO-591 — `prospect`: the team cell said "Prospect" / "Prospect (X)", so the
+ * card is born with the Prospect Card attribute. The X of "Prospect (X)" is
+ * the card's printed team (Jason, 2026-11-19) and is stored in `teams` like any
+ * other. `prospectTeams` is DEPRECATED: an earlier build stored the X here, out
+ * of `teams`. Nothing writes it now; the fetch folds it into `teams` on read
+ * (`foldLegacyProspectTeams`). Kept optional so a row stored by that build
+ * still passes the schema; remove it once no deployment holds one.
  */
 export const publishedChecklistStoredRowValidator = v.object({
   number: v.string(),
@@ -1292,6 +1379,35 @@ export const publishedChecklistStoredRowValidator = v.object({
   teams: v.array(v.string()),
   noNumber: v.optional(v.boolean()),
   noTeam: v.optional(v.boolean()),
+  /**
+   * NEO-616 — the card's print run ("/5" is 5) as the file printed it, an
+   * integer 1..MAX_BSC_PRINT_RUN; absent when the file gives none. Only the
+   * re-check sets it, and only from a valid value.
+   */
+  printRun: v.optional(v.number()),
+  prospect: v.optional(v.boolean()),
+  /** DEPRECATED (NEO-591): never written; see the note above. */
+  prospectTeams: v.optional(v.array(v.string())),
+  // NEO-591 — which of `teams` sat INSIDE the Prospect parens when only some
+  // did ("Cincinnati Reds / Prospect (Frisco)": ["Frisco"]; `[]` for a
+  // "Prospect" beside plain teams). Display only, so the row reads as printed:
+  // `teams` and `prospect` keep their meaning and nothing reads this back as
+  // data. Set by `checkPublishedChecklist` only for such a mixed row, always a
+  // subset of `teams` (so at most a card's team cap, each within the name cap);
+  // a row without it (an all-prospect cell, or stored before the field) reads
+  // every team as inside. Not the DEPRECATED `prospectTeams` above.
+  prospectClaimedTeams: v.optional(v.array(v.string())),
+  // NEO-591 (variations) — the checklist's own note for a variation row
+  // ("photo variation"), at most `MAX_VARIATION_NAME` characters with no
+  // control characters (`checkPublishedChecklist`). Becomes the variation
+  // name of a card created from the row.
+  variationName: v.optional(v.string()),
+  // NEO-645 — the subject a row printed that names no person ("Checklist",
+  // "Team Card", "Mets TC"), as printed and cleansed, for a row with no
+  // players. The card made from the row is named by it. Never a player and
+  // never read for pairing. At most `MAX_PLAYER_NAME_LENGTH` characters
+  // (`checkPublishedChecklist`).
+  cardName: v.optional(v.string()),
 });
 /** NEO-496 — a publisher checklist's life: uploading → ready → retired, or uploading → retired. */
 export const publishedChecklistStatusValidator = v.union(
@@ -1320,16 +1436,47 @@ export const checklistConflictSidesValidator = v.object({
   marketplace: v.array(v.string()),
   checklist: v.array(v.string()),
 });
+/**
+ * The teams side of a conflict. `prospectClaim` is DEPRECATED (NEO-591): an
+ * earlier build marked a "Prospect (X)" checklist side with it. Nothing writes
+ * or reads it now; kept optional so a stored conflict still passes the schema.
+ */
+export const checklistTeamConflictSidesValidator = v.object({
+  marketplace: v.array(v.string()),
+  checklist: v.array(v.string()),
+  prospectClaim: v.optional(v.literal(true)),
+});
 export const checklistConflictValidator = v.object({
   players: v.optional(checklistConflictSidesValidator),
-  teams: v.optional(checklistConflictSidesValidator),
+  teams: v.optional(checklistTeamConflictSidesValidator),
 });
+
+/**
+ * NEO-640 — which lookup paired a matched row's BSC and SportLots halves:
+ * a stored link ("stored"), the cross-reference ("crossRef"), the variation
+ * rules ("variation"), the card number ("number") or the player/card name
+ * ("name"). Defined here, beside the table that stores it, so the schema's
+ * `checklistCandidates.pairedBy` and the fetch's wire shape cannot drift;
+ * `checklistCandidates.ts` imports it (and re-exports it for its callers).
+ */
+export const marketplacePairViaValidator = v.union(
+  v.literal("stored"),
+  v.literal("crossRef"),
+  v.literal("variation"),
+  v.literal("number"),
+  v.literal("name"),
+);
 
 /**
  * NEO-496 — a publisher-checklist row a fetched card was paired with on the
  * server, in the shape Match Cards lists a row (`ChecklistLinkRow`) plus the
  * name the row has as a card of its own (`checklistOnlyCard`). `teams` are
  * resolved like a checklist-only card's; `noTeam` is the row's "No Team".
+ *
+ * NEO-591 — `prospect` is the row's Prospect claim; its X is in `teams`, so
+ * `teams` and `prospect` rebuild the row exactly and an unlinked row that is
+ * linked again still carries its claim. `prospectTeams` is DEPRECATED: an
+ * earlier build held the X there; nothing writes it now.
  */
 export const checklistPairedRowValidator = v.object({
   number: v.string(),
@@ -1337,6 +1484,19 @@ export const checklistPairedRowValidator = v.object({
   teams: v.array(v.string()),
   noNumber: v.optional(v.literal(true)),
   noTeam: v.optional(v.literal(true)),
+  prospect: v.optional(v.literal(true)),
+  /** DEPRECATED (NEO-591): never written. */
+  prospectTeams: v.optional(v.array(v.string())),
+  // Collector review — the row's team cell AS PRINTED ("Seattle", "Prospect
+  // (Oklahoma)"), for display only: Match Cards reads it on the row and in its
+  // Unlink label. Present only when it differs from `teams` joined (a settled
+  // Prospect (X) or a team printed as a place); nothing reads it back as data.
+  claim: v.optional(v.string()),
+  // NEO-591 (variations) — the checklist's own note for a variation row
+  // ("Photo variation"), so an Unlink or a relink puts back the same
+  // checklist-only variation card, name included. Bounded when the row is
+  // stored (`MAX_VARIATION_NAME`).
+  variationName: v.optional(v.string()),
   cardName: v.string(),
 });
 
@@ -1352,15 +1512,91 @@ export const checklistPairedRowValidator = v.object({
  *  - `teams`: the card's own teams before the row (absent: none).
  *  - `teamLookup: "failed"`: the card had no team of its own and a BSC
  *    listing whose team lookup was skipped because the row answered it.
- *    "failed" is the data-missing state (rule 8): the operator picks the
- *    team and no rule guesses one.
+ *    "failed" is the data-missing state (rule 8): no listing claim stands,
+ *    so the wizard's Teams step pre-fills it from NB's own evidence like any
+ *    other card (NEO-639), and the operator confirms the team.
  */
 export const checklistPairRevertValidator = v.object({
   players: v.optional(v.array(v.string())),
   teamsFromRow: v.boolean(),
   teams: v.optional(v.array(v.string())),
   teamLookup: v.optional(v.literal("failed")),
+  // NEO-591 (names first, numbers confirm) — the card's own number before the
+  // row was applied. Present only when the pair changed it (the row's number
+  // outranks the marketplace's, `preferCardNumber`), so Unlink puts it back.
+  cardNumber: v.optional(v.string()),
 });
+
+/**
+ * NEO-591 — the numbers each source printed for a card the sources paired by
+ * NAME while their numbers differ ("OV-ANFI" on BuySportsCards, "NNO" on the
+ * publisher checklist). Names pair a card; a number only confirms, so a pair
+ * whose numbers differ is kept and shown with all of them. The card itself
+ * carries one number (`preferCardNumber`: letters over digits over none).
+ * Absent on every pair whose numbers agree. A key is present only when that
+ * source is in the pair. Each value is held to `MAX_SOURCE_NUMBER_LENGTH`
+ * (checklistCandidates.ts) when written.
+ */
+export const sourceNumbersValidator = v.object({
+  bsc: v.optional(v.string()),
+  sportlots: v.optional(v.string()),
+  checklist: v.optional(v.string()),
+});
+
+// ── NEO-645: One-card Tidy Up ───────────────────────────────────────────────
+//
+// The shared validators below are exported and imported by `getCardChecklist`
+// and the card attention code. No hand copies: the strict-returns memory
+// records hand-copied validators as a past source of drift.
+
+/**
+ * NEO-645 — which source printed a value, as a LABEL for the Sources-disagree
+ * tile. The same slot keys `sourceNumbersValidator` uses. A closed union, and
+ * widening it for a new source is additive. Keys are labels only: no rule may
+ * prefer a source by key (product invariant 4).
+ */
+export const sourceKeyValidator = v.union(
+  v.literal("bsc"),
+  v.literal("sportlots"),
+  v.literal("checklist"),
+);
+
+/**
+ * NEO-645 — one field on which the sources still disagree AFTER parsing
+ * through the shared name matcher ("Judge / Soto" and "Judge | Soto" are one
+ * value, Acuña and Acuna are one value; those are never stored).
+ *
+ * While an entry is present the field holds nothing: no links and no pending
+ * names, which is what keeps the losing side out of the walk. NB never picks a
+ * side: the operator's pick writes the field and removes the entry (NEO-656).
+ *
+ * Bounds, enforced by the writer (the validator cannot): at most 3 values per
+ * field, at most MAX_CARD_PLAYERS (20) / MAX_CARD_TEAMS (8) names per value,
+ * each name at most 120 characters, and `getConvexSize(sourceDisagreements)`
+ * at most 4096 bytes. The array lands on rows `getCardChecklist` reads for the
+ * whole leaf, so an uncapped worst case (about 43 KB a card) would pass the
+ * 16 MiB query read limit on a 900-card leaf.
+ */
+export const sourceDisagreementValidator = v.object({
+  field: v.union(v.literal("players"), v.literal("teams")),
+  values: v.array(
+    v.object({
+      value: v.array(v.string()),
+      sources: v.array(sourceKeyValidator),
+    }),
+  ),
+});
+
+/**
+ * NEO-645 — why the commit wrote a team onto a card that would otherwise have
+ * saved teamless (Jason, 2026-11-21, Q1 = A): "otherCards" is the same player's
+ * team on other cards (this batch, or the set's stored cards); "career" is the
+ * one team his career window gives. Copy only; no rule keys on it.
+ */
+export const tidyTeamFillReasonValidator = v.union(
+  v.literal("otherCards"),
+  v.literal("career"),
+);
 
 /**
  * NEO-335 / PR 451 — how a card's fetch-time team answer was reached:
@@ -2064,8 +2300,7 @@ export default defineSchema({
     // explicit operator answer, and never over an existing confirmation.
     teamNoneConfirmedAt: v.optional(v.number()),
     // The Clerk subject of the operator who confirmed it — same shape and
-    // purpose as `players.createdByUserId` and
-    // `entityReviewQueue.createdByUserId`. Audit only: no UI reads it.
+    // purpose as `players.createdByUserId`. Audit only: no UI reads it.
     // (`getCardChecklist` does list it in its `returns`, because that
     // validator is strict and would otherwise reject every row carrying it —
     // that query is admin-gated.)
@@ -2192,18 +2427,26 @@ export default defineSchema({
     // backfill (`backfillListingDescriptions`) has not reached may lack it,
     // and such a row is not found by the search until it is filled.
     listingDescription: v.optional(v.string()),
-    // NEO-101: the auto-generated title's CORE (year / manufacturer / set /
-    // players) did not fit inside eBay's 80-character cap at creation time, so
-    // the generator cut it at a word boundary to keep room for the card number.
+    // NEO-101 / NEO-609: the card is in Tidy Up. The auto-generated title fit
+    // eBay's 80-character cap only by a cut from the Tidy Up line down (a
+    // whole team, the card number, SP, RELIC, a first name, RC or AUTO; the
+    // "#" alone is not one), or it was built from the set's box text and that
+    // version still leaves something out or is over the cap. A title that fits
+    // only because the set name was shortened, with nothing left out, is not
+    // flagged (NEO-645, `titleFitsOnShortName`).
     // The title is valid and listable — it is just missing identifying words a
-    // human should put back, which is why this drives a "needs attention" item
+    // human may want to decide differently, which is why this drives a "needs attention" item
     // (`features/cardAttention.ts` → `titleTruncated`) rather than an error.
     //
-    // Set ONLY at insert, from `assessListingTitle(...).coreFits === false`,
-    // and omitted entirely otherwise. CLEARED (patched to `undefined`) by any
-    // operator write of `listingTitle` through `updateCard`: once a human has
-    // authored the title, whether the machine's attempt fit is no longer a
-    // question anyone is asking.
+    // Written with every GENERATED title (insert, Regenerate, a player link,
+    // a team removal), from `assessListingTitle(...).coreFits === false`
+    // (`generatedTitleTruncatedFlag`), and omitted entirely otherwise.
+    // CLEARED (patched to `undefined`) by an operator's own typed title
+    // through `updateCard`: once a human has authored the title, whether the
+    // machine's attempt fit is no longer a question anyone is asking. A title
+    // `updateCard` is handed that is exactly what the generator builds for the
+    // card as it stands (Regenerate) is generated, not typed, and takes the
+    // flag its assessment gives it.
     //
     // WHY IT IS STORED AT ALL, when nothing else about the write-once
     // generation is: a stored row does not carry the player names or the set
@@ -2257,6 +2500,20 @@ export default defineSchema({
     // re-prompt for the same player).
     pendingPlayerNames: v.optional(v.array(v.string())),
     pendingTeamNames: v.optional(v.array(v.string())),
+    // ── NEO-645: One-card Tidy Up review state ───────────────────────────────
+    //
+    // Both optional and additive. Parallel copies do NOT carry either: they
+    // are review state of the source card, and carrying them would put the
+    // source card's stops on every parallel. See the validators beside
+    // `sourceKeyValidator`.
+    //
+    // Fields on which the sources still disagree after parsing. Written only on
+    // NEW rows (D4: a re-synced row keeps NB's data, NEO-203). While an entry
+    // is present the field holds nothing; the operator's pick removes it.
+    sourceDisagreements: v.optional(v.array(sourceDisagreementValidator)),
+    // What each source numbered the card, for the "Numbers didn't match" note.
+    // The commit used to accept this and drop it.
+    sourceNumbers: v.optional(sourceNumbersValidator),
     // NEO-24: per-card override of marketplace-agnostic feature map. Inherits
     // merged ancestor `selectorOptions.features` at card-creation time
     // (`commitCardChecklist`). Subsequent edits via `setSelectorOptionFeature`
@@ -2546,6 +2803,15 @@ export default defineSchema({
       wikidataId: v.optional(v.string()), // e.g. "Q123456"
     })),
     createdByUserId: v.optional(v.string()),
+    /**
+     * NEO-591: the client-minted token of the career check's "New player named
+     * X" answer that created this row (`players.createCareerNewPlayers`). Its
+     * one job is retry safety: a Confirm retried from the same wizard state
+     * carries the same ref, so the commit ADOPTS the row it already made
+     * instead of minting a second. Never read anywhere else, never shown, and
+     * `toPublicPlayer` strips it. Absent on every other player.
+     */
+    creationRef: v.optional(v.string()),
     lastUpdated: v.number(),
   })
     .index("by_name_normalized", ["nameNormalized"])
@@ -2776,8 +3042,7 @@ export default defineSchema({
      * Two ways an alias gets here, both operator decisions and both NB's own:
      * typed into Team Management or the New Team step, or saved at commit
      * when the operator links a parked checklist string to a team and leaves
-     * "Remember … as a name for this team" on (`decision.saveAsAlias` on
-     * `entityReviewQueue`). A string that ARRIVED from a marketplace is
+     * "Remember … as a name for this team" on. A string that ARRIVED from a marketplace is
      * initial input (product invariant 2a): once stored it is NB vocabulary,
      * nothing keys on where it came from, and no sync ever adds, removes or
      * rewrites an entry. The NCAA/ABL preload (`convex/bulkLoad.ts`) unions
@@ -2824,9 +3089,7 @@ export default defineSchema({
     // NEO-147: set when a name matched MORE THAN ONE source page — there are
     // 10+ distinct "Huskies" teams on the site. Never guessed: the team editor
     // presents these for a human to pick, which writes `colorSource` and
-    // clears this. Follows the entityReviewQueue principle (a human confirms
-    // ambiguity) without reusing that table, which is scoped to one fetch
-    // batch and consumed by its own wizard.
+    // clears this. A human confirms ambiguity; it is never guessed.
     colorCandidates: v.optional(v.array(v.object({
       name: v.string(),
       url: v.string(),
@@ -2945,34 +3208,6 @@ export default defineSchema({
     // the cleanup a deleted team would need.
     .index("by_team_id", ["teamId"]),
 
-  // NEO-92: per-fetch review queue backing the step-through "new players &
-  // teams" wizard (replaces the old single-screen checkbox dialog). One row
-  // per unknown name surfaced by fetchCardChecklist. NEO-99: the Wikidata pool
-  // (convex/wikidataPool.ts) drains "pending" rows 5 at a time via the
-  // runEntityReviewLookup work item, patching status/enrichment as each lookup
-  // completes — the wizard subscribes reactively and presents rows in
-  // COMPLETION order (whichever finishes first), not original fetch order.
-  // `decision` is patched by the user's own action in
-  // the wizard (recordDecision) — durable across a page refresh, unlike
-  // keeping it only in React state. NEO-212: a third "skip" decision variant
-  // now exists alongside create/link. Skip means "not a person / not a team" —
-  // the card keeps the raw name as free text, and nothing is created or linked.
-  // It is the escape hatch for the junk that BSC checklists carry in player
-  // columns (header rows, "CHECKLIST", sponsor text), which previously had to
-  // be created as a bogus player just to clear the wizard. A skip is recorded
-  // durably in `entityReviewSkips` (below) at commit time so the same name
-  // never re-enters the wizard for that set.
-  //
-  // `createdByUserId` scopes batch resumption per (selectorOptionId, user):
-  // startBatch only resumes a batch created by the SAME user. Two different
-  // admin sessions (or the same admin in two tabs) reviewing the same set
-  // concurrently each get their own private queue rather than silently
-  // sharing/colliding on one. Confirmed necessary, not just theoretical: two
-  // concurrent Maestro CI workers (each a distinct test user) sharing one
-  // real marketplace set produced two distinct observed bugs before this
-  // field existed — a dropped Cancel tap (one worker's commit collapsed
-  // another's wizard footer mid-click) and a wrong-item-shown wizard (one
-  // worker's unknown name preempted another's in shared queue order).
   /**
    * ── NEO-254: the alias index `players.aliases` cannot be ────────────────
    *
@@ -3092,700 +3327,6 @@ export default defineSchema({
     // per-sport list, which must show Bo under baseball too.
     .index("by_sport_id", ["sportId"]),
 
-  entityReviewQueue: defineTable({
-    selectorOptionId: v.id("selectorOptions"),
-    batchId: v.string(),
-    createdByUserId: v.string(),
-    /**
-     * NEO-254 — `"league"` joins the two original kinds, one level up.
-     *
-     * Jason, preview test 2026-09-06: on a fresh deployment every hockey team
-     * row offered `Create National Hockey League`, because nothing is written
-     * until commit and so each team re-asked the same question; and a league
-     * born that way arrived carrying only a name — no abbreviation, level,
-     * years or aliases. "The proper fix is pulling league up before team as
-     * we'll need to fill in the rest of the year information too … I'm ok
-     * putting extra steps in the user's face."
-     *
-     * So a league the batch will have to create becomes a row of its own,
-     * walked BEFORE the team that needs it, exactly as NEO-236 made a career
-     * team a row walked before the player that needs it. One question, asked
-     * once, answered with the whole record.
-     */
-    kind: v.union(v.literal("player"), v.literal("team"), v.literal("league")),
-    name: v.string(),
-    // NEO-236 — `normalizeTeamName`/`normalizePlayerName` of `name`, stored so
-    // the batch can be asked "do you already hold this name?" through an INDEX
-    // rather than by collecting it.
-    //
-    // That distinction is the whole reason the field exists, and it is a
-    // correctness one rather than a performance one. Staging a player's career
-    // teams (`stageCareerTeamRows`) has to dedupe against the rest of the
-    // batch, and it runs from `applyLookupResult` — which the 5-wide Wikidata
-    // pool calls concurrently, once per row, WHILE the commit prelude may be
-    // reading the same batch. A `.collect()` there would put every row of the
-    // batch in each of those mutations' read sets, which is precisely the
-    // optimistic-concurrency storm NEO-189 diagnosed and removed. An indexed
-    // read puts one narrow range in instead.
-    //
-    // Optional because rows written before this field existed have none; a
-    // batch is a per-fetch throwaway, so the only cost of a legacy row is that
-    // one staging pass cannot see it by key (it still dedupes against `teams`).
-    nameNormalized: v.optional(v.string()),
-    // NEO-96: reference, not a copied display label — see players.sportId.
-    // getBatch resolves this to a `sportValue` string for the wizard's label so
-    // the client never has to join.
-    sportId: v.id("selectorOptions"),
-    /**
-     * NEO-236 — where a row came from, when it was not a name off the
-     * checklist.
-     *
-     * Jason, 2026-09-05, on the wizard asking for a career team's Location and
-     * Name inline: "How does this dialog know which League the new team is in?
-     * I think we need to show a new team dialog instead of that inline thing."
-     * So a career team the batch will have to CREATE is no longer three cramped
-     * inputs on the player's step — it is a review row of its own, walked
-     * before the player, with the same New Team step a checklist team gets.
-     *
-     * `playerRowId` is the row that needed it, which is what lets the step say
-     * "Needed by: Travis Bazzana" and what lets the player's step tell a chip
-     * that is answered from one that is still waiting. `wikidataId` is the P54
-     * statement's team QID when Wikidata gave one — linkage, so the staged
-     * row's own lookup reads the right record instead of guessing from a label.
-     *
-     * Absent on every other row, which is what "this name came off the
-     * checklist" means. Additive: nothing reads it as a required field.
-     *
-     * ── NEO-248: `manualStint` — the years the operator typed ───────────────
-     *
-     * NEO-236 regression. A hand-typed career team is TWO facts: a team the
-     * batch may have to create, and a stint with years on it. Staging the team
-     * moved the walk onto that team's own New Team step, and the years — which
-     * lived only in the wizard's per-row React state — were dropped when the
-     * presented row changed. The operator came back to a chip that had lost
-     * "(2001–2005)", and nothing anywhere held them.
-     *
-     * So the stint travels with the step it caused. Present ONLY when the
-     * operator hand-typed it on the player's step; a Wikidata proposal never
-     * writes it, because its years are already on the player row's
-     * `enrichment.careerTeams` and a second copy is a second thing to disagree.
-     * That asymmetry is what lets the wizard rebuild exactly the hand-typed
-     * chips and no others.
-     */
-    source: v.optional(v.union(
-      v.object({
-        kind: v.literal("careerTeamOf"),
-        playerRowId: v.id("entityReviewQueue"),
-        wikidataId: v.optional(v.string()),
-        // NEO-248 — the years the operator typed, travelling with the step
-        // they caused. See the note above.
-        manualStint: v.optional(v.object({
-          fromYear: v.number(),
-          toYear: v.optional(v.number()),
-        })),
-      }),
-      /**
-       * NEO-254 — the same relationship one level up: a league row staged for
-       * the TEAM row that needs it.
-       *
-       * `teamRowId` is what lets the step say "Needed by: Vancouver Canucks"
-       * and what lets the team's own step tell a league that is answered from
-       * one still waiting. `wikidataId` is the P118 statement's league QID
-       * when Wikidata gave one — linkage, so the staged row's lookup reads the
-       * right record rather than guessing from a label, exactly as
-       * `careerTeamOf` does.
-       *
-       * No `manualStint`: a league is not a stint. NEO-248's field answers
-       * "which years did the operator type for this career team", and a league
-       * step has no years of its own — its dates live on the league record the
-       * step collects.
-       */
-      v.object({
-        kind: v.literal("leagueOf"),
-        teamRowId: v.id("entityReviewQueue"),
-        wikidataId: v.optional(v.string()),
-      }),
-    )),
-    status: v.union(
-      v.literal("pending"),
-      v.literal("ready"),
-      v.literal("error"),
-    ),
-    enrichment: v.optional(v.object({
-      wikidataId: v.optional(v.string()),
-      // player-only. Team NAMES, not ids — resolving them to real team rows is
-      // deferred to commit time (only once "create" is the confirmed
-      // decision), so a lookup during mere preview can never orphan a team row
-      // for a player the user ends up linking to someone else or never
-      // creates.
-      //
-      // NEO-236: at commit, each name is MATCHED against `teams` by its
-      // composed full name and linked when it hits. It is never inserted from
-      // the name itself — a row is created only from the operator's Location +
-      // Name in `decision.createTeams`, and a name with neither a match nor an
-      // entry there is dropped from the player's timeline rather than minted.
-      careerTeams: v.optional(v.array(v.object({
-        name: v.string(),
-        fromYear: v.number(),
-        toYear: v.optional(v.number()),
-        // NEO-236: the team's own Wikidata QID, off the P54 statement's value.
-        // LINKAGE ONLY — it selects which upstream record the staged team row's
-        // enrichment reads, and nothing user-facing is keyed on it. Carried
-        // because a staged career team is a real review row now, and looking it
-        // up by the QID Wikidata already gave us for this membership beats
-        // searching EntitySearch for its English label (which misses club and
-        // college sides, and can land on a different entity of the same name).
-        wikidataId: v.optional(v.string()),
-      }))),
-      // NEO-235, player-only. Team NAMES that Wikidata links to the player
-      // with NO usable start year (Tony Gwynn's "San Diego State Aztecs
-      // baseball" P54 statement carries no P580/P582 at all). They cannot
-      // become `careerTeams` entries — that shape requires `fromYear`, and
-      // synthesizing one from the player's work period fabricates a stint that
-      // never happened — so they are surfaced by name instead of dropped
-      // silently, for the wizard to show and an operator to date by hand.
-      undatedCareerTeams: v.optional(v.array(v.string())),
-      isHallOfFame: v.optional(v.boolean()),
-      // NEO-212, player-only disambiguation context. Wikidata routinely returns
-      // several entities for one card name ("Chris Johnson" is a running back,
-      // an outfielder and a British cyclist), and a bare label gave the
-      // operator nothing to choose on. All three are best-effort: a real but
-      // thinly-documented player has none of them.
-      // Wikidata's English `schema:description` ("American football running
-      // back").
-      description: v.optional(v.string()),
-      birthYear: v.optional(v.number()),
-      // Title of the English Wikipedia article (enwiki sitelink), so the wizard
-      // can link out to the full article for a human to confirm against.
-      enwikiTitle: v.optional(v.string()),
-      /**
-       * NEO-254, player-only — the NB player rows that already carry this
-       * row's normalized name in this sport.
-       *
-       * Present only when there is more than one. ONE match is not a choice:
-       * the commit prelude adopts it silently, exactly as it always has, and
-       * the name never reaches the wizard at all. Two or more IS a choice, and
-       * it is a choice only a human can make — the bulk preload (decision 3)
-       * makes same-name players ordinary rather than exotic, and `.first()` on
-       * the dedupe index would have quietly attached every 1990 "Bob Allen"
-       * card to whichever row Convex returned first.
-       *
-       * Written by `applyLookupResult` from the `players` table, not by a
-       * marketplace or by Wikidata: this is NB's own data, offered back to the
-       * operator as the FIRST thing they see. `careerSummary` is rendered
-       * server-side ("Padres 1982-2001") so the wizard does not have to join
-       * `teamYears` to `teams` per candidate to draw a one-line identity.
-       */
-      existingCandidates: v.optional(v.array(v.object({
-        playerId: v.id("players"),
-        name: v.string(),
-        birthYear: v.optional(v.number()),
-        careerSummary: v.string(),
-        /**
-         * NEO-254 — this candidate was on a roster in the SET'S year.
-         *
-         * The card-year narrowing (`players.narrowSameNamePlayersByCardYear`)
-         * resolves most same-name collisions on its own; a row that still
-         * reaches the wizard is one it could not, so the operator is choosing
-         * between people who were genuinely contemporaries — or between one
-         * whose stints we hold and one whose we do not.
-         *
-         * Absent means "we cannot say", NEVER "no": a candidate with no stints
-         * on file, and every candidate on a row whose set has no year, is
-         * unflagged. It is a hint on the evidence, not a verdict, which is why
-         * it never removes a candidate from the list.
-         */
-        activeInSetYear: v.optional(v.boolean()),
-        /**
-         * NEO-254 — the alias that answered, when the card's name is not this
-         * player's primary one.
-         *
-         * Without it the panel lists "Metta World Peace" under a card that
-         * says "Ron Artest" and the operator has to guess why. Absent when the
-         * primary name matched, which is the norm.
-         */
-        matchedAlias: v.optional(v.string()),
-        /**
-         * NEO-424 — the candidate's HOME sport label, present on candidates the
-         * batch took from the SET'S OWN HISTORY (a name already linked on a
-         * committed card of this set) rather than from the in-sport name index.
-         *
-         * Set history is not sport-scoped: Bo Jackson linked on the base set's
-         * card is the answer for his parallel too, whatever sport his row is
-         * filed under. So a history candidate can be in another sport, and the
-         * wizard labels it when this differs from the set's sport. Absent on a
-         * candidate `buildExistingPlayerCandidates` found, which is always in
-         * the row's own sport. A label resolved once at insert, never a key.
-         */
-        sportValue: v.optional(v.string()),
-      }))),
-      /**
-       * NEO-424, player-only — the ONE existing player the batch suggests for
-       * this name, which the operator still confirms.
-       *
-       * Rule E: a name with no answer in the set's sport and no set history
-       * may still have an obvious candidate — the same name in the prior year
-       * of the same product (`priorYearProduct`), or exactly one player of
-       * that name in ANY sport (`onlyNamesake`). The wizard puts "Link to
-       * <name> (<sportValue>)" first and demotes "Add as New Player anyway".
-       *
-       * `setHistory` / `hallOfFame` are the same suggestion after the operator
-       * pressed Change on a row the batch had AUTO-LINKED (`decision.
-       * autoLinked`): the link is undone, but the player it named is still the
-       * best guess, so it comes back as the primary rather than vanishing.
-       *
-       * Never a decision: nothing is linked until the operator says so. But
-       * like a same-name choice (NEO-332) it holds the Wikidata lookup back —
-       * the row is born `ready` and looked up only when the operator presses
-       * "Add as New Player anyway" (`entityReviewQueue.requestPlayerLookup`),
-       * so no New Team steps are staged ahead of "Link to <name>".
-       * `recordDecision`
-       * accepts a cross-sport link to exactly this `playerId` (and to any
-       * `existingCandidates` entry), re-pointing the row's sport to the
-       * player's home sport — the operator-typed Link to Existing stays
-       * sport-checked.
-       */
-      preselect: v.optional(v.object({
-        playerId: v.id("players"),
-        name: v.string(),
-        sportId: v.id("selectorOptions"),
-        sportValue: v.string(),
-        reason: v.union(
-          v.literal("priorYearProduct"),
-          v.literal("onlyNamesake"),
-          v.literal("setHistory"),
-          v.literal("hallOfFame"),
-          // NEO-490 rule 6b / team 2b: the card's team picked the player (or
-          // the card's player picked the team era). Comes back as the primary
-          // after Change, like the other two.
-          v.literal("careerTeam"),
-        ),
-      })),
-      // team-only
-      league: v.optional(v.string()),
-      // NEO-254, team-only — the league's OWN QID, off the same P118 statement
-      // as `league` above. Linkage: it is what the staged New League step's
-      // lookup reads instead of searching EntitySearch for a label.
-      leagueWikidataId: v.optional(v.string()),
-      // NEO-236: the place part of the team's name. Location, not city —
-      // see `teams.location`.
-      location: v.optional(v.string()),
-      yearsActive: v.optional(v.object({
-        from: v.number(),
-        to: v.optional(v.number()),
-      })),
-      colors: v.optional(v.object({
-        primary: v.optional(v.string()),
-        secondary: v.optional(v.string()),
-      })),
-      espnId: v.optional(v.string()),
-      // ── NEO-254: league-only, from `adapters/wikidata.lookupLeague` ───────
-      //
-      // Pre-fill for the New League step, never a value written anywhere on
-      // its own. `yearsActive` and `wikidataId` above are shared with the team
-      // shape — a league's years are the same shape as a team's — so only the
-      // two fields with no team counterpart are new here.
-      abbreviation: v.optional(v.string()),
-    })),
-    decision: v.optional(v.union(
-      v.object({
-        action: v.literal("create"),
-        // player-only: career-team entries the admin added by hand in the
-        // review wizard (in addition to whatever Wikidata found), for the
-        // case where Wikidata returned nothing or missed a team. Team NAMES,
-        // not ids — resolved to real team rows via get-or-create at commit
-        // time (same as enrichment.careerTeams above). Harmless-but-unused if
-        // ever present on a team-kind create decision; the team-kind UI path
-        // never populates it.
-        manualCareerTeams: v.optional(v.array(v.object({
-          name: v.string(),
-          fromYear: v.number(),
-          toYear: v.optional(v.number()),
-        }))),
-        // NEO-212, player-only: career-team labels that came back from
-        // Wikidata (enrichment.careerTeams) but that the admin UNCHECKED in
-        // the wizard. Commit must not create team rows for these. Recorded as
-        // an exclusion list rather than a rewritten careerTeams array so the
-        // decision stays auditable against what the lookup actually returned —
-        // "the operator rejected these two" rather than a silently shorter
-        // list. Names, matched against enrichment.careerTeams[].name.
-        excludedCareerTeamNames: v.optional(v.array(v.string())),
-        // ── NEO-236: the operator's Location + Name, team-kind only ─────────
-        //
-        // Jason, 2026-09-05: "We simply shouldn't allow for full string
-        // creation. Location & Team Name should be the input." A `teams` row
-        // born out of this queue is built from THESE two fields and nothing
-        // else — never from `name` above, which is the raw checklist string
-        // ("SD Padres", "PADRES", "Padres  "). The prelude has no fallback: a
-        // create decision on a team row with no `create` payload links if the
-        // name already matches a row and otherwise leaves the card without
-        // that team, for the attention walker's missing-team lane to catch.
-        //
-        // Optional because every row written before NEO-236 predates the
-        // field, and because it is meaningless on a player-kind decision.
-        // `location` is separately optional: a handful of names carry no
-        // place at all ("Athletics", "Orix Buffaloes"), and for those a blank
-        // Location is a real answer rather than an unfinished form. A college
-        // side is not one of those — its school is its location.
-        create: v.optional(v.object({
-          location: v.optional(v.string()),
-          name: v.string(),
-          /**
-           * NEO-254 — the era the operator typed on the New Team step.
-           *
-           * A sport can hold two teams under one name: the 1972-1996 Winnipeg
-           * Jets and the 2011- Jets. The era is the only thing that tells them
-           * apart, so a create decision that dropped it would let the prelude
-           * adopt whichever row the NAME already found — and every 1985 card in
-           * the set would bind to a franchise that did not exist yet.
-           *
-           * Optional and staying so: most teams are created with nobody
-           * knowing or caring, and an undated row is a normal row. It matters
-           * exactly when the name is already taken.
-           */
-          yearsActive: v.optional(v.object({
-            from: v.number(),
-            to: v.optional(v.number()),
-          })),
-          // ── NEO-236: the league the operator picked on the New Team step ──
-          //
-          // The bug this closes: a team created out of a PLAYER's career list
-          // used to be filed under the sport's default league, so Travis
-          // Bazzana's "Sydney Blue Sox" landed in Major League Baseball. The
-          // step now asks, and the prelude never falls back to the default
-          // when it has been answered.
-          //
-          // Three states, and the third is why `leagueId` is nullable rather
-          // than merely optional:
-          //   - an id      — an existing league in this sport;
-          //   - `null`     — "no league", said deliberately;
-          //   - absent     — not answered, so the prelude's own fallbacks
-          //                  (the enrichment's P118 label, then the sport
-          //                  default) still apply, exactly as before.
-          // `leagueName` names a league rather than picking one. NEO-331:
-          // LINK-ONLY at commit — the batch's own New League step, else an
-          // existing row by name or alias; a miss leaves the team with no
-          // league (never the sport default, never a minted level-less row).
-          leagueId: v.optional(v.union(v.id("leagues"), v.null())),
-          leagueName: v.optional(v.string()),
-          /**
-           * ── NEO-284: the "Also known as" list typed on the New Team step ──
-           *
-           * RAW spellings, exactly what `teams.aliases` stores — see that
-           * field for the contract (matched normalised, own full name never
-           * an alias, bounds in convex/teams.ts). `recordDecision` runs the
-           * list through `normalizeTeamAliasList` against the composed
-           * Location + Name before storing it, so the queue never holds an
-           * over-bound or self-referential list.
-           *
-           * Written ONLY on the insert branch at commit — the created row
-           * gets `aliases` and `syncTeamAliases` writes the index. When the
-           * prelude finds the name already held and adopts that row instead,
-           * this list is NOT merged onto it: the find branch never widens an
-           * existing row silently (the `findOrCreateLeague` precedent), and
-           * the operator who wants the string remembered links with
-           * `saveAsAlias` below.
-           *
-           * Optional: absent is an empty list, which is what every decision
-           * recorded before this field says.
-           */
-          aliases: v.optional(v.array(v.string())),
-        })),
-        // NEO-236, player-only: the same Location + Name, once per career team
-        // the operator ACCEPTED that matched no existing row.
-        //
-        // Career-team names arrive as full strings — a Wikidata P54 label, or
-        // whatever the operator typed into the manual entry — and the commit
-        // prelude links them when the composed name already exists. When it
-        // does not, this is the only thing that lets it create one, keyed by
-        // `sourceName` (the label as shown in the wizard, matched normalized)
-        // so the decision stays auditable against the proposals it answers:
-        // "the operator said the P54 label 'Padres' means San Diego / Padres".
-        // A career team with no entry here and no existing match is dropped
-        // from the player's `teamYears` rather than minting a row nobody
-        // reviewed.
-        createTeams: v.optional(v.array(v.object({
-          sourceName: v.string(),
-          location: v.optional(v.string()),
-          name: v.string(),
-        }))),
-        // NEO-307, player-only: a `createTeams` entry whose composed name is
-        // held as an ALIAS by exactly one other team in the sport, turned into
-        // a link to that team by `recordDecision` — as if the operator had
-        // picked it. A team may never take another team's alias as its name,
-        // so the create could never land; the commit links the stint to
-        // `teamId` instead (re-validated there: it must still exist and be in
-        // this sport). Keyed by `sourceName` exactly like `createTeams`. By id,
-        // never by name: a rename of the holder between decision and commit
-        // must not turn this back into a create.
-        linkTeams: v.optional(v.array(v.object({
-          sourceName: v.string(),
-          teamId: v.id("teams"),
-        }))),
-        /**
-         * ── NEO-254: the whole league record, league-kind only ──────────────
-         *
-         * Jason, preview test 2026-09-06: a league created from the New Team
-         * step's `Create <name>` pill "lands with only a name — no
-         * abbreviation, level, years, aliases". This is the payload that fixes
-         * that: the New League step asks for everything League Management
-         * edits, once, and the prelude writes it through `findOrCreateLeague`.
-         *
-         * `name` is the only required field — the rest are an invitation to
-         * complete the record while the operator is already here, pre-filled
-         * from `adapters/wikidata.lookupLeague`. An absent field is "not
-         * answered", and `findOrCreateLeague`'s gap-fill leaves an existing
-         * row's value alone rather than clearing it.
-         *
-         * Bounds mirror `convex/leagues.ts` exactly (name ≤120, abbreviation
-         * ≤16, ≤32 aliases of ≤64, years ≥1850 and `to >= from`) and are
-         * enforced in `recordDecision`, because `findOrCreateLeague` itself
-         * validates nothing — see the note there.
-         */
-        createLeague: v.optional(v.object({
-          name: v.string(),
-          abbreviation: v.optional(v.string()),
-          level: v.optional(v.union(
-            v.literal("major"), v.literal("minor"), v.literal("college"),
-            v.literal("international"), v.literal("independent"), v.literal("other"),
-          )),
-          yearsActive: v.optional(v.object({
-            from: v.number(),
-            to: v.optional(v.number()),
-          })),
-          aliases: v.optional(v.array(v.string())),
-          wikidataId: v.optional(v.string()),
-        })),
-        /**
-         * ── NEO-313, player-kind only: "he plays the set's sport too" ───────
-         *
-         * The review row's `sportId` is the sport the question is ANSWERED in:
-         * the set's sport by default, re-pointed by `switchRowSport` when the
-         * operator says this name belongs to a player from another sport. When
-         * that happens, a create makes the player in THAT sport (their home),
-         * and `true` here means: at COMMIT, also add the SET's sport to the
-         * new player's `playerSports` through `syncPlayerSports`, the one
-         * writer — Bo Jackson created in football off a baseball card, and
-         * baseball recorded as a sport he belongs to.
-         *
-         * Absent (or false) is a GUEST link: the card carries the player and
-         * nothing about the player row changes. A no-op when the row's sport
-         * already is the set's sport. Written at commit, never at decision
-         * time, like `saveAsAlias`: Cancel → Discard must leave no trace. No
-         * sync ever sets it.
-         */
-        addSetSport: v.optional(v.boolean()),
-        /**
-         * NEO-463, player-kind only — the operator confirmed a one-word name
-         * ("Walker") that is a fuller-named player's first or last name is a
-         * one-name player, not a piece of that player. Without it a plain
-         * create on such a name is refused by `recordDecision` and held back
-         * (no row written, the name reported unreviewed) by the commit. Stored
-         * only as `true`; absent says nothing was confirmed.
-         */
-        oneNamePlayer: v.optional(v.literal(true)),
-      }),
-      v.object({
-        action: v.literal("link"),
-        linkedPlayerId: v.optional(v.id("players")),
-        linkedTeamId: v.optional(v.id("teams")),
-        /**
-         * NEO-254, league-kind only — the existing league the operator picked
-         * on a New League step.
-         *
-         * Every team row that named the same league then uses THIS id rather
-         * than creating anything, which is the whole point of pulling the
-         * league up: the question is asked once for the batch, not once per
-         * team.
-         */
-        linkedLeagueId: v.optional(v.id("leagues")),
-        /**
-         * ── NEO-284, team-kind only: remember the parked string as an alias ─
-         *
-         * A link is the operator saying "this checklist string means that
-         * team". Without this the same string parks again on the next set
-         * that prints it, and the operator answers the same question forever.
-         * `true` means: at COMMIT, append this row's raw `name` (the string
-         * the checklist carried — "LSU", "SD Padres") to `linkedTeamId`'s
-         * `teams.aliases` through `normalizeTeamAliasList` + `syncTeamAliases`,
-         * the one writer. A string the team already answers to (its full
-         * name, or an alias it holds) is a no-op, not an error.
-         *
-         * Written at commit, NEVER at decision time: the wizard writes nothing
-         * until Confirm & Save, and Cancel → Discard must leave no trace on
-         * the team. This flag therefore only travels with the decision;
-         * `commitCardChecklist`'s prelude reads it in one pass over every
-         * team-kind link row, so a checklist team and a staged career team
-         * behave the same.
-         *
-         * Team-kind only. `recordDecision` refuses it on a player or league
-         * row — a player's alias has its own field and a league link is not a
-         * spelling — rather than ignoring it, so a client bug cannot record
-         * an intent the commit would silently drop.
-         *
-         * The wizard's checkbox DEFAULTS ON (Jason, 2026-09-16): the goal is
-         * to stop re-parking, and a wrong alias is one chip removal in Team
-         * Management. Absent means `false` — every link decision recorded
-         * before this field existed remembers nothing.
-         *
-         * The saved string may have arrived from a marketplace; that is
-         * initial input (product invariant 2a), and the operator's link is
-         * what makes it NB vocabulary. No sync ever sets this flag.
-         */
-        saveAsAlias: v.optional(v.boolean()),
-        /**
-         * NEO-313, player-kind only — the link twin of the create variant's
-         * `addSetSport`: at COMMIT, add the SET's sport to `linkedPlayerId`'s
-         * `playerSports` (a no-op when it is their home sport or already
-         * listed). Absent is a guest link that leaves the player untouched.
-         * See the create variant for the full contract.
-         */
-        addSetSport: v.optional(v.boolean()),
-        /**
-         * ── NEO-424: a link the BATCH made, not the operator ────────────────
-         *
-         * Rule A: a name already linked on a committed card anywhere in this
-         * set (base, inserts, parallels) to exactly one player is that player
-         * — any sport, no wizard step. Rule D: when no same-name candidate was
-         * active in the set's year and exactly one is a Hall of Famer, that
-         * one. Rule F gives teams rule A.
-         *
-         * Stored as an ordinary link decision on an ordinary review row, NOT
-         * as a `checklistNameResolutions` answer: that fast path runs before
-         * decisions in the commit prelude and would override the operator's
-         * Change. Here the wizard lists it under Decided ("Matched from this
-         * set", "Hall of Famer") with Change, and `clearDecision` turns it back
-         * into a question whose primary is the same player
-         * (`enrichment.preselect`).
-         *
-         * Present only on rows `startBatch` inserted already decided. Any
-         * decision the operator records replaces the whole object, so the flag
-         * cannot outlive the batch's own answer. Never carries `addSetSport`:
-         * an auto-link is a guest link and writes nothing to the player.
-         */
-        autoLinked: v.optional(v.union(
-          v.literal("setHistory"),
-          v.literal("hallOfFame"),
-          // NEO-490: rule 6b (the one same-name player with a stint on the
-          // card's team) or 2b (the one team era the card's player played
-          // for). Decided row, "played for the …" / "…'s club".
-          v.literal("careerTeam"),
-        )),
-      }),
-      // NEO-212: "this name is not a person / not a team". Carries no payload —
-      // nothing is created, nothing is linked, and the card keeps the raw name
-      // as free text. Commit writes an `entityReviewSkips` row so the name
-      // stays out of this set's wizard on every later fetch.
-      v.object({ action: v.literal("skip") }),
-    )),
-    // NEO-221: when a human last acted on this row (recordDecision,
-    // decideAllRemaining, clearDecision). ADDITIVE and optional — every row
-    // written before this field existed reads as `undefined`, which the
-    // abandoned-batch sweep treats as "never touched" and falls back to
-    // `_creationTime` for.
-    //
-    // It exists because `_creationTime` alone cannot tell an abandoned review
-    // session from a long one: a real operator working through 300 names on a
-    // first-time sync is still working on rows inserted hours ago, and a sweep
-    // keyed on creation would delete the session out from under them. This
-    // field is the "still alive" signal — see `sweepAbandonedBatches`.
-    lastTouchedAt: v.optional(v.number()),
-  })
-    .index("by_selector_option", ["selectorOptionId"])
-    .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"])
-    .index("by_selector_option_and_user", ["selectorOptionId", "createdByUserId"])
-    // NEO-236: "does this batch already hold this name?", asked once per career
-    // team a player's lookup proposes. See `nameNormalized` above for why this
-    // must not be a collect.
-    // NEO-236 security review, finding 3: "how many career-team steps does this
-    // player already have?", asked once per staging pass so the 64 cap is a
-    // bound PER PLAYER rather than per invocation. An indexed read on the
-    // nested field, for the same reason the name index exists — staging runs
-    // from `applyLookupResult`, where a collect of the batch is the NEO-189
-    // optimistic-concurrency storm.
-    .index("by_source_player", ["source.playerRowId"])
-    // NEO-254 — the league twin, for the per-team staging cap. Same reason the
-    // player one exists: the cap has to be counted through an index rather than
-    // by collecting the batch, because staging runs inside `applyLookupResult`
-    // five-wide under the pool while a commit may be reading the same rows.
-    .index("by_source_team", ["source.teamRowId"])
-    .index("by_batch_and_kind_and_name", [
-      "selectorOptionId",
-      "batchId",
-      "kind",
-      "nameNormalized",
-    ])
-    // NEO-99: lets the stale-pending sweep (crons.ts → sweepStalePendingRows)
-    // read only rows in a given status, oldest-first (every Convex index is
-    // ordered by its fields then `_creationTime` ascending). The sweep queries
-    // `status = "pending"` and ages the ones older than the cutoff to "error",
-    // so a lookup whose work item died mid-flight can never orphan a row on
-    // "Looking up…" forever. Cheap in steady state: pending rows resolve within
-    // seconds under the Wikidata pool, so the common run reads the oldest few,
-    // finds none stale, and stops.
-    .index("by_status", ["status"]),
-
-  // NEO-212: durable record of names an operator decided are NOT an entity.
-  //
-  // Written by commitCardChecklist for every entityReviewQueue row decided
-  // "skip", and consulted by resolveUnknownsAndStartBatch so a skipped name
-  // never re-enters the wizard for that set. Without it a skip only survives
-  // until the next fetch: entityReviewQueue rows are per-batch throwaways
-  // cleaned up on commit, so the same "CHECKLIST" header row would be handed
-  // back to the operator on every re-fetch of the set, forever.
-  //
-  // SCOPED PER SET, ON PURPOSE. The key is (selectorOptionId, kind,
-  // nameNormalized), not a global name list. The junk that warrants a skip is
-  // an artifact of one marketplace checklist's formatting, and a name that is
-  // noise on one set is very often a real player on another — "Chase" is a
-  // sponsor logo on one issue and a shortstop on the next. A global skip list
-  // would let one operator's judgement on one set silently suppress a real
-  // player everywhere, which is unrecoverable without an audit trail nobody
-  // would think to check. Per-set keeps the blast radius to the set the
-  // operator was actually looking at.
-  //
-  // `kind` is part of the key because a name can legitimately be skipped as a
-  // player while still being a valid team on the same set (and vice versa).
-  //
-  // `skippedByUserId` is audit-only — unlike entityReviewQueue.createdByUserId
-  // it does NOT scope reads. A skip is a fact about the set's data, so it
-  // applies to every operator who fetches that set afterwards; scoping it per
-  // user would just make each admin re-skip the same junk.
-  entityReviewSkips: defineTable({
-    selectorOptionId: v.id("selectorOptions"),
-    kind: v.union(v.literal("player"), v.literal("team")),
-    // Normalized form is what the lookup compares against, matching how
-    // players/teams are deduped elsewhere.
-    nameNormalized: v.string(),
-    // Raw name as it appeared on the checklist, kept for display in any future
-    // "review skipped names" admin surface — a normalized string is not
-    // something a human should be asked to read back.
-    name: v.string(),
-    skippedAt: v.number(),
-    skippedByUserId: v.string(),
-    // The commit that recorded (or last refreshed) this skip. Optional because
-    // rows written before this field existed have no answer, and because a
-    // commit can run without a review batch at all.
-    //
-    // Audit context for the admin read-back in `convex/entityReviewSkips.ts`,
-    // and the one field that makes "why is this name suppressed?" answerable:
-    // it points at the review batch whose decisions produced the row, which is
-    // what a Convex log search needs to reconstruct the session. Unlike
-    // `skippedByUserId` it is safe to return to the client — it identifies a
-    // batch, not a person.
-    batchId: v.optional(v.string()),
-  })
-    // The only read pattern: "was this exact name skipped for this set as this
-    // kind?" — one indexed point lookup per unknown name during resolution.
-    // The prefix also covers a per-set (and per-set-and-kind) listing, which is
-    // exactly what `entityReviewSkips.listForSet` reads for the admin
-    // read-back / undo surface.
-    .index("by_selector_option_and_kind_and_name", [
-      "selectorOptionId",
-      "kind",
-      "nameNormalized",
-    ]),
-
   // NEO-402 — a checklist fetch's player names that matched exactly one NB
   // player, kept so the commit that follows does not look each one up again.
   // Scratch for one (set, operator) review session; see
@@ -3841,6 +3382,21 @@ export default defineSchema({
     attributes: v.optional(v.array(v.string())),
     isRookie: v.optional(v.boolean()),
     isRelic: v.optional(v.boolean()),
+    // NEO-591 — the publisher checklist's team cell said "Prospect" /
+    // "Prospect (X)": the card is born with the Prospect Card attribute
+    // (`features.isProspect`). Follows `isRookie`'s route to NEW cards only.
+    isProspect: v.optional(v.boolean()),
+    // NEO-591 — a checklist-only row's team cell AS PRINTED ("Cincinnati Reds /
+    // Prospect (Frisco)"), for display only: Match Cards prints it on the row.
+    // Present only when the printed cell differs from `teams` read as one
+    // Prospect claim (a mixed Prospect row); nothing reads it back as data.
+    teamCell: v.optional(v.string()),
+    // DEPRECATED (NEO-591): an earlier build held the X of a "Prospect (X)"
+    // cell here, apart from `teams`. Nothing writes or reads either field now
+    // (the X is one of `teams`); kept optional so a stored candidate row still
+    // passes the schema.
+    prospectTeam: v.optional(v.string()),
+    prospectTeams: v.optional(v.array(v.string())),
     printRun: v.optional(v.number()),
     autographType: v.optional(v.string()),
     cardVariation: v.optional(v.string()),
@@ -3891,6 +3447,25 @@ export default defineSchema({
       // (`platformData: {}`). Widening only: no existing row changes.
       v.literal("checklistOnly"),
     ),
+    // NEO-591 — see `sourceNumbersValidator`.
+    sourceNumbers: v.optional(sourceNumbersValidator),
+    // NEO-591 (variations) — a checklist-only candidate the server created for
+    // a row that is a variation of a paired card (card "38" took row "38a";
+    // row "38b" becomes its own card). The operator is presumed to want it, so
+    // the client seeds it as Keeping. Optional; absent on every other row.
+    preKept: v.optional(v.literal(true)),
+    // NEO-591 — the number was DERIVED by the sync (minted for a SportLots-only
+    // variation, or swapped in by `preferCardNumber`), so it is not a number a
+    // marketplace printed for this card. The commit never matches a stored
+    // row by slot+number or by number alone for such a card (it matches by its
+    // own ref or inserts), so a derived "38b" cannot land on a stored "38b".
+    // A forged flag only narrows matching.
+    numberMinted: v.optional(v.literal(true)),
+    // NEO-591 (variations) — an opaque NB-side token shared by a card that took a
+    // checklist row and the variation cards made from that row's siblings, so
+    // the commit links them without searching by number. Never a marketplace
+    // value; held to 32 characters by the commit.
+    variationGroup: v.optional(v.string()),
     // NEO-496 — how a card paired with a publisher-checklist row, for Match
     // Cards' badge. Optional; absent on every existing row.
     checklistLink: v.optional(
@@ -3902,10 +3477,20 @@ export default defineSchema({
           v.literal("player"),
           v.literal("playerName"),
           v.literal("playerFuzzy"),
+          // NEO-591 — one row standing for several cards that share its
+          // number's stem (row "38" for cards 38, 38b, 38c).
+          v.literal("stem"),
         ),
+        // NEO-591 — the row's index in the rows the fetch was given, set when
+        // more than one card holds the same row, so Match Cards can tell which
+        // links share it (an Unlink re-lists the row only on the last holder).
+        rowKey: v.optional(v.number()),
         // playerFuzzy only, 0.92..1.
         confidence: v.optional(v.number()),
-        // A name pair with a numbered row: the row's number as printed.
+        // NEO-591 — the row's number as printed ("NNO" for a no-number row),
+        // set when it is not the number the card was fetched with. The card
+        // itself carries the more specific of the two (`preferCardNumber`;
+        // `revert.cardNumber` holds the one it replaced).
         checklistNumber: v.optional(v.string()),
         // NEO-496 — the row the server paired, and the card as it was before
         // the row was applied, so Match Cards can undo a wrong pair. Shapes:
@@ -3917,6 +3502,13 @@ export default defineSchema({
     // Pairing confidence for a matched row; the modal surfaces a fuzzy match
     // differently from an exact one.
     confidence: v.optional(v.number()),
+    // NEO-640 — which lookup paired a matched row's two marketplace halves.
+    // Written on matched rows only; missing = written before NEO-640 (the
+    // client treats a missing value on a matched row as "needs the operator").
+    // A rule 7 name pair whose numbers differ is not told apart here: it is
+    // scored below 1 and carries `sourceNumbers`. `marketplacePairViaValidator`
+    // is defined above this table and shared with `checklistCandidates.ts`.
+    pairedBy: v.optional(marketplacePairViaValidator),
 
     // ── streaming ─────────────────────────────────────────────────────────
     // Card-number stem. A parent and its variations share one, and the whole
@@ -4679,12 +4271,18 @@ export default defineSchema({
   }).index("by_owner_and_run", ["ownerId", "runKey"]),
 
   /**
-   * NEO-552 — the deployment-wide BSC call gate: the breaker and token bucket
+   * NEO-552 — the BSC call gate: the breaker and token bucket
    * every BuySportsCards call passes through (`bscFetch`, `bscCallGate.ts`;
    * policy in `lib/bscCallGatePolicy.ts`). It replaced the PR 451 per-endpoint
    * 429 cooldown table, whose definition is gone.
    *
-   * One row per (platform, scope). No ids, no user data: counters and times.
+   * One row per rate-limit domain (platform + scope): `deployment` for real
+   * BSC, `ns:<namespace>` per test user on the fake. No ids, no user data:
+   * counters and times.
+   * NEO-628: `scope` is the gate KEY (`lib/bscGateKey.ts`): `"deployment"`
+   * (the only one against real BSC), or `ns:<fake namespace>` against the
+   * fake, one per test user. A plain string, checked in code by one helper
+   * (`bscCallGate.gateScopeFor`) on every insert and read, which fails closed.
    *  - `tokens` / `refilledAt`: a debt bucket (may go negative: that is a wait
    *    the caller sleeps), refilled at the tuning's rate up to its burst.
    *  - `openUntil`: no call before it. `openCause` says which ladder opened it
@@ -4697,7 +4295,7 @@ export default defineSchema({
    */
   marketplaceCallGates: defineTable({
     platform: v.literal("bsc"),
-    scope: v.literal("deployment"),
+    scope: v.string(),
     tokens: v.number(),
     refilledAt: v.number(),
     openUntil: v.number(),
@@ -4710,6 +4308,25 @@ export default defineSchema({
     probeGrantedAt: v.optional(v.number()),
     updatedAt: v.number(),
   }).index("by_platform_scope", ["platform", "scope"]),
+
+  /**
+   * NEO-644 — the `bscTeamPool` work items a test user has on the lane, so an
+   * E2E spec can cancel its own (`testing.cancelMyBscTeamChecks`) and leave
+   * the one slot to the other shards. The workpool cannot list its items by
+   * argument, so the lane keeps the ids itself.
+   *
+   * Fake only: a row is written only for an item that carries `queuedBy`,
+   * which `queuedByForLane` sets only on the fake. Against real BSC nothing is
+   * ever written here. `bscTeamPool.enqueueItem` inserts the row; the item's
+   * completion (`onBscTeamCheckComplete`, cancelled included) deletes it.
+   * No card data: the Clerk subject and the pool's work id.
+   */
+  bscTeamLaneFakeItems: defineTable({
+    queuedBy: v.string(),
+    workId: v.string(),
+  })
+    .index("by_queuedBy", ["queuedBy"])
+    .index("by_workId", ["workId"]),
 
   /**
    * ── NEO-358: a collector's places to keep cards ───────────────────────────
@@ -5692,6 +5309,13 @@ export default defineSchema({
     drainScheduledAt: v.optional(v.number()),
     drainLeaseToken: v.optional(v.string()),
     drainLeaseExpiresAt: v.optional(v.number()),
+    /**
+     * NEO-555: held while one poll of this owner's orders runs, so the cron's
+     * poll and the testing "poll now" never overlap (`listingSales.claimPoll`).
+     * A poll that died holding it is replaced once `pollLeaseExpiresAt` passes.
+     */
+    pollLeaseToken: v.optional(v.string()),
+    pollLeaseExpiresAt: v.optional(v.number()),
     /** A kick landed while a drain ran: its release runs the next one at once. */
     drainRequested: v.optional(v.boolean()),
     /**

@@ -88,6 +88,7 @@ import {
 import { namesakesAcrossSports, normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import { teamFullName } from "../lib/teams/team-name";
+import { mapBounded, memoizeAsync } from "./lib/boundedConcurrency";
 
 /** Committed cards one `historyCardBatch` call reads (plus at most one probe row). */
 export const SET_HISTORY_CARDS_PER_CALL = 500;
@@ -269,23 +270,18 @@ export const historyPlayersByIds = internalQuery({
           `${SET_HISTORY_IDS_PER_CALL} per call — slice them`,
       );
     }
-    const sportValueById = new Map<string, string | null>();
-    const out: Array<{
-      playerId: Id<"players">;
-      nameNormalized: string;
-      aliasesNormalized: string[];
-      sportId: Id<"selectorOptions">;
-      sportValue: string | null;
-    }> = [];
-    for (const playerId of new Set(args.playerIds)) {
+    // NEO-592 — one point read per distinct player, issued together (up to 16
+    // to storage per round); the home-sport label is read once per sport
+    // through a PROMISE memo, so concurrent players of one sport still share
+    // one read. Rows come back in the order of the distinct ids.
+    const sportValueOf = memoizeAsync(async (sportId: Id<"selectorOptions">) => {
+      const sport = await ctx.db.get(sportId);
+      return sport?.value ?? null;
+    });
+    const rows = await mapBounded(Array.from(new Set(args.playerIds)), async (playerId) => {
       const player = await ctx.db.get(playerId);
-      if (!player) continue;
-      const sportKey = player.sportId as string;
-      if (!sportValueById.has(sportKey)) {
-        const sport = await ctx.db.get(player.sportId);
-        sportValueById.set(sportKey, sport?.value ?? null);
-      }
-      out.push({
+      if (!player) return null;
+      return {
         playerId,
         nameNormalized: player.nameNormalized,
         aliasesNormalized: Array.from(
@@ -296,10 +292,10 @@ export const historyPlayersByIds = internalQuery({
           ),
         ),
         sportId: player.sportId,
-        sportValue: sportValueById.get(sportKey) ?? null,
-      });
-    }
-    return out;
+        sportValue: await sportValueOf(player.sportId),
+      };
+    });
+    return rows.filter((row): row is NonNullable<typeof row> => row !== null);
   },
 });
 
@@ -326,24 +322,20 @@ export const historyTeamsByIds = internalQuery({
           `${SET_HISTORY_IDS_PER_CALL} per call — slice them`,
       );
     }
-    const out: Array<{
-      teamId: Id<"teams">;
-      sportId: Id<"selectorOptions">;
-      fullName: string;
-      keys: string[];
-    }> = [];
-    for (const teamId of new Set(args.teamIds)) {
+    // NEO-592 — independent point reads, issued together; order of the
+    // distinct ids kept, dangling ids left out.
+    const rows = await mapBounded(Array.from(new Set(args.teamIds)), async (teamId) => {
       const team = await ctx.db.get(teamId);
-      if (!team) continue;
+      if (!team) return null;
       const fullName = teamFullName(team);
       const keys = new Set(
         [fullName, team.name, ...(team.aliases ?? [])]
           .map((raw) => normalizeTeamName(raw))
           .filter((key) => key.length > 0),
       );
-      out.push({ teamId, sportId: team.sportId, fullName, keys: Array.from(keys) });
-    }
-    return out;
+      return { teamId, sportId: team.sportId, fullName, keys: Array.from(keys) };
+    });
+    return rows.filter((row): row is NonNullable<typeof row> => row !== null);
   },
 });
 
@@ -384,34 +376,31 @@ export const findOnlyNamesakes = internalQuery({
           `${NAMESAKE_NAMES_PER_CALL} per call — slice them`,
       );
     }
-    const sportValueById = new Map<string, string | null>();
-    const out: Array<{
-      nameNormalized: string;
-      playerId: Id<"players">;
-      sportId: Id<"selectorOptions">;
-      sportValue: string;
-    }> = [];
-    for (const nameNormalized of new Set(args.names)) {
+    // NEO-592 — the names are independent, so they are answered concurrently
+    // (each `namesakesAcrossSports` is still its own short sequence of reads);
+    // the sport label is read once per sport through a promise memo. Answers
+    // keep the order of the distinct names, and a name with none, several, an
+    // incomplete answer or an unlabelled sport is left out exactly as before.
+    const sportValueOf = memoizeAsync(async (sportId: Id<"selectorOptions">) => {
+      const sport = await ctx.db.get(sportId);
+      return sport?.value ?? null;
+    });
+    const rows = await mapBounded(Array.from(new Set(args.names)), async (nameNormalized) => {
       const { players: found, complete } = await namesakesAcrossSports(
         ctx,
         nameNormalized,
         2,
       );
       // An answer cut short by the alias cap is not "exactly one".
-      if (!complete || found.length !== 1) continue;
+      if (!complete || found.length !== 1) return null;
       const [player] = found;
-      const sportKey = player.sportId as string;
-      if (!sportValueById.has(sportKey)) {
-        const sport = await ctx.db.get(player.sportId);
-        sportValueById.set(sportKey, sport?.value ?? null);
-      }
-      const sportValue = sportValueById.get(sportKey);
+      const sportValue = await sportValueOf(player.sportId);
       // A sport row with no label cannot be named on the button; no preselect
       // is better than "Link to Bo Jackson ()".
-      if (!sportValue) continue;
-      out.push({ nameNormalized, playerId: player._id, sportId: player.sportId, sportValue });
-    }
-    return out;
+      if (!sportValue) return null;
+      return { nameNormalized, playerId: player._id, sportId: player.sportId, sportValue };
+    });
+    return rows.filter((row): row is NonNullable<typeof row> => row !== null);
   },
 });
 
@@ -447,7 +436,7 @@ const emptyHistory = (
  * product).
  */
 export async function scanSetHistory(
-  ctx: ActionCtx,
+  ctx: Pick<ActionCtx, "runQuery">,
   args: { selectorOptionId: Id<"selectorOptions"> },
 ): Promise<SetHistory> {
   const { nodeIds, truncated } = await ctx.runQuery(
@@ -521,7 +510,7 @@ export async function scanSetHistory(
  * name did not resolve, so an ordinary fetch never pays for it.
  */
 export async function setHistoryTeamKeys(
-  ctx: ActionCtx,
+  ctx: Pick<ActionCtx, "runQuery">,
   teamIds: ReadonlySet<string>,
 ): Promise<{
   teamsByKey: Map<string, Set<string>>;
@@ -601,4 +590,80 @@ export function setHistoryVerdict(
 export function onlyId(ids: ReadonlySet<string> | undefined): string | undefined {
   if (!ids || ids.size !== 1) return undefined;
   return ids.values().next().value;
+}
+
+// ─── Proof for what a client carries (NEO-656) ─────────────────────────────
+
+/**
+ * NEO-656 — which of the gate's set-history links the SERVER can prove.
+ *
+ * A gate link comes back from the browser, so its `origin: "setHistory"` is a
+ * label, not a fact. The one thing that label buys is crossing sports (main
+ * kept a set-history player OR team of another sport), so the commit asks this
+ * before it lets one through. The same scan the gate ran (`scanSetHistory`) and
+ * the same rule it linked by (rule A / F: the set linked the printed name to
+ * EXACTLY ONE player, or to exactly one team, `onlyId`) must yield the link's
+ * own id. No name or alias match stands in for it: a nickname-printed history
+ * link has neither, and main kept it.
+ *
+ * An incomplete scan proves nothing (its maps are empty), so a capped set fails
+ * closed. Nothing is scanned when no link asks.
+ */
+export async function proveSetHistoryLinks<
+  L extends {
+    kind: "player" | "team";
+    name: string;
+    playerId?: Id<"players">;
+    teamId?: Id<"teams">;
+    origin: string;
+  },
+>(
+  ctx: Pick<ActionCtx, "runQuery">,
+  selectorOptionId: Id<"selectorOptions">,
+  links: ReadonlyArray<L>,
+): Promise<L[]> {
+  const asked = links.filter((link) => link.origin === "setHistory");
+  if (asked.length === 0) return [];
+  const history = await scanSetHistory(ctx, { selectorOptionId });
+  if (!history.complete) return [];
+  const teamKeys = asked.some((link) => link.kind === "team")
+    ? await setHistoryTeamKeys(ctx, history.teamIds)
+    : null;
+  return asked.filter((link) =>
+    link.kind === "player"
+      ? !!link.playerId &&
+        onlyId(history.playersByName.get(normalizePlayerName(link.name))) ===
+          (link.playerId as string)
+      : !!link.teamId &&
+        onlyId(teamKeys?.teamsByKey.get(normalizeTeamName(link.name))) ===
+          (link.teamId as string),
+  );
+}
+
+/**
+ * NEO-656 (N1) — does the server itself offer `playerId` for this printed
+ * name? Ported from what the walk's lookup was handed: the set's own history
+ * players for the name (`tidyLeafFacts` -> `historyPlayerIds`, every player the
+ * set linked it to) and rule E1's prior-year pick (the same product one year
+ * earlier linked the name to exactly one player). Both come from
+ * `scanSetHistory`, the scan the gate runs, so a pick the walk offered under
+ * another spelling than the card's is the same pick here. A scan that hit a cap
+ * offers nothing.
+ */
+export async function setHistoryOffersPlayer(
+  ctx: Pick<ActionCtx, "runQuery">,
+  selectorOptionId: Id<"selectorOptions">,
+  name: string,
+  playerId: Id<"players">,
+): Promise<boolean> {
+  const key = normalizePlayerName(name);
+  if (!key) return false;
+  const history = await scanSetHistory(ctx, { selectorOptionId });
+  if (history.complete && history.playersByName.get(key)?.has(playerId as string)) return true;
+  const priorProductId = await ctx.runQuery(internal.setHistory.findPriorYearProduct, {
+    selectorOptionId,
+  });
+  if (!priorProductId) return false;
+  const prior = await scanSetHistory(ctx, { selectorOptionId: priorProductId });
+  return prior.complete && onlyId(prior.playersByName.get(key)) === (playerId as string);
 }

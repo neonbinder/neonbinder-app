@@ -1,0 +1,33 @@
+{
+  "file": "2024-topps-chrome-insert-future-stars.csv",
+  "mode": "leaf",
+  "options": {"setYear":"2024","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"FS-1","players":["Adley Rutschman"],"teams":["Baltimore Orioles"]},
+      {"number":"FS-2","players":["Gunnar Henderson"],"teams":["Baltimore Orioles"]},
+      {"number":"FS-3","players":["Corbin Carroll"],"teams":["Arizona Diamondbacks"]},
+      {"number":"FS-4","players":["Gabriel Moreno"],"teams":["Arizona Diamondbacks"]},
+      {"number":"FS-5","players":["Anthony Volpe"],"teams":["New York Yankees"]},
+      {"number":"FS-6","players":["Jordan Walker"],"teams":["St. Louis Cardinals"]},
+      {"number":"FS-7","players":["Francisco Alvarez"],"teams":["New York Mets"]},
+      {"number":"FS-8","players":["Justin Steele"],"teams":["Chicago Cubs"]},
+      {"number":"FS-9","players":["Kodai Senga"],"teams":["New York Mets"]},
+      {"number":"FS-10","players":["Michael Harris II"],"teams":["Atlanta Braves"]},
+      {"number":"FS-11","players":["Eury Perez"],"teams":["Miami Marlins"]},
+      {"number":"FS-12","players":["Christopher Morel"],"teams":["Chicago Cubs"]},
+      {"number":"FS-13","players":["Josh Jung"],"teams":["Texas Rangers"]},
+      {"number":"FS-14","players":["Matt McLain"],"teams":["Cincinnati Reds"]},
+      {"number":"FS-15","players":["Masataka Yoshida"],"teams":["Boston Red Sox"]},
+      {"number":"FS-16","players":["Riley Greene"],"teams":["Detroit Tigers"]},
+      {"number":"FS-17","players":["Triston Casas"],"teams":["Boston Red Sox"]},
+      {"number":"FS-18","players":["Yainer Diaz"],"teams":["Houston Astros"]},
+      {"number":"FS-19","players":["Ezequiel Tovar"],"teams":["Colorado Rockies"]},
+      {"number":"FS-20","players":["Brayan Rocchio"],"teams":["Cleveland Guardians"]}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

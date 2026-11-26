@@ -185,9 +185,11 @@ describe("ParallelTitlesDoor — opening on its own", () => {
   test("a self-opened dialog never lands focus in a field", async () => {
     render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} autoOpenKey="run-5" />);
     await waitFor(() => expect(dialog()).not.toBeNull());
-    const active = document.activeElement as HTMLElement;
-    expect(active.tagName).not.toBe("TEXTAREA");
-    expect(dialog()!.contains(active)).toBe(true);
+    // The dialog mounts before its focus move: that lands in a passive
+    // effect, which can flush after the commit waitFor saw (NEO-622). Wait on
+    // the real observable, then check where it landed.
+    await waitFor(() => expect(dialog()!.contains(document.activeElement)).toBe(true));
+    expect((document.activeElement as HTMLElement).tagName).not.toBe("TEXTAREA");
   });
 });
 
@@ -398,5 +400,191 @@ describe("ParallelTitlesDialog — leaving", () => {
     fireEvent.click(screen.getByRole("button", { name: NOT_NOW_LABEL }));
     await waitFor(() => expect(dialog()).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(door()));
+  });
+});
+
+describe("NEO-581 — the live count goes back to the host", () => {
+  const counts = (n: number) => [{ id: PARALLEL_ID, count: n }];
+  const answerCount = (n: number) => ({ ...page([]), failingInPage: n, cursor: null });
+
+  test("the load that opens the dialog reports each parallel's count", async () => {
+    const onCounts = vi.fn();
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} />);
+    await openByHand();
+    expect(onCounts).toHaveBeenCalledWith(counts(2));
+  });
+
+  test("nothing left to fix reports zero", async () => {
+    mockQuery.mockResolvedValue(page([]));
+    const onCounts = vi.fn();
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} />);
+    fireEvent.click(door());
+    await waitFor(() => expect(screen.getByText(ALL_TITLES_FIT)).toBeTruthy());
+    expect(onCounts).toHaveBeenLastCalledWith(counts(0));
+  });
+
+  test("a save recounts (counts only) and reports what is left before the door lets go", async () => {
+    const onCounts = vi.fn();
+    const active = vi.fn();
+    render(
+      <ParallelTitlesDoor
+        parallels={PARALLELS}
+        label={LABEL}
+        onCounts={onCounts}
+        onActiveChange={active}
+      />,
+    );
+    await openByHand();
+    mockQuery.mockResolvedValue(answerCount(1));
+    active.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: SAVE_TITLES_LABEL }));
+    await waitFor(() => expect(dialog()).toBeNull());
+    await waitFor(() => expect(active).toHaveBeenLastCalledWith(false));
+    expect(mockQuery).toHaveBeenLastCalledWith("failingTitles", {
+      parallelId: PARALLEL_ID,
+      wantCards: 0,
+    });
+    expect(onCounts).toHaveBeenLastCalledWith(counts(1));
+    // Reported before it let go: the host never sees "idle" with a stale count.
+    expect(onCounts.mock.invocationCallOrder.at(-1)!).toBeLessThan(
+      active.mock.invocationCallOrder.at(-1)!,
+    );
+  });
+
+  test("a recount reads every page", async () => {
+    const onCounts = vi.fn();
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} />);
+    await openByHand();
+    mockQuery
+      .mockResolvedValueOnce({ ...answerCount(3), cursor: "c1" })
+      .mockResolvedValueOnce(answerCount(4));
+    fireEvent.click(screen.getByRole("button", { name: NOT_NOW_LABEL }));
+    await waitFor(() => expect(dialog()).toBeNull());
+    await waitFor(() => expect(onCounts).toHaveBeenLastCalledWith(counts(7)));
+  });
+
+  test("a recount that fails says nothing and still lets go", async () => {
+    const onCounts = vi.fn();
+    const active = vi.fn();
+    render(
+      <ParallelTitlesDoor
+        parallels={PARALLELS}
+        label={LABEL}
+        onCounts={onCounts}
+        onActiveChange={active}
+      />,
+    );
+    await openByHand();
+    onCounts.mockClear();
+    mockQuery.mockRejectedValue(new Error("offline"));
+    fireEvent.click(screen.getByRole("button", { name: NOT_NOW_LABEL }));
+    await waitFor(() => expect(active).toHaveBeenLastCalledWith(false));
+    expect(onCounts).not.toHaveBeenCalled();
+  });
+
+  test("countOnMount counts without opening or touching a card", async () => {
+    mockQuery.mockResolvedValue(answerCount(1));
+    const onCounts = vi.fn();
+    render(
+      <ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} countOnMount />,
+    );
+    await waitFor(() => expect(onCounts).toHaveBeenCalledWith(counts(1)));
+    expect(mockQuery).toHaveBeenCalledWith("failingTitles", {
+      parallelId: PARALLEL_ID,
+      wantCards: 0,
+    });
+    expect(dialog()).toBeNull();
+  });
+  // A promise the test settles by hand, so two reads can land out of order.
+  function held<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  test("a mount recount still in flight when the button is pressed is dropped", async () => {
+    const mount = held<ReturnType<typeof answerCount>>();
+    mockQuery.mockReturnValueOnce(mount.promise);
+    const onCounts = vi.fn();
+    render(
+      <ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} countOnMount />,
+    );
+    await waitFor(() => expect(mockQuery).toHaveBeenCalledTimes(1));
+    // The press loads fresh (the default mock: two failing cards).
+    await openByHand();
+    expect(onCounts).toHaveBeenLastCalledWith(counts(2));
+    // The stale mount read lands after the press's: it must not overwrite it.
+    await act(async () => mount.resolve(answerCount(9)));
+    expect(onCounts).toHaveBeenCalledTimes(1);
+    expect(onCounts).toHaveBeenLastCalledWith(counts(2));
+  });
+
+  test("a mount recount that lands first is overtaken by a later press", async () => {
+    const press = held<ReturnType<typeof page>>();
+    mockQuery.mockResolvedValueOnce(answerCount(9));
+    const onCounts = vi.fn();
+    render(
+      <ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} countOnMount />,
+    );
+    await waitFor(() => expect(onCounts).toHaveBeenCalledWith(counts(9)));
+    mockQuery.mockReturnValueOnce(press.promise);
+    fireEvent.click(door());
+    await act(async () => press.resolve(page()));
+    await waitFor(() => expect(onCounts).toHaveBeenLastCalledWith(counts(2)));
+  });
+
+  test("leaving without a save when the cards were fixed elsewhere says why the button goes", async () => {
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} />);
+    await openByHand();
+    mockQuery.mockResolvedValue(answerCount(0));
+    fireEvent.click(screen.getByRole("button", { name: NOT_NOW_LABEL }));
+    await waitFor(() => expect(dialog()).toBeNull());
+    await waitFor(() => expect(screen.getByText(ALL_TITLES_FIT)).toBeTruthy());
+  });
+
+  test("leaving without a save with titles still failing says nothing", async () => {
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} />);
+    await openByHand();
+    mockQuery.mockResolvedValue(answerCount(2));
+    fireEvent.click(screen.getByRole("button", { name: NOT_NOW_LABEL }));
+    await waitFor(() => expect(dialog()).toBeNull());
+    await act(async () => {});
+    expect(screen.queryByText(ALL_TITLES_FIT)).toBeNull();
+  });
+
+  test("the silent recount on mount never speaks", async () => {
+    mockQuery.mockResolvedValue(answerCount(0));
+    const onCounts = vi.fn();
+    render(
+      <ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} countOnMount />,
+    );
+    await waitFor(() => expect(onCounts).toHaveBeenCalledWith(counts(0)));
+    expect(screen.queryByText(ALL_TITLES_FIT)).toBeNull();
+  });
+
+  test("during the recount after a close the button is busy and a press does nothing", async () => {
+    const active = vi.fn();
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onActiveChange={active} />);
+    await openByHand();
+    let answer: (value: unknown) => void = () => {};
+    mockQuery.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    active.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: NOT_NOW_LABEL }));
+    await waitFor(() => expect(dialog()).toBeNull());
+    await waitFor(() => expect(door().getAttribute("aria-busy")).toBe("true"));
+    expect(door().getAttribute("aria-disabled")).toBe("true");
+    mockQuery.mockClear();
+    fireEvent.click(door());
+    fireEvent.keyDown(door(), { key: "Enter" });
+    await act(async () => {});
+    // No second open started, so nothing can be released out from under it.
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(active).not.toHaveBeenCalled();
+    await act(async () => answer(answerCount(2)));
+    await waitFor(() => expect(active).toHaveBeenLastCalledWith(false));
+    expect(door().getAttribute("aria-busy")).toBeNull();
+    expect(door().getAttribute("aria-disabled")).toBeNull();
   });
 });

@@ -15,33 +15,20 @@
  * of those. A list of "every row of the sport" is then mostly names nothing
  * ever asked about: as a coverage report its `missing` list is noise, and as
  * a capture it is a day of Wikidata traffic. So the list is scoped to the
- * names a run actually sent to `lookup*Enrichment`, read from three places
+ * names a run actually sent to `lookup*Enrichment`, read from the place
  * the lookups leave a durable trace. No new table.
  *
- * (a) `players`, `teams` and `leagues` rows of the sport CREATED SINCE the
- *     run's boundary (below). A row the review wizard creates was a staged
- *     queue row first, and every staged row is looked up
- *     (`runEntityReviewLookup`); a player or league created on an admin page
- *     is looked up at creation (`enrichPlayer`, `enrichLeague`). A team's
+ * `players`, `teams` and `leagues` rows of the sport CREATED SINCE the
+ *     run's boundary (below). A player or league created on an admin page
+ *     is looked up at creation (`enrichPlayer`, `enrichLeague`), and the Tidy
+ *     Up walk looks a name up on demand (`lookupTidyName`) with the
+ *     answer held in the walk, never stored. A team's
  *     name is its COMPOSED full name (`teamFullName`), because that is what
  *     the wizard hands `lookupTeamEnrichment` and what ESPN's `displayName`
  *     matches. Teams and leagues pass their stored `externalIds.wikidataId`
  *     as `knownQid`.
- * (b) `entityReviewQueue` rows for the sport (since the boundary when there
- *     is one). The commit deletes its own batch, so these are the lookups
- *     still in flight or never committed — and on a deployment where the
- *     seed stalled at exactly the lookups this recording is meant to replace,
- *     (a) is empty while (b) holds every name that stalled it. For a queue
- *     row `knownQid` is `source.wikidataId` when present (a career team or
- *     league staged off a Wikidata statement — the id the live path would
- *     read), else `enrichment.wikidataId` when the lookup already answered.
- * (c) `entityReviewSkips` rows (since the boundary when there is one) whose
- *     set sits under the sport. A skipped name was staged, so it was looked
- *     up, but it never becomes an entity row and its queue row is gone after
- *     the commit; without this source a skip-heavy batch (the NEO-330
- *     Venezuelan Winter League flow skips 200 players) would be invisible.
  *
- * In every case the id is the same linkage the wizard's own lookup uses, so
+ * The id is the same linkage the lookup itself uses, so
  * the recording reads the record the row is linked to rather than searching
  * for its label.
  *
@@ -52,11 +39,11 @@
  * catalogue row is older than anything a run creates. The boundary is the
  * caller's `since` (ms since the epoch) when given; otherwise the
  * `_creationTime` of the OLDEST `year` row in `selectorOptions`. That is
- * structural rather than a guess: a name reaches the review wizard only
+ * structural rather than a guess: a name reaches a lookup only
  * through a set, a set hangs off a year, and the CI seed's catalogue load
  * replaces `selectorOptions` with sport rows only, so the first year row is
  * the first thing the seed builds. With no year row at all (no set was ever
- * built) the entity tables contribute nothing and (b)/(c) are read whole.
+ * built) the entity tables contribute nothing.
  *
  * Every source is an index RANGE from the boundary (`by_sport_id` and the
  * built-in `by_creation_time` both end in `_creationTime`), so the reads
@@ -66,7 +53,7 @@
  * catalogue rows; the per-source cap then stops the read and the result
  * says so in `truncatedSources` — pass `since` there.
  *
- * Known gap, by construction: a staged name the operator LINKED to an
+ * Known gap, by construction: a name the operator LINKED to an
  * existing row leaves no row of its own (and the alias tables carry no sport
  * index to range over), so it is not listed. The recording's own §4a
  * procedure adds those by hand.
@@ -96,11 +83,12 @@
  *       '{"confirm":"CAPTURE_ENRICHMENT_FIXTURES","sportQid":"Q5369"}'
  *
  * A capture holds only the names one run looked up, so its `fixture.entries`
- * are MERGED into the committed file (the runbook's merge step), never
+ * (an array of `{ key, entry }`: a Convex return value cannot carry an accented
+ * key as a field name) are MERGED into the committed file (the runbook's merge step), never
  * written over it: the file also carries batches recorded on other runs.
  *
  * `offset`/`limit` page the name list when a single run would outlast the
- * CLI's wait; merge the pages' `entries` objects by hand (keys are unique
+ * CLI's wait; merge the pages' `entries` arrays by hand (keys are unique
  * across pages). `since` overrides the boundary above for both actions.
  * `skippedTransport` lists names whose lookup did not
  * complete — a timeout, a 429, ESPN down — and which were therefore NOT
@@ -115,7 +103,6 @@ import { ConvexError, v, type Infer } from "convex/values";
 import { internalAction, internalQuery, type QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { findSportForSelectorOption } from "./cardChecklist";
 import { teamFullName } from "../lib/teams/team-name";
 import { isWikidataQid } from "../lib/players/wikidata-id";
 // Not from `./adapters/wikidata`: that module is `"use node"`, and a V8 module
@@ -126,7 +113,7 @@ import {
   captureItemValidator,
   captureSkipValidator,
   captureSportValidator,
-  fixtureFileValidator,
+  captureFixtureValidator,
   fixtureKey,
   hasFixtureEntry,
   type EnrichmentFixtureEntry,
@@ -173,21 +160,14 @@ function assertCaptureArmed(confirm: string): void {
 
 /**
  * Per-SOURCE ceiling on the rows one name list reads (each of `players`,
- * `teams`, `leagues`, `entityReviewQueue`, `entityReviewSkips`). A CI run
- * creates and stages a few hundred names; 2 000 is several runs' worth, and
- * five sources at this cap stay well inside a query's document and byte
+ * `teams`, `leagues`). A CI run
+ * creates a few hundred names; 2 000 is several runs' worth, and
+ * three sources at this cap stay well inside a query's document and byte
  * budgets even for `players` rows carrying long `teamYears`. Past it the
  * source is cut, never silently: it is named in `truncatedSources`, the
  * coverage report says so, and a capture refuses.
  */
 export const MAX_ROWS_PER_SOURCE = 2_000;
-
-/**
- * Distinct sets whose sport a list will resolve for `entityReviewSkips` rows
- * (each is an ancestor walk of a handful of `db.get`s). Past it the skips of
- * the remaining sets are left out and the source is reported as truncated.
- */
-export const MAX_SKIP_SETS = 200;
 
 /** How many names go to the node action per call, so no single call runs long. */
 const CHUNK = 25;
@@ -276,16 +256,12 @@ type LookedUpNames = Infer<typeof lookedUpNamesValidator>;
 
 /**
  * The names this deployment's runs looked up for the sport (see the header:
- * entity rows created since the boundary, open review-queue rows, skipped
- * names), as the lookups would be asked for them, deduped by `fixtureKey`
- * (an entity row wins over a queue row, a queue row over a skip), in a
- * stable order (kind, then name by code point) so `offset`/`limit` paging is
+ * entity rows created since the boundary), as the lookups would be asked for
+ * them, deduped by `fixtureKey`, in a stable order (kind, then name by code point) so `offset`/`limit` paging is
  * repeatable across calls.
  *
  * Bounded: every read is an index range from the boundary capped at
- * `MAX_ROWS_PER_SOURCE + 1`, and at most `MAX_SKIP_SETS` ancestor walks. The
- * queue and the skips have no `sportId` index, so they range over the
- * built-in `by_creation_time` and are filtered to the sport in memory.
+ * `MAX_ROWS_PER_SOURCE + 1`.
  */
 export const listLookedUpNames = internalQuery({
   args: { sportId: v.id("selectorOptions"), since: v.optional(v.number()) },
@@ -300,7 +276,7 @@ export const listLookedUpNames = internalQuery({
     };
     const take = MAX_ROWS_PER_SOURCE + 1;
 
-    // (a) Entity rows created since the boundary. With no boundary these
+    // Entity rows created since the boundary. With no boundary these
     // would be the whole catalogue, which nothing looked up: skip them.
     const [players, teams, leagues] =
       since === null
@@ -319,21 +295,6 @@ export const listLookedUpNames = internalQuery({
               .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId).gte("_creationTime", since))
               .take(take),
           ]);
-
-    // (b) and (c): staged names. Whole-table when there is no boundary —
-    // these tables only ever hold names a lookup was asked about.
-    const queueRows = await (since === null
-      ? ctx.db.query("entityReviewQueue").take(take)
-      : ctx.db
-          .query("entityReviewQueue")
-          .withIndex("by_creation_time", (q) => q.gte("_creationTime", since))
-          .take(take));
-    const skipRows = await (since === null
-      ? ctx.db.query("entityReviewSkips").take(take)
-      : ctx.db
-          .query("entityReviewSkips")
-          .withIndex("by_creation_time", (q) => q.gte("_creationTime", since))
-          .take(take));
 
     const knownQidOf = (id: string | undefined): { knownQid: string } | Record<never, never> =>
       id && isWikidataQid(id) ? { knownQid: id } : {};
@@ -355,41 +316,11 @@ export const listLookedUpNames = internalQuery({
         }),
       ),
     ];
-    const fromQueue: CaptureItem[] = cap("entityReviewQueue", queueRows)
-      .filter((row) => row.sportId === args.sportId)
-      .map(
-        (row): CaptureItem => ({
-          kind: row.kind,
-          name: row.name,
-          // The staged id first: it is the record the live path READS rather
-          // than a search result, so it is the stronger linkage.
-          ...knownQidOf(row.source?.wikidataId ?? row.enrichment?.wikidataId),
-        }),
-      );
-
-    // A skip carries its SET, not its sport: resolve each distinct set once.
-    const sportOfSet = new Map<Id<"selectorOptions">, Id<"selectorOptions"> | undefined>();
-    let skipSetsCut = false;
-    const fromSkips: CaptureItem[] = [];
-    for (const row of cap("entityReviewSkips", skipRows)) {
-      if (!sportOfSet.has(row.selectorOptionId)) {
-        if (sportOfSet.size >= MAX_SKIP_SETS) {
-          skipSetsCut = true;
-          continue;
-        }
-        sportOfSet.set(row.selectorOptionId, await findSportForSelectorOption(ctx, row.selectorOptionId));
-      }
-      if (sportOfSet.get(row.selectorOptionId) === args.sportId) {
-        fromSkips.push({ kind: row.kind, name: row.name });
-      }
-    }
-    if (skipSetsCut) truncatedSources.push("entityReviewSkips (sets)");
-
     // Union, deduped by fixture key, first source wins. Every item here is
     // the same sport, so the key's sport segment is a constant and an empty
     // one dedupes exactly as the real QID would.
     const byKey = new Map<string, CaptureItem>();
-    for (const item of [...fromEntities, ...fromQueue, ...fromSkips]) {
+    for (const item of fromEntities) {
       const key = fixtureKey(item.kind, "", item.name);
       if (!byKey.has(key)) byKey.set(key, item);
     }
@@ -408,7 +339,7 @@ export const listLookedUpNames = internalQuery({
 // ---------------------------------------------------------------------------
 
 const captureResultValidator = v.object({
-  fixture: fixtureFileValidator,
+  fixture: captureFixtureValidator,
   skippedTransport: v.array(captureSkipValidator),
   /** Looked-up names for the sport (see the header), before paging. */
   total: v.number(),
@@ -480,9 +411,13 @@ export const captureFromCli = internalAction({
       skippedTransport.push(...result.skippedTransport);
     }
 
-    // Sorted keys, so two captures of the same deployment diff cleanly.
-    const sortedEntries: Record<string, EnrichmentFixtureEntry> = {};
-    for (const key of Object.keys(entries).sort()) sortedEntries[key] = entries[key];
+    // Sorted keys, so two captures of the same deployment diff cleanly. An
+    // array of `{ key, entry }`, not an object: a key can carry a non-ASCII
+    // character (an accented name), which a Convex return value refuses as a
+    // field name.
+    const sortedEntries: Array<{ key: string; entry: EnrichmentFixtureEntry }> = Object.keys(entries)
+      .sort()
+      .map((key) => ({ key, entry: entries[key] }));
 
     console.log(
       JSON.stringify({
@@ -491,7 +426,7 @@ export const captureFromCli = internalAction({
         total: listed.items.length,
         offset,
         scanned: page.length,
-        recorded: Object.keys(sortedEntries).length,
+        recorded: sortedEntries.length,
         skippedTransport: skippedTransport.length,
         since: listed.since,
         sinceSource: listed.sinceSource,

@@ -4,7 +4,7 @@
  * ## Why a derivation and not a review-queue row
  *
  * The first design for reconciling teamless cards added a third
- * `entityReviewQueue` kind and rode the commit wire: rows created during the
+ * review-row kind and rode the commit wire: rows created during the
  * fetch, decided in the wizard, applied by the commit. That works only for
  * cards a sync is about to touch. The cards that actually need attention are
  * the ones ALREADY COMMITTED — dev's 2026 Topps base has ten teamless League
@@ -28,6 +28,12 @@
 // NEO-335: the title/aspect rules live in `listingInputs.ts`, which is as
 // browser-safe as this module (pure features only, no server imports).
 import { titleAttentionItems } from "./listingInputs";
+// NEO-645: "does this card have a name?" is one pure helper, read here and by the
+// checklist reader that mints the placeholder, so the two cannot disagree.
+import { hasCardName } from "../../lib/cards/unnamed-card";
+// NEO-645: the autograph rule reads NB's own vocabulary (attribute token and
+// format list). Both live in a module that is as browser-safe as this one.
+import { AUTOGRAPH_FORMATS, carriesAutographToken } from "./deriveCardFeatures";
 
 /**
  * One thing a card still needs from a human.
@@ -161,10 +167,54 @@ export type AttentionCardRow = {
    * against eBay's item-specific value cap.
    */
   cardVariation?: string;
+  /**
+   * NEO-645 — NB's own attribute tokens ("RC", "AU"). Read only by the new
+   * derivation, for the autograph rule: a card that carries the AU token and
+   * has no autograph FORMAT yet is a pink stop.
+   */
+  attributes?: readonly string[];
+  /**
+   * NEO-645 — the card's feature map. Read only for `autographed`: a value in
+   * `AUTOGRAPH_FORMATS` answers the autograph question; anything else ("None",
+   * absent) does not.
+   */
+  features?: Readonly<Record<string, string>>;
+  /**
+   * NEO-645 — the card's own name, read only by `needsName`: a card with no
+   * player must carry one. Absent on a fixture that does not say (then nothing
+   * is raised); a stored row always has the field.
+   */
+  cardName?: string;
+  /** NEO-645 — fields on which the sources still disagree. See the schema. */
+  sourceDisagreements?: readonly TidyDisagreement[];
 };
 
 /**
+ * Structural twin of `sourceDisagreementValidator` (schema.ts). A pick removes
+ * the entry from the card (NEO-656), so every entry present is open.
+ */
+export type TidyDisagreement = {
+  field: "players" | "teams";
+  values: ReadonlyArray<{ value: readonly string[]; sources: readonly string[] }>;
+};
+
+/**
+ * NEO-656 (J5/J6, Jason: "it should read real data and display pink/blue as
+ * appropriate depending on the current state of the data") — the career gaps the
+ * caller has read LIVE: `careerCoverage.careerGaps` answers them for the cards
+ * on screen. Ids are plain strings so this module stays free of generated code.
+ * Without it `deriveCardAttention` raises no careerGap (it stays pure).
+ */
+export type LiveCareerGap = { playerId: string; teamId: string };
+export type LiveAttention = { careerGaps?: ReadonlyArray<LiveCareerGap> };
+
+/**
  * NEO-102 — what this card still needs from a human.
+ *
+ * NEO-645: this is the LEGACY derivation, kept under its own name while the
+ * badge, the pill and the attention walker still read it. The One-card Tidy
+ * Up derivation is `deriveCardAttention` below. Both are removed together with
+ * the walker.
  *
  * ## The `missingTeam` rule, and why it has three clauses
  *
@@ -202,9 +252,12 @@ export type AttentionCardRow = {
  * `adapters/buysportscards.ts`) and then stamps `teamCheckDoneAt` through
  * `bscTeamCheck.markBscTeamCheckGivenUp`, writing no team — so the card lands
  * here, badged, for the operator to pick. Jason, 2026-10-11: "If a team lookup
- * never returns then the user must select a team."
+ * never returns then the user must select a team." A lookup that never
+ * returned is missing data, not a claim (invariant 8, NEO-639): the fixer
+ * offers the career as for any card, preselecting a player's set-year team
+ * only when he has exactly one.
  */
-export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
+export function deriveLegacyCardAttention(row: AttentionCardRow): AttentionItem[] {
   const items: AttentionItem[] = [];
 
   // ── NEO-221: a name on the card that links to nothing ────────────────────
@@ -268,9 +321,16 @@ export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
   return items;
 }
 
-/** Convenience for a row badge or a filter predicate. */
+/**
+ * Convenience for a row badge or a filter predicate.
+ *
+ * NEO-645: still the LEGACY rule (`deriveLegacyCardAttention`), so the grid
+ * filter and the pill keep their old meaning until the walk shell flips them
+ * to `deriveCardAttention`. Callers that want the new rule read
+ * `deriveCardAttention(row).level !== "none"`.
+ */
 export function needsAttention(row: AttentionCardRow): boolean {
-  return deriveCardAttention(row).length > 0;
+  return deriveLegacyCardAttention(row).length > 0;
 }
 
 /**
@@ -338,3 +398,207 @@ export const MAX_CARD_TEAMS = 8;
  * `MAX_CARD_TEAMS` has with `resolveTeamOnCardIdsForWrite`.
  */
 export const MAX_CARD_PLAYERS = 20;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NEO-645 — One-card Tidy Up: ONE derivation, two levels
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Pink ("fix") blocks Save and the card cannot be listed until it is answered.
+ * Blue ("check") is a stop for review, never something that hits nearly every
+ * card. A card with neither drops out of the walk.
+ */
+export type AttentionLevel = "fix" | "check" | "none";
+
+/**
+ * One thing the Tidy Up walk asks of a card, from the row alone (D3).
+ *
+ * Blue items carry no key (NEO-656): nothing is stored about having seen one.
+ *
+ * Nothing here carries a message string (see `AttentionItem`): the wording
+ * lives with the tiles. The numeric and name payloads exist so a tile can
+ * state the measurement without re-measuring the row.
+ *
+ * Notes ("Left out to fit", "Numbers didn't match") are deliberately NOT items: they only ever show on a
+ * card that is already a stop, and are worked out for the open card only.
+ */
+export type TidyAttentionItem =
+  // ── pink ──
+  // A `sourceDisagreements` entry.
+  | { level: "fix"; kind: "sourcesDisagree"; field: "players" | "teams" }
+  // `pendingPlayerNames` is not empty. A same-name pair is a pending name, so it is
+  // covered. A multi-player card with
+  // one name linked is still pink while another is pending.
+  | { level: "fix"; kind: "playerName"; names: string[] }
+  // NEO-645 (Jason, 2026-11-23): no player and no name. A card always has one.
+  | { level: "fix"; kind: "needsName" }
+  // `pendingTeamNames` is not empty (flips NEO-208's "pending counts as answered").
+  | { level: "fix"; kind: "teamName"; names: string[] }
+  // No team, no pending team name, no No-team stamp, not awaiting the team
+  // lookup, and no unsettled teams disagreement.
+  | { level: "fix"; kind: "noTeam" }
+  // The AU token with no autograph format on the card.
+  | { level: "fix"; kind: "autograph" }
+  // The stored title is over eBay's cap (`titleAttentionItems`).
+  | { level: "fix"; kind: "titleOverLimit"; length: number }
+  // ── blue ── (NEO-656: nothing is remembered as "seen"; a blue item shows
+  // for as long as the data holds it)
+  // J2: no stint covers the card's team by the card's year (read live, `LiveAttention`).
+  | { level: "check"; kind: "careerGap"; playerId: string; teamId: string }
+  // The generated title's core was cut to fit ("Left out where today's wizard asks").
+  | { level: "check"; kind: "titleCut" }
+  // The variation is over the item-specific value cap.
+  | { level: "check"; kind: "variationOverLimit"; length: number };
+
+export type TidyAttentionKind = TidyAttentionItem["kind"];
+
+/** What `deriveCardAttention` answers. `level` is "none" exactly when `items` is empty. */
+export type CardAttention = { level: AttentionLevel; items: TidyAttentionItem[] };
+
+/**
+ * NEO-645 — everything this card has to say. Order is the tiles' order:
+ * sources (2), players (3), name (3b), career (4), team (5), autograph (6),
+ * title (7).
+ *
+ * NEO-656 — the career gap is read LIVE (`live.careerGaps`), never from the row.
+ */
+function allTidyItems(row: AttentionCardRow, live?: LiveAttention): TidyAttentionItem[] {
+  const items: TidyAttentionItem[] = [];
+  const disagreements = row.sourceDisagreements ?? [];
+  const playerIds = row.playerIds ?? [];
+  const teamIds = row.teamOnCardIds ?? [];
+
+  // 2 — Sources disagree.
+  for (const d of disagreements) {
+    items.push({ level: "fix", kind: "sourcesDisagree", field: d.field });
+  }
+
+  // 3 — Player. A pending name is a pink row whatever else the card links: it
+  // is the NAME that has no answer.
+  const pendingPlayers = (row.pendingPlayerNames ?? []).filter((n) => n.trim().length > 0);
+  if (pendingPlayers.length > 0) {
+    items.push({ level: "fix", kind: "playerName", names: [...pendingPlayers] });
+  }
+
+  // 3b — Name (Jason, 2026-11-23: "there should always be a name associated
+  // with the card"). A card with nobody on it, and nobody waiting to be, names
+  // itself: "Team Card", "Checklist", whatever it is. NB's own placeholder
+  // ("Card #3") is no name. Never keyed on a marketplace's wording.
+  if (
+    playerIds.length === 0 &&
+    pendingPlayers.length === 0 &&
+    typeof row.cardName === "string" &&
+    !hasCardName(row.cardName)
+  ) {
+    items.push({ level: "fix", kind: "needsName" });
+  }
+
+  // 4 — Career (NEO-656: read live). Single-player cards only, the same as
+  // `deriveCareerPairs`: nobody can say which of several players a team
+  // belongs to. The entity must still be on the card.
+  if (playerIds.length === 1) {
+    for (const c of live?.careerGaps ?? []) {
+      if (c.playerId === playerIds[0] && teamIds.includes(c.teamId)) {
+        items.push({
+          level: "check",
+          kind: "careerGap",
+          playerId: c.playerId,
+          teamId: c.teamId,
+        });
+      }
+    }
+  }
+
+  // 5 — Team.
+  const pendingTeams = (row.pendingTeamNames ?? []).filter((n) => n.trim().length > 0);
+  if (pendingTeams.length > 0) {
+    items.push({ level: "fix", kind: "teamName", names: [...pendingTeams] });
+  }
+  const unsettledTeams = disagreements.some((d) => d.field === "teams");
+  if (
+    teamIds.length === 0 &&
+    pendingTeams.length === 0 &&
+    !row.teamNoneConfirmedAt &&
+    !isAwaitingTeamLookup(row) &&
+    !unsettledTeams
+  ) {
+    items.push({ level: "fix", kind: "noTeam" });
+  }
+
+  // 6 — Autograph. The format is NB's own vocabulary; "None" and absent both
+  // mean it has not been answered.
+  if (
+    carriesAutographToken(row.attributes) &&
+    !(AUTOGRAPH_FORMATS as readonly string[]).includes(row.features?.autographed ?? "")
+  ) {
+    items.push({ level: "fix", kind: "autograph" });
+  }
+
+  // 7 — Title. The over-limit title blocks; a cut title and a long variation
+  // are stops to check.
+  for (const t of titleAttentionItems(row)) {
+    if (t.kind === "titleOverLimit") {
+      items.push({ level: "fix", kind: "titleOverLimit", length: t.length });
+    } else if (t.kind === "titleTruncated") {
+      items.push({ level: "check", kind: "titleCut" });
+    } else {
+      items.push({ level: "check", kind: "variationOverLimit", length: t.length });
+    }
+  }
+  return items;
+}
+
+/**
+ * NEO-661 — why a card keeps its parallels from being built, or `null` when it
+ * does not. The parallels COPY the card, so two things hold the build:
+ *
+ *  - `"fix"`: the card shows pink (Jason, 2026-11-24: "if there is anything
+ *    that would cause a pink box we should hold the parallels back."), exactly
+ *    `deriveCardAttention(row).level === "fix"`, whatever the pink item is.
+ *    (NEO-645 J3 had held only unanswered names.)
+ *  - `"lookup"`: the card is still waiting on its team lookup
+ *    (`isAwaitingTeamLookup`; Jason, 2026-11-24, asked whether a card still
+ *    waiting should also hold the build: "Yes, wait for lookups"). Such a card
+ *    is not pink, so it needs its own answer.
+ *
+ * Pink wins when both hold. One pure rule, read by the server's refusal
+ * (`parallelChecklistBuild`, which words each reason) and the client's held
+ * auto-start (`CardChecklist`), so the two can never disagree.
+ */
+export type ParallelBuildHold = "fix" | "lookup";
+
+export function parallelBuildHold(row: AttentionCardRow): ParallelBuildHold | null {
+  if (deriveCardAttention(row).level === "fix") return "fix";
+  if (isAwaitingTeamLookup(row)) return "lookup";
+  return null;
+}
+
+/** NEO-661 — does this card hold its parallels back, for either reason? */
+export function blocksParallelBuild(row: AttentionCardRow): boolean {
+  return parallelBuildHold(row) !== null;
+}
+
+/**
+ * NEO-645 — what this card still needs from a human. The badge, the pill count
+ * and the walk membership all call this, so they cannot disagree (count = walk
+ * = pill).
+ *
+ * NEO-656 (Jason: "it should read real data and display pink/blue as
+ * appropriate depending on the current state of the data"): nothing is
+ * remembered. A blue item shows for as long as the data holds it, and is never
+ * suppressed. `level` is "fix" when any pink item is left, else "check" when
+ * any blue one is, else "none".
+ *
+ * The one blue fact that needs other tables, the career gap, comes in as
+ * `live.careerGaps` (`careerCoverage.careerGaps`); with no `live` the card
+ * raises none, so this stays a pure function of the row.
+ */
+export function deriveCardAttention(row: AttentionCardRow, live?: LiveAttention): CardAttention {
+  const items = allTidyItems(row, live);
+  const level: AttentionLevel = items.some((i) => i.level === "fix")
+    ? "fix"
+    : items.length > 0
+      ? "check"
+      : "none";
+  return { level, items };
+}

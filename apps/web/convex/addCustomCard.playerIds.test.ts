@@ -9,7 +9,7 @@
  *
  * The defect this closes: the quick-add form sent `players: [typedName]`,
  * which landed in `pendingPlayerNames` — a name the card CARRIED while linking
- * to nothing. `deriveCardAttention` then badged the row `unreviewedName` and
+ * to nothing. `deriveLegacyCardAttention` then badged the row `unreviewedName` and
  * sent the attention walker to ask the operator for a player they had just
  * typed in. Real ids from a `PlayerPicker` mean the card starts answered.
  *
@@ -25,7 +25,7 @@ import { api } from "./_generated/api";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import {
-  deriveCardAttention,
+  deriveLegacyCardAttention,
   MAX_CARD_PLAYERS,
 } from "./features/cardAttention";
 import schema from "./schema";
@@ -136,7 +136,7 @@ describe("addCustomCard — player ids (NEO-220)", () => {
   });
 
   test("a card born linked carries no unreviewedName — which is the whole point", async () => {
-    // `deriveCardAttention` is unchanged by this ticket. What changed is that
+    // `deriveLegacyCardAttention` is unchanged by this ticket. What changed is that
     // the quick-add path now satisfies its `playerIds` clause instead of
     // parking a name in `pendingPlayerNames` that the same rule then badges.
     // Asserted through the derivation so the two halves of NEO-220 are pinned
@@ -165,7 +165,7 @@ describe("addCustomCard — player ids (NEO-220)", () => {
     });
 
     const row = await getCard(t, cardId);
-    expect(deriveCardAttention(row!)).toEqual([]);
+    expect(deriveLegacyCardAttention(row!)).toEqual([]);
   });
 
   test("the SAME card written the OLD way IS badged — the before/after in one pair", async () => {
@@ -193,7 +193,7 @@ describe("addCustomCard — player ids (NEO-220)", () => {
     });
 
     const row = await getCard(t, cardId);
-    expect(deriveCardAttention(row!)).toEqual([
+    expect(deriveLegacyCardAttention(row!)).toEqual([
       { kind: "unreviewedName", names: ["Aaron Judge"] },
     ]);
   });
@@ -465,7 +465,7 @@ describe("addCustomCard — the legacy `players` name array", () => {
     const row = await getCard(t, cardId);
     expect(row!.playerIds).toEqual([judge]);
     expect(row!.pendingPlayerNames).toBeUndefined();
-    expect(deriveCardAttention(row!)).not.toContainEqual(
+    expect(deriveLegacyCardAttention(row!)).not.toContainEqual(
       expect.objectContaining({ kind: "unreviewedName" }),
     );
   });
@@ -493,6 +493,63 @@ describe("addCustomCard — the listing title names the LINKED players", () => {
     // The visible payoff of the ids: before this, a hand-added card's title
     // could only say what the operator typed, misspellings and all.
     expect(row!.listingTitle).toContain("Aaron Judge");
+  });
+
+  test("NEO-645: a quick-add card with no player carries its own name in its title, as Regenerate would write it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+
+    const named = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "102",
+      cardName: "CapperB",
+    });
+    const row = await getCard(t, named);
+    expect(row!.listingTitle).toContain("CapperB");
+    // One rule: the born title and the one Regenerate offers are the same.
+    const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, {
+      cardId: named,
+    });
+    expect(preview.title).toBe(row!.listingTitle);
+
+    // NB's own placeholder is no name, and a name that is the player says
+    // nothing the player does not.
+    const placeholder = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "103",
+      cardName: "Card #103",
+    });
+    expect((await getCard(t, placeholder))!.listingTitle).not.toContain("Card #");
+  });
+
+  test("NEO-645: a card name is cleansed and refused past a player name's length, without echoing it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+
+    const cleansed = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "104",
+      cardName: "  Team \u0000  Card  ",
+    });
+    expect((await getCard(t, cleansed))!.cardName).toBe("Team Card");
+
+    const tooLong = "Z".repeat(121);
+    const err = await asAdmin
+      .mutation(api.selectorOptions.addCustomCard, {
+        selectorOptionId: leafId,
+        cardNumber: "105",
+        cardName: tooLong,
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+    expect(String((err as { data?: unknown })?.data ?? err)).toContain("at most 120 characters");
+    expect(String((err as { data?: unknown })?.data ?? err)).not.toContain("ZZZZ");
+    const rows = await t.run((ctx) => ctx.db.query("cardChecklist").collect());
+    expect(rows.some((r) => r.cardNumber === "105")).toBe(false);
   });
 
   test("falls back to the pending names for an old-client write", async () => {
@@ -602,6 +659,6 @@ describe("addCustomCard on a parallel leaf (NEO-535)", () => {
     });
     const row = await getCard(t, cardId);
     expect(row!.features?.parallelName).toBe("Anime Red Refractors");
-    expect(row!.listingTitle.startsWith("2026 Bowman Anime Insert Red Refractors Parallel Murakami")).toBe(true);
+    expect(row!.listingTitle.startsWith("2026 Bowman Anime Red Refractors Parallel Murakami")).toBe(true);
   });
 });

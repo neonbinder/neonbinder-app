@@ -808,9 +808,10 @@ export default function PlayerPicker({
             />
 
             {createError && (
-              // a11y: NOT the brand pink — on this popover's graphite it is
-              // 4.4:1, under WCAG 1.4.3's 4.5:1 floor for normal text. The
-              // danger notice ink clears 4.5:1 on the popover in both modes.
+              // a11y: the error ink is the brand pink (`notice-danger-ink` IS
+              // `neon-pink-text`, NEO-606). The popover is `bg-raised`, where
+              // it reads 4.55:1 in dark and 5.92:1 in light, past WCAG
+              // 1.4.3's 4.5:1 floor for normal text.
               <p
                 role="alert"
                 className="px-2 py-1 text-xs text-notice-danger-ink"

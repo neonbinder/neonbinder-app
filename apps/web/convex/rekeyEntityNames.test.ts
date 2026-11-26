@@ -136,39 +136,6 @@ async function seedStale(t: T) {
       sportId: baseball,
       lastUpdated: NOW,
     });
-    const skip = await ctx.db.insert("entityReviewSkips", {
-      selectorOptionId: set,
-      kind: "player",
-      name: "C. J. Kayfus",
-      nameNormalized: "c j kayfus",
-      skippedAt: NOW,
-      skippedByUserId: "user_seed",
-    });
-    const queueBase = {
-      selectorOptionId: set,
-      batchId: "batch-1",
-      createdByUserId: "user_seed",
-      sportId: baseball,
-      status: "ready" as const,
-    };
-    const queuePlayer = await ctx.db.insert("entityReviewQueue", {
-      ...queueBase,
-      kind: "player",
-      name: "C. J. Kayfus",
-      nameNormalized: "c j kayfus",
-    });
-    const queueTeam = await ctx.db.insert("entityReviewQueue", {
-      ...queueBase,
-      kind: "team",
-      name: "Texas A&M Aggies",
-      nameNormalized: "a aggies m texas",
-    });
-    const queueLeague = await ctx.db.insert("entityReviewQueue", {
-      ...queueBase,
-      kind: "league",
-      name: "N. H. L.",
-      nameNormalized: "n h l",
-    });
     return {
       baseball,
       football,
@@ -181,10 +148,6 @@ async function seedStale(t: T) {
       teamAlias,
       league,
       franchise,
-      skip,
-      queuePlayer,
-      queueTeam,
-      queueLeague,
     };
   });
 }
@@ -197,8 +160,6 @@ const ALL_TABLES = [
   "teamAliases",
   "leagues",
   "franchises",
-  "entityReviewSkips",
-  "entityReviewQueue",
 ] as const;
 
 /** Every row of every table the re-key may touch, as plain JSON. */
@@ -247,7 +208,7 @@ describe("rekeyEntityNames: a call without both arms writes nothing", () => {
     expect(report.mode).toBe("dry_run");
     expect(report.armed).toBe(false);
     expect(report.isComplete).toBe(true);
-    for (const table of ALL_TABLES) expect(toRekey(report, table)).toBe(table === "entityReviewQueue" ? 3 : 1);
+    for (const table of ALL_TABLES) expect(toRekey(report, table)).toBe(1);
     expect(report.tables.every((r) => r.applied === 0)).toBe(true);
     expect(report.collisionCount).toBe(0);
     expect(report.samples).toContainEqual(
@@ -348,7 +309,6 @@ describe("rekeyEntityNames: an armed run", () => {
     expect(report.refusedCount).toBe(0);
     expect(report.tables.find((r) => r.table === "players")!.applied).toBe(1);
     expect(report.tables.find((r) => r.table === "teams")!.applied).toBe(1);
-    expect(report.tables.find((r) => r.table === "entityReviewQueue")!.applied).toBe(3);
 
     await t.run(async (ctx) => {
       const player = (await ctx.db.get(ids.player))!;
@@ -378,11 +338,6 @@ describe("rekeyEntityNames: an armed run", () => {
 
       expect((await ctx.db.get(ids.league))!.nameNormalized).toBe("nhl");
       expect((await ctx.db.get(ids.franchise))!.nameNormalized).toBe("dodgers la");
-      expect((await ctx.db.get(ids.skip))!.nameNormalized).toBe("cj kayfus");
-      expect((await ctx.db.get(ids.queuePlayer))!.nameNormalized).toBe("cj kayfus");
-      expect((await ctx.db.get(ids.queueTeam))!.nameNormalized).toBe("aggies am texas");
-      // The league-kind queue row takes the ORDERED key, like startBatch.
-      expect((await ctx.db.get(ids.queueLeague))!.nameNormalized).toBe("nhl");
     });
   });
 
@@ -524,6 +479,67 @@ describe("rekeyEntityNames: an armed run", () => {
     expect(report.isComplete).toBe(false);
     expect(report.message).toContain("maxPages");
     expect(report.tables.every((r) => r.applied === 0)).toBe(true);
+    expect(await snapshot(t)).toEqual(before);
+  });
+});
+
+describe("rekeyEntityNames: hyphenated names are already current (NEO-643)", () => {
+  /**
+   * Jason, 2026-11-22: a hyphen stays inside its token in a STORED key, so the
+   * rows main's code wrote ("smith-jones", "barons wilkes-barre") are current
+   * and the dry run, which is the runbook's check, must report 0 for every one
+   * of them. The first cut of NEO-643 spaced the hyphen in the stored key and
+   * this same dry run would have reported ~2,600 rows to re-key.
+   */
+  test("rows keyed by main's code report toRekey 0 in every table, and an armed run writes nothing", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    const baseball = await insertSelector(t, "sport", "Baseball");
+    const set = await insertSelector(t, "setName", "1996 Score");
+    await t.run(async (ctx) => {
+      const player = async (name: string, nameNormalized: string, aliases?: string[]) =>
+        ctx.db.insert("players", { name, nameNormalized, sportId: baseball, aliases, lastUpdated: NOW });
+      // An alias row is current only while the owner still lists the alias.
+      const smith = await player("Smith-Jones", "smith-jones", ["S-Jones"]);
+      await player("Shin-Soo Choo", "choo shin-soo");
+      await player("Min-jae Kim", "kim min-jae");
+      await player("Jae-min Kim", "jae-min kim");
+      await ctx.db.insert("playerSports", { playerId: smith, sportId: baseball, nameNormalized: "smith-jones" });
+      await ctx.db.insert("playerAliases", { playerId: smith, sportId: baseball, aliasNormalized: "s-jones" });
+      const team = await ctx.db.insert("teams", {
+        location: "Wilkes-Barre",
+        name: "Barons",
+        nameNormalized: "barons wilkes-barre",
+        sportId: baseball,
+        aliases: ["Barons of Wilkes-Barre"],
+        lastUpdated: NOW,
+      });
+      await ctx.db.insert("teamAliases", { teamId: team, sportId: baseball, aliasNormalized: "barons of wilkes-barre" });
+      await ctx.db.insert("leagues", {
+        level: "other" as const,
+        name: "Division I-A",
+        nameNormalized: "division i-a",
+        sportId: baseball,
+        lastUpdated: NOW,
+      });
+      await ctx.db.insert("franchises", {
+        name: "Wilkes-Barre Barons",
+        nameNormalized: "barons wilkes-barre",
+        sportId: baseball,
+        lastUpdated: NOW,
+      });
+    });
+    const before = await snapshot(t);
+
+    const report = await dryRun(t);
+
+    expect(report.isComplete).toBe(true);
+    expect(report.samples).toEqual([]);
+    for (const table of ALL_TABLES) expect(toRekey(report, table)).toBe(0);
+    expect(report.collisionCount).toBe(0);
+
+    const armed = await armedRun(t);
+    expect(armed.tables.every((r) => r.toRekey === 0 && r.applied === 0)).toBe(true);
     expect(await snapshot(t)).toEqual(before);
   });
 });

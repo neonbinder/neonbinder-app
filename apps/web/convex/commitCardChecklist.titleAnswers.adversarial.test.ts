@@ -14,7 +14,7 @@ import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "./features/listingLimits";
-import { deriveCardAttention } from "./features/cardAttention";
+import { deriveLegacyCardAttention } from "./features/cardAttention";
 import { LISTING_TITLE_KEPT_MAX } from "./features/listingInputs";
 
 beforeEach(() => {
@@ -49,10 +49,13 @@ const LONG_SET_NAME =
 
 /**
  * NEO-535 — the leaf's box text. The builder's title is over the cap, so
- * every card's title is built from the box and born `listingTitleTruncated`
- * (on the Card titles step): the flag these tests turn on and off.
+ * every card's title is built from the box. The box is exactly the 80
+ * characters the cap allows, so the card number still has to go (a Tidy Up
+ * cut): a title that fits only because of a short box, with nothing left out,
+ * is not flagged (NEO-645, Jason 2026-11-23), and these tests need the flag to
+ * turn on and off.
  */
-const BOX = "2026 Topps Sapphire";
+const BOX = "2026 Topps Chrome Sapphire Edition Platinum Anniversary Hobby Exclusive Pak Sevn";
 
 async function seedTree(t: T): Promise<Ids> {
   return t.run(async (ctx) => {
@@ -97,7 +100,7 @@ function card(opts: {
 }) {
   return {
     cardNumber: opts.cardNumber,
-    cardName: `Card ${opts.cardNumber}`,
+    cardName: `Card #${opts.cardNumber}`,
     teams: [],
     players: [],
     platformData: { sportlots: { ref: opts.slRef ?? `SL-${opts.cardNumber}` } },
@@ -131,7 +134,7 @@ async function settle(t: T) {
 }
 
 const attention = (row: Doc<"cardChecklist">) =>
-  deriveCardAttention(row as unknown as Parameters<typeof deriveCardAttention>[0]).map((i) => i.kind);
+  deriveLegacyCardAttention(row as unknown as Parameters<typeof deriveLegacyCardAttention>[0]).map((i) => i.kind);
 
 describe("listingTitle — the cap at 80 / 81, measured after the trim", () => {
   test("exactly 80 is stored verbatim and the stored row raises nothing", async () => {
@@ -203,7 +206,7 @@ describe("listingTitle — the cap at 80 / 81, measured after the trim", () => {
 
   test("the title is held to the cap the same way the stored-row attention rule reads it (UTF-16 length)", async () => {
     // An astral character is two UTF-16 units. The commit and
-    // deriveCardAttention both use `.length`, so what the commit accepts the
+    // deriveLegacyCardAttention both use `.length`, so what the commit accepts the
     // walker never flags: 40 of them (80 units) fit, 41 (82) are refused.
     const t = convexTest(schema, modules);
     const ids = await seedTree(t);

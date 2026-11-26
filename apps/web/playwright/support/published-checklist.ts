@@ -1,6 +1,6 @@
 /**
  * NEO-478 / NEO-482: the publisher's checklist, uploaded through the Set
- * Builder's "Add the official checklist" dialog before Sync card checklist.
+ * Builder's "Add the official checklist" dialog before the checklist fetch.
  *
  * A checklist with a team beside each card means a fetch asks BuySportsCards
  * for nothing per card (D4): the specs that used to make one `card-listing` call
@@ -17,8 +17,13 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, type Locator, type Page } from "@playwright/test";
-// The product's own rules for a team cell, so this file cannot drift from the parser (NEO-489).
-import { isNoClaimTeamText, isNoTeamText } from "../../lib/checklists/no-team";
+// NEO-591: the product's own parser, matcher and pairing core, so the facts below are what the
+// fetch computes, never a second copy of its rules (a restated matcher went stale silently when
+// the matcher became names-first).
+import { parsePublishedChecklist, type PublishedChecklistRow } from "../../lib/checklists/parse-published-checklist";
+import { matchPublishedChecklist, type ChecklistMatchResult } from "../../lib/checklists/match-published-checklist";
+import { pairNamesFirst } from "../../lib/cards/pair-names-first";
+import { expectAccessible } from "./fixtures";
 import { expectAfterMarketplace } from "./marketplace-wait";
 import type { FlowEnv } from "./env";
 import { columnSearch, drillToColdManufacturer, escapeRe, openAttributesPanel } from "./set-builder";
@@ -29,13 +34,27 @@ const DIRECTORY = fileURLToPath(new URL("../fixtures/checklists/", import.meta.u
 export const CHECKLISTS = {
   /** Baseball 2024 Topps Stars of MLB Network Base: the default wizard fixture (10 cards, "No Team" on every row: the hosts and the show card have none). */
   starsOfMlbNetwork: "2024-topps-stars-of-mlb-network-base",
+  /**
+   * The same file with card 1's row (Lauren Shehadi) LEFT OUT: 9 rows, so exactly one card is asked
+   * of BSC live, and BSC answers that it names no team (NEO-426's teamless-sport reader).
+   */
+  starsOfMlbNetworkShehadiLive: "2024-topps-stars-of-mlb-network-base-shehadi-live",
+  /**
+   * Baseball 2026 ONIT Athlete Arizona State Sun Devils Base, ALL 29 cards (`B-1`..`B-29`), every one
+   * naming "Arizona State Sun Devils". No spec uploads it whole: it is the source of the copy below.
+   */
+  onitArizonaState2026Full: "2026-onit-athlete-arizona-state-sun-devils-base",
+  /**
+   * The ONIT Arizona State file with `B-1`'s row (Austin Musso) LEFT OUT: 28 rows, so exactly one card
+   * is asked of BSC live, and its listing names the team (NEO-426: a listed team beats the default).
+   */
+  onitArizonaState2026OneLive: "2026-onit-athlete-arizona-state-sun-devils-base-one-live",
   tulsaOilers: "1995-hockey-tulsa-oilers-chl-base",
   memphisRiverKings: "1995-hockey-memphis-riverkings-chl-base",
   sanAntonioIguanas: "1995-hockey-san-antonio-iguanas-chl-base",
   fortWorthFire: "1995-hockey-fort-worth-fire-chl-base",
   oklahomaCityBlazers: "1995-hockey-oklahoma-city-blazers-chl-base",
   newHavenRavens: "1996-new-haven-ravens-rally-raffle-base",
-  welcomeToTheClub: "2025-topps-welcome-to-the-club-3x-mvp-base",
   bbmRookieEditionPremium: "2024-bbm-rookie-edition-premium-base",
   /**
    * Baseball 2024 Topps Chrome Base, the seed's own fetch: 334 rows, card #300's row LEFT OUT
@@ -65,8 +84,8 @@ export const CHECKLISTS = {
   futureStars2024: "2024-topps-chrome-insert-future-stars",
   /**
    * Future Stars as a publisher would number it: `101`..`119`, the same 19 players (FS-20 Brayan Rocchio left
-   * out). No number is a BSC `FS-n` or a SportLots number, and 19 rows against 20 cards means the counts
-   * differ, so every row pairs by player name and none is applied until the operator confirms.
+   * out). No number is a BSC `FS-n` or a SportLots number, so every row pairs to its card by player name
+   * (names first, NEO-591: digits against FS-n letters pair at the lower confidence) and FS-20 has no row.
    */
   futureStars2024PublisherNumbering: "2024-topps-chrome-insert-future-stars-publisher-numbering",
   /** Hockey 1995 Roanoke Express ECHL Base: 25 cards, every one `NNO`, so each pairs by player. */
@@ -111,30 +130,114 @@ export const CHECKLISTS = {
    * row pairs by player. It is no capture of BSC's answers: BSC names a team on none of these cards.
    */
   signatureSeries2026: "2026-donruss-insert-retro-1997-donruss-signature-series-autographs",
-  /** The same file with row 17 (Mike Lowell) left out: 13 rows against BSC's 14 cards, so the counts differ. */
+  /** The same file with row 17 (Mike Lowell) left out: 13 rows against BSC's 14 cards, so Lowell's card has no row. */
   signatureSeries2026WithoutLowell: "2026-donruss-insert-retro-1997-donruss-signature-series-autographs-without-lowell",
   /**
-   * The whole file with row 11 misspelled ("Rhett Lowdr"): 14 rows against 14 cards, so the counts match and
-   * the server pairs the 13 unique names itself, but Rhett Lowder's card and the misspelled row are left for
-   * the operator, so Match Cards opens for that one pair.
+   * The whole file with row 11 misspelled ("Rhett Lowdr"): the 13 exact names pair, and Rhett Lowder's card
+   * pairs with the misspelled row by a near name, its score lowered because the numbers differ (NEO-591).
    */
   signatureSeries2026MisspelledLowder: "2026-donruss-insert-retro-1997-donruss-signature-series-autographs-misspelled-lowder",
 } as const;
 
 export type ChecklistName = (typeof CHECKLISTS)[keyof typeof CHECKLISTS];
 
-/** What a fixture file holds, read off the file itself so the spec never restates a count. */
+/**
+ * NEO-640 (Jason, 2026-11-21: "we should only skip this if Matched is all at 100%"): does a fetch
+ * with this file, uploaded as is, open Match Cards? A run with two or more sources (BSC and the
+ * file are two) skips the dialog only when every card pairs with exactly one row by its number
+ * (or NNO card to NNO row by its player), no row is left over and no row names other players.
+ *
+ * `paused` is for a SportLots-paused deployment (the run's sources are BSC and the file): each
+ * entry agrees with the product's own matcher run over the file against BSC's cards (a capture IS
+ * BSC's cards; a trimmed file is matched against its whole one), and every file a spec uploads as
+ * is was confirmed on a run (SET-REGISTRY.md, "Published-checklist fixtures", lists the few that
+ * are read off the file only).
+ * `live` is what the set's SportLots side changes: a set with no SportLots id fetches the same two
+ * sources live, so it equals `paused`; a set the seed maps to SportLots too (Topps Chrome 2024,
+ * Stars of MLB Network) adds a third source, UNMEASURED since the pause, and is written `true`
+ * (a guess that opens costs the first live run one red, a guess that skips would commit unseen).
+ * A file nothing uploads whole (`...Full`) is read off the file. A spec's own edit to the rows
+ * (appended, dropped, renumbered or split) always opens it, which `usePublishersChecklist` applies.
+ * A repeated number blocks only the number pass (rule 7, D2): an exactly-one name still pairs.
+ */
+export interface MatchCardsFact {
+  paused: boolean;
+  live: boolean;
+}
+const opens = (paused: boolean, live = paused): MatchCardsFact => ({ paused, live });
+const MATCH_CARDS: Record<ChecklistName, MatchCardsFact> = {
+  // Every row is BSC's own card, by number; live, its SportLots base is mapped by the seed.
+  "2024-topps-stars-of-mlb-network-base": opens(false, true),
+  "2024-topps-stars-of-mlb-network-base-shehadi-live": opens(true),
+  "2026-onit-athlete-arizona-state-sun-devils-base": opens(false),
+  "2026-onit-athlete-arizona-state-sun-devils-base-one-live": opens(true),
+  "1995-hockey-tulsa-oilers-chl-base": opens(false),
+  "1995-hockey-memphis-riverkings-chl-base": opens(false),
+  "1995-hockey-san-antonio-iguanas-chl-base": opens(false),
+  "1995-hockey-fort-worth-fire-chl-base": opens(false),
+  "1995-hockey-oklahoma-city-blazers-chl-base": opens(false),
+  "1996-new-haven-ravens-rally-raffle-base": opens(false),
+  "2024-bbm-rookie-edition-premium-base": opens(false),
+  // Card #300's row is left out, so #300 is a BSC-only card.
+  "2024-topps-chrome-base": opens(true),
+  "2010-topps-insert-team-bonus": opens(false),
+  "2010-topps-insert-silk-collection": opens(false),
+  "2010-topps-insert-peak-performance": opens(false),
+  // PPR-CR and PPR-DU are each on two rows, so neither number pairs (rule 7, D2). PPR-CR's two
+  // players still pair by name; PPR-DU's two rows are both Dan Uggla, a tie left to the operator.
+  "2010-topps-insert-peak-performance-relics": opens(true),
+  "2010-topps-insert-turkey-red": opens(false),
+  "2009-topps-insert-career-best-jumbo-jerseys": opens(false),
+  "2026-football-bowman-base": opens(false),
+  "2014-football-topps-base": opens(false),
+  "1984-football-topps-base": opens(false),
+  "2011-leaf-pete-rose-legacy-base": opens(true),
+  "2026-topps-insert-profiles": opens(false),
+  "2024-topps-chrome-insert-future-stars": opens(false, true),
+  "2024-topps-chrome-insert-future-stars-publisher-numbering": opens(true),
+  "1995-hockey-roanoke-express-echl-base": opens(false),
+  "1995-hockey-roanoke-express-echl-base-one-live": opens(true),
+  "2025-bowman-draft-insert-bowman-draft-nights-autographs": opens(false),
+  "2025-bowman-draft-insert-prospect-dual-autographs": opens(true),
+  "2026-bowman-insert-anime": opens(false),
+  "1996-score-insert-dugout-collection-artists-proofs-series-1": opens(false),
+  "1995-hockey-halifax-mooseheads-qmjhl-base-full": opens(false),
+  "1995-hockey-halifax-mooseheads-qmjhl-base-five-live": opens(true),
+  // The publisher's own numbers: every row pairs by player name, shown with a %.
+  "2026-donruss-insert-retro-1997-donruss-signature-series-autographs": opens(true),
+  "2026-donruss-insert-retro-1997-donruss-signature-series-autographs-without-lowell": opens(true),
+  "2026-donruss-insert-retro-1997-donruss-signature-series-autographs-misspelled-lowder": opens(true),
+};
+
+/** NEO-640: does this fetch open Match Cards, on this run's SportLots switch? */
+export function opensMatchCards(facts: Pick<ChecklistFacts, "matchCards">, env: Pick<FlowEnv, "SL_PAUSED">): boolean {
+  return env.SL_PAUSED ? facts.matchCards.paused : facts.matchCards.live;
+}
+
+/**
+ * What a fixture file holds, read through the product's own parser and matcher so the spec never
+ * restates a count (NEO-591: the matcher is names first, and a copy of its rules here went stale
+ * the day it changed).
+ */
 export interface ChecklistFacts {
-  /** The file's absolute path, for `setInputFiles`. */
+  /** The file's absolute path, for `setInputFiles` (an edited upload is built from it). */
   path: string;
-  /** Data rows the dialog reads (a one-word number, or NNO; a row mixing "No Team" with a team is skipped): what its preview and the chip call "N rows". */
+  /** NEO-640: does a fetch with it open Match Cards (`opensMatchCards`)? */
+  matchCards: MatchCardsFact;
+  /** Data rows the dialog reads (`parsePublishedChecklist`): what its preview and the chip call "N rows". */
   rows: number;
+  /** The cards the rows were matched against (the capture's own rows, unless `cardsOf` names another file). */
+  cards: number;
+  /** Cards a row pairs with, by any tier (name, number, near name, a shared stem): the "Matched (n)" of a one-marketplace fetch. */
+  paired: number;
   /**
-   * The cards whose team the file answers: a card paired to exactly one row
-   * that names a team or says "No Team". A number on two rows pairs nothing
-   * (NEO-496 D2), so neither row counts. This is N in "Teams from your
-   * checklist: N of M cards"; M is the marketplace's cards
-   * (lib/checklists/checklist-teams-tally.ts).
+   * The cards whose team the rows answer: N in "Teams from your checklist: N of M cards"
+   * (lib/checklists/checklist-teams-tally.ts). A paired card counts when its row names a team, says
+   * "No Team" or makes a Prospect claim. Not counted: a card no row pairs (a tie, or no row), a
+   * checklist-only row (not a card until kept), a row that makes no claim (blank, "None").
+   * The cards here carry no team of their own (a bulk answer names none), so a team
+   * disagreement with the marketplace is the caller's to subtract (the 2014 Topps Football
+   * team-leader cards are the one registered set where it arises).
    */
   matched: number;
 }
@@ -173,149 +276,172 @@ export function checklistRows(name: ChecklistName): ChecklistRow[] {
   return rows.map((r) => ({ number: r[at("number")] ?? "", player: r[at("player")] ?? "", team: r[at("team")] ?? "" }));
 }
 
-/** A person's or club's name as the product compares two sides: accents, case, dots and spacing set aside. */
-function nameKey(name: string): string {
-  return name
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[.'’`]/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-/** The names of a "; "-joined cell, as one order-free key ("" when the cell names nobody). */
-function namesKey(cell: string): string {
-  return [...new Set(cell.split(";").map(nameKey).filter(Boolean))].sort().join("|");
-}
-
 /**
- * The names of a team cell ("; "-joined in the captured files). A whole cell that makes no
- * claim ("None", "N/A", "TBD", a dash, blank: `isNoClaimTeamText`) names nobody, exactly as
- * the parser reads it; "No Team" is a name here (the claim), kept apart by `isNoTeamText`.
+ * Changes made to a captured file before it is uploaded, each keyed by a card number the file
+ * prints on exactly one row (anything else throws, so a spec never uploads an unchanged file by
+ * mistake). Applied in this order: team cells, renumbering, splitting, dropping.
  */
-function teamNames(cell: string): string[] {
-  if (cell.trim() === "" || isNoClaimTeamText(cell)) return [];
-  return cell.split(";").map((n) => n.trim()).filter(Boolean);
+export interface ChecklistEdits {
+  /** A row's team cell replaced: `No Team` (the publisher's claim, NEO-489) or `Prospect (X)` (NEO-591). */
+  teamCells?: Readonly<Record<string, string>>;
+  /** A row printed under another number ("9a" -> "9": a checklist listing only the stem). */
+  renumber?: Readonly<Record<string, string>>;
+  /**
+   * A row printed as several (the publisher lists a variation the marketplace does not): each new row
+   * keeps the player and team, takes its own number, and `note` follows the player in the player
+   * cell ("(Photo Variation)", which the parser reads as the row's variation name).
+   */
+  split?: Readonly<Record<string, ReadonlyArray<{ number: string; note?: string }>>>;
+  /** Rows left out (a variation the publisher does not list). */
+  drop?: readonly string[];
+  /**
+   * Rows appended (NEO-574): rows the publisher lists that the marketplace has no card for (a spec's
+   * own player on cards only the checklist names, kept in Match Cards). Throws when a row's number is
+   * already in the file, so it can only ever ADD checklist-only rows. Applied after every other edit.
+   */
+  extraRows?: readonly ChecklistRow[];
 }
 
-// A number cell is read when it is one word of letters, digits, "." and "-" (any case; "1a",
-// "PPR-DLa", "TBD"), with a leading "#" and a trailing "." or ":" set aside (NEO-489, D6), or
-// is the unnumbered "NNO" (kept as a row; a card printed with no number is paired by player).
-// Anything else is a skipped line.
-const numberOf = (r: ChecklistRow) => r.number.trim().replace(/^#/, "").replace(/[.:]$/, "");
-const isNnoRow = (r: ChecklistRow) => numberOf(r).toUpperCase() === "NNO";
-const readable = (r: ChecklistRow) => /^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(numberOf(r)) || isNnoRow(r);
-/** "No Team" beside a real team in one cell is a row the product skips (it cannot say both). */
-const sayingBoth = (r: ChecklistRow) => {
-  const names = teamNames(r.team);
-  return names.some(isNoTeamText) && !names.every(isNoTeamText);
-};
-/** The rows the dialog reads: readable, and not saying both "No Team" and a team. */
-const readRows = (name: ChecklistName) => checklistRows(name).filter(readable).filter((r) => !sayingBoth(r));
-/**
- * A paired row answers its card's team when it names a team or says "No Team" (a card with no
- * team, the publisher's own claim). A BLANK cell, or one saying "None", "N/A", "TBD" or a dash,
- * makes no claim, so BSC is still asked for that card.
- */
-const answersTeam = (r: ChecklistRow) => teamNames(r.team).length > 0;
+/** One cell into CSV (quoted when it holds a comma, a quote or a newline). */
+function csvCell(cell: string): string {
+  return /[",\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell;
+}
 
-export function checklistFacts(name: ChecklistName): ChecklistFacts {
-  // A number is compared exactly as printed, case included; the product only pairs two numbers
-  // that differ by case when each is on one card and one row, which a captured set has no row to
-  // prove, so a file holding two such rows is refused here rather than guessed at.
-  const rows = readRows(name);
-  const numbered = rows.filter((r) => !isNnoRow(r));
-  const unnumbered = rows.filter(isNnoRow);
-  const countOf = new Map<string, number>();
-  for (const r of numbered) countOf.set(numberOf(r), (countOf.get(numberOf(r)) ?? 0) + 1);
-  const byCase = new Map<string, string>();
-  for (const key of countOf.keys()) {
-    const seen = byCase.get(key.toUpperCase());
-    if (seen !== undefined && seen !== key) {
-      throw new Error(`${name}.csv has the numbers "${seen}" and "${key}", which differ only by case: the product pairs those by a rule the file cannot restate (NEO-489, D7).`);
+/** A captured file's text with `edits` applied (the file as it is when there are none). */
+function editedCsv(name: ChecklistName, edits: ChecklistEdits = {}): string {
+  const changed = changedCsv(name, edits);
+  return edits.extraRows === undefined ? changed : withExtraRows(name, changed, edits.extraRows);
+}
+
+/** `editedCsv` without the appended rows: team cells, renumbering, splitting and dropping. */
+function changedCsv(name: ChecklistName, edits: ChecklistEdits): string {
+  const text = readFileSync(`${DIRECTORY}${name}.csv`, "utf8");
+  const keys = [
+    ...Object.keys(edits.teamCells ?? {}),
+    ...Object.keys(edits.renumber ?? {}),
+    ...Object.keys(edits.split ?? {}),
+    ...(edits.drop ?? []),
+  ];
+  if (keys.length === 0) return text;
+  const lines = text.split("\n").filter((l) => l.trim() !== "");
+  const header = cells(lines[0]);
+  const numberAt = header.indexOf("number");
+  const playerAt = header.indexOf("player");
+  const teamAt = header.indexOf("team");
+  const seen = new Map<string, number>();
+  const out: string[] = [lines[0]];
+  for (const line of lines.slice(1)) {
+    const row = cells(line);
+    const number = row[numberAt];
+    if (!keys.includes(number)) {
+      out.push(line);
+      continue;
     }
-    byCase.set(key.toUpperCase(), key);
+    seen.set(number, (seen.get(number) ?? 0) + 1);
+    if (edits.teamCells?.[number] !== undefined) row[teamAt] = edits.teamCells[number];
+    if (edits.renumber?.[number] !== undefined) row[numberAt] = edits.renumber[number];
+    if (edits.drop?.includes(number)) continue;
+    const parts = edits.split?.[number];
+    if (parts === undefined) {
+      out.push(row.map(csvCell).join(","));
+      continue;
+    }
+    for (const part of parts) {
+      const copy = [...row];
+      copy[numberAt] = part.number;
+      if (part.note !== undefined) copy[playerAt] = `${row[playerAt]} ${part.note}`;
+      out.push(copy.map(csvCell).join(","));
+    }
   }
-  const playerCountOf = new Map<string, number>();
-  for (const r of unnumbered) playerCountOf.set(namesKey(r.player), (playerCountOf.get(namesKey(r.player)) ?? 0) + 1);
-  // NEO-496 (D2, restored; lib/checklists/checklist-teams-tally.ts): N counts the CARDS whose team
-  // came from the checklist. A number printed on two rows pairs with neither, and its card is asked
-  // of the marketplace, so neither row counts; a checklist-only row is not a card until it is kept.
-  // A numbered card is matched when its number is on exactly one row (rule 7). An unnumbered card
-  // is matched by player, only when exactly one such card and exactly one NNO row name that player
-  // (the captured set has one card per row, so the rows count for both sides). A matched card counts
-  // here only when its row answers the team (`answersTeam`).
-  // NEO-490: when no number pairs at all, the product pairs by player name instead; that is
-  // `nameFallbackFacts`' reading, not this one, so a file that would reach it is refused here.
-  if (numbered.length > 0 && !numbered.some((r) => countOf.get(numberOf(r)) === 1)) {
-    throw new Error(`${name}.csv pairs no card by number, so the product pairs it by player name: read it with nameFallbackFacts (NEO-490).`);
+  for (const number of new Set(keys)) {
+    const n = seen.get(number) ?? 0;
+    if (n !== 1) throw new Error(`${name}.csv has ${n} rows numbered "${number}": expected exactly one to change.`);
   }
-  const matchedNumbered = numbered.filter((r) => countOf.get(numberOf(r)) === 1 && answersTeam(r)).length;
-  const matchedUnnumbered = unnumbered.filter((r) => {
-    const key = namesKey(r.player);
-    return key !== "" && playerCountOf.get(key) === 1 && answersTeam(r);
-  }).length;
+  return `${out.join("\n")}\n`;
+}
+
+/** The rows the dialog reads from a CSV's text: the product's own parser, default options (as the upload). */
+function parsedRows(text: string): PublishedChecklistRow[] {
+  return parsePublishedChecklist(text).rows;
+}
+
+/** Does this row answer its card's team: a named team (a `Prospect (X)` cell's X is one) or "No Team" (`applyChecklistRow`'s `answered`). */
+function answersTeam(row: PublishedChecklistRow): boolean {
+  return row.teams.length > 0 || row.noTeam === true;
+}
+
+/**
+ * The marketplace's cards a file is matched against. A capture IS BSC's own per-card answers, so by
+ * default its rows are the cards (numbers and players; a bulk answer names no team). A publisher's
+ * own file (Panini's Signature Series) is matched against the capture it numbers differently:
+ * `cardsOf` names that file and `cardNumber` gives each of its rows the number BSC prints.
+ */
+export interface ChecklistCards {
+  cardsOf?: ChecklistName;
+  cardNumber?: (row: ChecklistRow) => string;
+}
+
+/** The product's match of a file's rows (as edited) against the cards, plus the rows it read. */
+export function checklistMatch(
+  name: ChecklistName,
+  options: { edits?: ChecklistEdits } & ChecklistCards = {},
+): { rows: PublishedChecklistRow[]; cards: ChecklistRow[]; match: ChecklistMatchResult } {
+  const rows = parsedRows(editedCsv(name, options.edits));
+  const cards = checklistRows(options.cardsOf ?? name).map((r) => ({
+    ...r,
+    number: options.cardNumber ? options.cardNumber(r) : r.number,
+  }));
+  const match = matchPublishedChecklist(
+    cards.map((c) => ({
+      cardNumber: c.number,
+      players: c.player.split(";").map((p) => p.trim()).filter(Boolean),
+    })),
+    rows,
+  );
+  return { rows, cards, match };
+}
+
+/**
+ * A file's facts (`ChecklistFacts`), as the fetch will compute them: the rows the dialog reads
+ * (after `edits`), matched against the cards by `matchPublishedChecklist` itself.
+ */
+export function checklistFacts(
+  name: ChecklistName,
+  options: { edits?: ChecklistEdits } & ChecklistCards = {},
+): ChecklistFacts {
+  const { rows, cards, match } = checklistMatch(name, options);
   return {
     path: `${DIRECTORY}${name}.csv`,
+    matchCards: MATCH_CARDS[name],
     rows: rows.length,
-    matched: matchedNumbered + matchedUnnumbered,
+    cards: cards.length,
+    paired: match.matches.length,
+    matched: match.matches.filter((m) => !m.conflict?.teams && answersTeam(rows[m.rowIndex])).length,
   };
 }
 
 /**
- * NEO-490: what a checklist whose numbers meet NO card's number answers, when each row is paired
- * to a card by player name instead. `cardsOf` is the file listing the set's cards (their players);
- * BSC's own list for the set is that file's rows, so the card side is read off a file, never typed.
- *
- * A name is paired when exactly one row and exactly one card carry it (the exactly-one guard; a
- * name two rows share pairs nothing). With EQUAL counts the unique pairs are applied by the fetch
- * (`matched` = those whose row answers the team, naming one or saying "No Team": N in "Teams from
- * your checklist: N of M cards"); with
- * DIFFERENT counts nothing is applied by the fetch (`matched` = 0) and the unique pairs are only
- * SUGGESTED (`suggested`) to the operator in the Match Cards dialog.
+ * NEO-591: one card and one row the product pairs by a NEAR name (the names-first core's third
+ * tier), as the core scores them: `score` is the names' similarity, `confidence` what Match Cards
+ * shows (the score, lowered when the numbers differ). Throws when the core does not pair them by
+ * a near name, so a spec's fixture fails by name rather than asserting a percentage that never shows.
  */
-export interface NameFallbackFacts extends ChecklistFacts {
-  /** The cards the pairing is made against. */
-  cards: number;
-  /** Rows and cards of equal number: the fetch applies the unique pairs itself. */
-  equalCounts: boolean;
-  /** Unique name pairs: applied by an equal-count fetch, offered as suggestions otherwise. */
-  suggested: number;
-}
-
-export function nameFallbackFacts(name: ChecklistName, cardsOf: ChecklistName): NameFallbackFacts {
-  // The rows the dialog reads (the same reading as `checklistFacts`, NEO-489 case and No Team rules
-  // included). Only NUMBERED rows and cards take part in the name pass: an NNO row pairs by player
-  // with an NNO card in its own pass, and the counts compared are the numbered ones on each side.
-  const all = readRows(name);
-  const rows = all.filter((r) => !isNnoRow(r));
-  const cards = readRows(cardsOf).filter((r) => !isNnoRow(r));
-  const tally = (list: ChecklistRow[]) => {
-    const counts = new Map<string, number>();
-    for (const r of list) counts.set(namesKey(r.player), (counts.get(namesKey(r.player)) ?? 0) + 1);
-    return counts;
-  };
-  const rowCounts = tally(rows);
-  const cardCounts = tally(cards);
-  const paired = rows.filter((r) => {
-    const key = namesKey(r.player);
-    return key !== "" && rowCounts.get(key) === 1 && cardCounts.get(key) === 1;
+export function nearNamePair(
+  card: { number: string; player: string },
+  row: { number: string; player: string },
+): { score: number; confidence: number; numbersAgree: boolean } {
+  const { pairs } = pairNamesFirst([{ names: [card.player], number: card.number }], [{ names: [row.player], number: row.number }], {
+    stripLetterPrefix: true,
+    stemSiblingSide: "right",
   });
-  const equalCounts = rows.length === cards.length;
-  return {
-    path: `${DIRECTORY}${name}.csv`,
-    rows: all.length,
-    cards: cards.length,
-    equalCounts,
-    suggested: paired.length,
-    // A row saying "No Team" answers its card too (no team, never looked up); a no-claim cell
-    // ("None", "N/A", blank) does not.
-    matched: equalCounts ? paired.filter(answersTeam).length : 0,
-  };
+  const pair = pairs[0];
+  if (pair?.by !== "nearName" || pair.nameScore === undefined) {
+    throw new Error(`"${card.player}" (#${card.number}) and "${row.player}" (#${row.number}) are not a near-name pair.`);
+  }
+  return { score: pair.nameScore, confidence: pair.confidence, numbersAgree: pair.numbersAgree };
 }
 
-/** The button beside "Sync card checklist". Contract: a locator, nothing waited for. */
+/** The button beside the card checklist's fetch button (`syncChecklistButton`). Contract: a locator, nothing waited for. */
 export function publishersChecklistButton(page: Page): Locator {
   return page.getByRole("button", { name: "Add the official checklist" });
 }
@@ -339,31 +465,21 @@ export function previewRowCount(dialog: Locator, rows: number): Locator {
   return dialog.getByText(new RegExp(`\\b${rows} ${rows === 1 ? "row" : "rows"}\\b`)).first();
 }
 
-/** One cell into CSV (quoted when it holds a comma, a quote or a newline). */
-function csvCell(cell: string): string {
-  return /[",\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell;
-}
-
 /**
- * A captured file with ONE card's team cell replaced by `No Team`: the publisher
- * saying the card shows no team (NEO-489). Throws when the file has no such number,
- * so a spec built on it fails by name rather than uploading an unchanged file.
+ * `text` (a captured file, perhaps edited) with `extra` rows appended. Throws when an extra row's
+ * number is already in the file, so it can only ever ADD checklist-only rows.
  */
-function csvWithNoTeamOn(name: ChecklistName, number: string): string {
-  const lines = readFileSync(`${DIRECTORY}${name}.csv`, "utf8").split("\n").filter((l) => l.trim() !== "");
+function withExtraRows(name: ChecklistName, text: string, extra: readonly ChecklistRow[]): string {
+  const lines = text.split("\n").filter((l) => l.trim() !== "");
   const header = cells(lines[0]);
   const numberAt = header.indexOf("number");
-  const teamAt = header.indexOf("team");
-  let changed = 0;
-  const out = lines.map((line, i) => {
-    if (i === 0) return line;
-    const row = cells(line);
-    if (row[numberAt] !== number) return line;
-    row[teamAt] = "No Team";
-    changed++;
-    return row.map(csvCell).join(",");
-  });
-  if (changed !== 1) throw new Error(`${name}.csv has ${changed} rows numbered "${number}": expected exactly one to say No Team on.`);
+  const taken = new Set(lines.slice(1).map((line) => cells(line)[numberAt]));
+  const out = [...lines];
+  for (const row of extra) {
+    if (taken.has(row.number)) throw new Error(`${name}.csv already has a row numbered "${row.number}": an extra row must be checklist-only.`);
+    taken.add(row.number);
+    out.push(header.map((column) => csvCell(row[column as keyof ChecklistRow] ?? "")).join(","));
+  }
   return `${out.join("\n")}\n`;
 }
 
@@ -374,18 +490,34 @@ function csvWithNoTeamOn(name: ChecklistName, number: string): string {
  * is showing, N read off the file; nothing is fetched. Returns the file's facts
  * for the result line (`expectTeamsFromChecklist`).
  *
- * `noTeamOn` uploads the file with that one card's team cell changed to `No Team`
- * (the publisher's claim that the card shows no team). The facts are the unchanged
- * file's: the row is answered either way, but a card the marketplace already gives a
- * team is a disagreement the operator settles, which the fetch does not count as
- * answered by the checklist (the caller subtracts it from `matched`).
+ * `edits` uploads the file changed (`ChecklistEdits`: team cells such as `No Team` or
+ * `Prospect (X)`, a row renumbered, split or dropped), and the facts are the EDITED file's,
+ * read through the product's parser and matcher. A card the marketplace already gives a team
+ * and whose row disagrees is the operator's to settle, which the fetch does not count as
+ * answered by the checklist (the caller subtracts each from `matched`).
+ *
+ * `edits.extraRows` (NEO-574) appends rows to the file. Each must carry a number the
+ * marketplace does not list for the set (and the file does not hold): a checklist-only
+ * row, so the facts' `rows` grow by them and `matched` does not (a checklist-only row is
+ * not a card until it is kept in Match Cards). Once kept and saved, each is a card its
+ * checklist row gives a team, so the line the save lands with counts them: N there is
+ * `matched` plus the kept rows (measured NEO-574).
  */
 export async function usePublishersChecklist(
   page: Page,
   name: ChecklistName,
-  options: { noTeamOn?: string } = {},
+  edits: ChecklistEdits = {},
 ): Promise<ChecklistFacts> {
-  const facts = checklistFacts(name);
+  const captured = checklistFacts(name, { edits });
+  // NEO-640: an edit to the rows themselves opens Match Cards: an appended row is "Checklist only",
+  // a dropped one leaves its card without a row, and a renumbered or split one pairs by its stem
+  // with a number for the operator to choose. A team cell changes no pair (the walk settles it).
+  const structural =
+    (edits.extraRows?.length ?? 0) > 0 ||
+    (edits.drop?.length ?? 0) > 0 ||
+    Object.keys(edits.renumber ?? {}).length > 0 ||
+    Object.keys(edits.split ?? {}).length > 0;
+  const facts: ChecklistFacts = { ...captured, matchCards: structural ? opens(true) : captured.matchCards };
   // A second visit to the same open checklist (a discarded review fetched again)
   // may still hold the file the first visit used: the chip is then the proof.
   const chip = publishersChecklistChip(page, facts.rows);
@@ -395,8 +527,8 @@ export async function usePublishersChecklist(
   const dialog = publishersChecklistDialog(page);
   await expect(dialog).toBeVisible();
   const file = dialog.getByLabel("Choose a file");
-  if (options.noTeamOn === undefined) await file.setInputFiles(facts.path);
-  else await file.setInputFiles({ name: `${name}.csv`, mimeType: "text/csv", buffer: Buffer.from(csvWithNoTeamOn(name, options.noTeamOn)) });
+  if (Object.keys(edits).length === 0) await file.setInputFiles(facts.path);
+  else await file.setInputFiles({ name: `${name}.csv`, mimeType: "text/csv", buffer: Buffer.from(editedCsv(name, edits)) });
   await expect(previewRowCount(dialog, facts.rows)).toBeVisible();
   await dialog.getByRole("button", { name: "Use this checklist" }).click();
   await expect(dialog).toBeHidden();
@@ -416,7 +548,7 @@ export async function usePublishersChecklist(
 export async function usePastedChecklist(page: Page, csv: string, rows: number): Promise<ChecklistFacts> {
   const chip = publishersChecklistChip(page, rows);
   await expect(publishersChecklistButton(page).or(chip).first()).toBeVisible();
-  const facts: ChecklistFacts = { path: "(pasted)", rows, matched: rows };
+  const facts: ChecklistFacts = { path: "(pasted)", matchCards: opens(true), rows, cards: rows, paired: rows, matched: rows };
   if (await chip.isVisible()) return facts;
   await publishersChecklistButton(page).click();
   const dialog = publishersChecklistDialog(page);
@@ -437,7 +569,7 @@ export async function usePastedChecklist(page: Page, csv: string, rows: number):
  *
  * NEO-496: when the fetch opens Match Cards (a checklist is a source, so a
  * one-marketplace leaf with one is two sources), the line is on the page while
- * the dialog is open; once Confirm hands the cards to the wizard it is said
+ * the dialog is open; once Confirm saves the cards it is said
  * again only on the line the save lands with. Assert it before Confirm
  * (`confirmChecklistMatchCards` does) or on the saved line.
  */
@@ -464,7 +596,9 @@ export function matchCardsDialog(page: Page): Locator {
  * This is the operator who wants every card the marketplace listed and nothing
  * the checklist alone adds: it keeps every marketplace single ("Keep all
  * BSC-only cards", and SportLots' when that column holds any), keeps no
- * checklist-only row, and confirms. A spec whose feature IS Match Cards drives
+ * checklist-only row, and confirms. With `keepChecklistOnly: n` (NEO-574) it
+ * also keeps the checklist's own rows: the column must read "Checklist only
+ * (n)" first, and every one of them is kept ("Keep all checklist-only cards"). A spec whose feature IS Match Cards drives
  * the dialog itself; this is for the specs that only pass through it.
  *
  * The fetch is a live BSC round trip, and Confirm unlocks only once this run's
@@ -472,16 +606,16 @@ export function matchCardsDialog(page: Page): Locator {
  * waits are 7 s of our own time plus the seconds the screen says it is waiting
  * on BSC (`expectAfterMarketplace`).
  *
- * Contract: ENTRY Sync card checklist has just been pressed with a checklist in
+ * Contract: ENTRY the fetch button (`syncChecklistButton`) has just been pressed with a checklist in
  * play (pasted, or the leaf's sections of the set's stored checklist). EXIT the
- * dialog was confirmed and is gone; the wizard (or the saved line) is the
- * caller's to wait for. With `facts`, the "Teams from your checklist: N of M
+ * dialog was confirmed and is gone; the walk is the caller's to wait for (the
+ * save lands first). With `facts`, the "Teams from your checklist: N of M
  * cards" line was asserted while the dialog was open (the only time before the
  * save that it is on the page).
  */
 export async function confirmChecklistMatchCards(
   page: Page,
-  { facts, what }: { facts?: ChecklistFacts; what: string },
+  { facts, what, keepChecklistOnly }: { facts?: ChecklistFacts; what: string; keepChecklistOnly?: number },
 ): Promise<void> {
   const dialog = matchCardsDialog(page);
   await expectAfterMarketplace(page, dialog, { platform: "BuySportsCards", what: `Match Cards after ${what}` });
@@ -497,8 +631,100 @@ export async function confirmChecklistMatchCards(
       await expect(dialog.getByRole("heading", { name: `${side} only (0)` })).toBeVisible();
     }
   }
+  if (keepChecklistOnly !== undefined) {
+    await expect(dialog.getByRole("heading", { name: `Checklist only (${keepChecklistOnly})` })).toBeVisible();
+    await dialog.getByRole("button", { name: "Keep all checklist-only cards" }).click();
+    await expect(dialog.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
+  }
   await confirm.click();
   await expect(dialog).toBeHidden();
+}
+
+/**
+ * NEO-640: the line every fetch with two or more sources starts on: a group named by its status
+ * ("Fetching from BSC and your checklist…"; no count in any status), a counter for the eye only
+ * (" N of M cards ready.", aria-hidden: read it with `getByText`), and its Cancel ("Cancel card
+ * fetch", shown as "Cancel"). Contract: a locator, nothing waited for.
+ */
+export function checklistFetchProgress(page: Page): Locator {
+  return page.getByRole("group", { name: /^Fetching from BSC and your checklist…/ });
+}
+
+/** NEO-640: the progress line's one control. Contract: a locator, nothing waited for. */
+export function cancelCardFetchButton(page: Page): Locator {
+  return checklistFetchProgress(page).getByRole("button", { name: "Cancel card fetch" });
+}
+
+/**
+ * NEO-640: why Match Cards sat out, as the saved line says it right after "Saved N cards." (ahead
+ * of any caveat and the teams line). It names the dialog, so the dialog's absence is asserted by
+ * its role, never by text.
+ */
+export function skippedSavedReason(cards: number): string {
+  return `BSC and your checklist agreed on ${cards === 1 ? "it" : "every one"}, so Match Cards sat this one out.`;
+}
+
+/**
+ * The line a save lands with, "Saved N cards." ("Saved 1 card.") and whatever the run says after
+ * it (why Match Cards sat out, caveats, the teams line). Only its start is pinned: the sentences
+ * after it are asserted one by one (`toContainText`). Contract: a locator, nothing waited for.
+ */
+export function savedLine(page: Page, cards: number): Locator {
+  return page.getByText(new RegExp(`^Saved ${cards} cards?\\.`)).filter({ visible: true });
+}
+
+/**
+ * NEO-640, NEO-645 C5: a fetch whose every card paired with its own row at 100% skips Match Cards.
+ * The run starts on the progress line (with its Cancel), and when the fetch ends the line goes with
+ * no dialog standing. The cards SAVE first, always: the saved line says why Match Cards sat out
+ * (`skippedSavedReason`) right after its count, then the teams line. Any walk comes after the save
+ * and is the caller's to settle (`settleWalkAfterCommit` / `expectTidyWalkOpen`). The saved state
+ * is read by axe in light and dark.
+ *
+ * Contract: ENTRY Sync card checklist has just been pressed with `facts`' file in play and
+ * `opensMatchCards` false. EXIT the saved line is up and no Match Cards dialog ever stood.
+ */
+export async function expectMatchCardsSkipped(
+  page: Page,
+  { facts, what }: { facts: ChecklistFacts; what: string },
+): Promise<void> {
+  const progress = checklistFetchProgress(page);
+  await expect(progress, `the progress line of ${what}`).toBeVisible();
+  await expect(cancelCardFetchButton(page)).toBeVisible();
+  // One live BSC round trip, under its own "Waiting on BuySportsCards" line (NEO-487).
+  await expectAfterMarketplace(page, progress, { platform: "BuySportsCards", what: `the end of ${what}`, state: "hidden" });
+  const saved = savedLine(page, facts.rows);
+  // Our own commit once the fetch has landed: the standard 7 s.
+  await expect(saved, `the saved line of ${what}`).toBeVisible();
+  await expect(saved).toContainText(new RegExp(`^Saved ${facts.rows} cards?\\. ${escapeRe(skippedSavedReason(facts.rows))}`));
+  await expectTeamsFromChecklist(page, facts);
+  // Paired with the saved line just above (R2): the dialog never stood, and nobody confirmed one.
+  // By role: the saved line itself says "Match Cards".
+  await expect(matchCardsDialog(page)).toHaveCount(0);
+  await expectAccessible(page, { label: `${what}: skipped Match Cards, saved` });
+}
+
+/**
+ * NEO-640: settle a fetch with a publisher's checklist in play, on the file's own measured fact
+ * (`opensMatchCards`): through Match Cards (`confirmChecklistMatchCards`) when it opens, past it
+ * (`expectMatchCardsSkipped`: the save lands first) when every card matched. Never a race between
+ * the two: a fixture that changes sides fails here by name. `keepChecklistOnly` needs rows no card
+ * has, which always open the dialog. Contract: EXIT the dialog was confirmed, or the skip's saved
+ * line is up; either way any Tidy Up walk is the caller's to settle.
+ */
+export async function settleChecklistFetch(
+  page: Page,
+  env: FlowEnv,
+  { facts, what, keepChecklistOnly }: { facts: ChecklistFacts; what: string; keepChecklistOnly?: number },
+): Promise<void> {
+  if (opensMatchCards(facts, env)) {
+    await confirmChecklistMatchCards(page, { facts, what, keepChecklistOnly });
+    return;
+  }
+  if (keepChecklistOnly !== undefined) {
+    throw new Error(`settleChecklistFetch: ${what} keeps checklist-only rows, but its facts say Match Cards does not open.`);
+  }
+  await expectMatchCardsSkipped(page, { facts, what });
 }
 
 /** The set panel's region, on the set level with its attributes open. Contract: a locator, nothing waited for. */

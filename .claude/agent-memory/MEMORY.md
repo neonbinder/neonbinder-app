@@ -1,0 +1,1 @@
+- [Single-pick picker trigger NEO-617](single-pick-picker-trigger-state-neo617.md) — single-mode TeamPicker: chip x strands focus, picked team unannounced; fix via describedby

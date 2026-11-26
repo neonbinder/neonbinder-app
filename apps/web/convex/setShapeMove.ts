@@ -487,12 +487,7 @@ export async function hasOpenReview(
       q.eq("selectorOptionId", rowId),
     )
     .first();
-  if (staged) return true;
-  const queued = await ctx.db
-    .query("entityReviewQueue")
-    .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", rowId))
-    .first();
-  return queued !== null;
+  return staged !== null;
 }
 
 /**

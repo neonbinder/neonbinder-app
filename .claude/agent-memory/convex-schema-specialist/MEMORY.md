@@ -14,7 +14,7 @@
 - [Per-row cost hides in entity helpers](convex-per-row-cost-hides-in-entity-helpers.md) — findTeamsByFullName is 2-18 ops, so one player create is ~28; the call site lies
 - [OCC read set is the third budget](convex-occ-read-set-is-the-third-budget.md) — collect/take cost their read set; a short take is an open interval; status-flips are phantoms; fix = query selects, mutation point-reads
 - [Sync Sets artefacts key per scope](sync-sets-artefacts-key-per-scope.md) — sync runs per manufacturer too; per-year array docs overflow 1 MiB; measure with getConvexSize
-- [Armed backfill models have no cursor](armed-backfill-models-have-no-cursor.md) — facet/brand-unknown backfills are one take(SCAN_LIMIT+1); 16 MiB read is the real bound; page + action loop
+- [Armed backfill models have no cursor](armed-backfill-models-have-no-cursor.md) — facet/brand-unknown backfills are one take; the paged armed model is cardCounts.backfillVariantCardCounts
 - [Re-key action is not a backfill](rekey-action-is-not-a-backfill.md) — rekeyEntityNames resyncs only key-changed rows; steady state writes nothing; fill a new derived field with a small armed backfill
 - [convex-test search is not the backend](convex-test-search-is-not-the-backend.md) — harness search = insertion order, every-term prefix, unchecked filterFields; typecheck gates filter fields
 - [Tightening a validator shared with stored drafts](tightening-a-validator-shared-with-stored-drafts.md) — args+returns shared validators tighten only in the handler; required args make auth tests vacuous; reset runs after deploy
@@ -34,3 +34,12 @@
 - [Filter after take caps read rows](filter-after-take-caps-read-rows.md) — capped read + in-memory filter hides shown rows; index the filter field; undefined sorts before numbers, so "unknown or >0" = two ranges
 - [Derived card field from an entity fact](derived-card-field-from-entity-fact.md) — settle at the link seam (id→doc param), compute pre-insert, follow-rule recompute off the live entity
 - [Retiring a features key](retiring-a-features-key.md) — every mint/copy point of a features key incl. backfillCardFeatures seed list; strip leaves sport rows
+- [Concurrent reads are batched](convex-concurrent-reads-are-batched.md) — Promise.all reads go to storage in batches (16 OSS); "system operations" error = 15 s syscall wall time
+- [Base parallels are insert rows](base-parallels-are-insert-rows.md) — a base-set parallel is an insert row under a Parallel(s) type; per-parallel fields/backfills cover insert AND parallel levels
+- [Removing a human pause exposes races](removing-a-human-pause-exposes-races.md) — no wizard between stage and commit: runAfter continuations and pool lookups now race the commit
+- [NEO-645 tidyNames schema](project_neo645_tidy_names_schema.md) — per-leaf name answers + cardPrintedNames fan-out index; CAS fan-out, order field, no lastUpdated bump
+- [Gate flags need a full union](gate-flags-need-a-full-union.md) — a fact that decides "skip the review" is a union on every row; absence = unknown = open
+- [Convex tests have no static gate](convex-tests-have-no-static-gate.md) — convex/*.test.ts escapes tsconfig + eslint; grep dead helpers/literals; branch-only literal removal order
+- [Dropping a whole table](dropping-a-whole-table.md) — one PR, rows outside schema unvalidated; CLI large-index check fails non-TTY deploy at 100k+ docs
+- [Field removal on a staying table is two releases](field-removal-on-a-staying-table-is-two-releases.md) — clear and tighten cannot share a push; PR1 stop writes + armed clear, ops, PR2 tighten; stale previews; orphan sub-validators
+- [Pointer field re-verified on read](pointer-field-reverified-on-read.md) — optional v.id pointer on selectorOptions: dangling is safe if read re-verifies; wipe graph + finalize clear; seed untouched

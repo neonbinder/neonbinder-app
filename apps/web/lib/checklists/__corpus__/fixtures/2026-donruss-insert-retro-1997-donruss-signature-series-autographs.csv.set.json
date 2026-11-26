@@ -1,0 +1,48 @@
+{
+  "file": "2026-donruss-insert-retro-1997-donruss-signature-series-autographs.csv",
+  "mode": "set",
+  "options": {"setYear":"2026","mode":"set"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [],
+    "skipped": [
+      {"line":2,"text":"1,Frank Thomas,Chicago White Sox","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Jacob Wilson,Oakland A's","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Matt Shaw,Chicago Cubs","reason":"Not under any section heading"},
+      {"line":5,"text":"4,Heston Kjerstad,Baltimore Orioles","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Jackson Chourio,Milwaukee Brewers","reason":"Not under any section heading"},
+      {"line":7,"text":"6,Dylan Crews,Washington Nationals","reason":"Not under any section heading"},
+      {"line":8,"text":"7,Konnor Griffin,Pittsburgh Pirates","reason":"Not under any section heading"},
+      {"line":9,"text":"8,Bobby Witt Jr.,Kansas City Royals","reason":"Not under any section heading"},
+      {"line":10,"text":"10,George Lombard Jr.,New York Yankees","reason":"Not under any section heading"},
+      {"line":11,"text":"11,Rhett Lowder,Cincinnati Reds","reason":"Not under any section heading"},
+      {"line":12,"text":"13,Aidan Miller,Philadelphia Phillies","reason":"Not under any section heading"},
+      {"line":13,"text":"14,Kristian Campbell,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":14,"text":"16,Jacob Misiorowski,Milwaukee Brewers","reason":"Not under any section heading"},
+      {"line":15,"text":"17,Mike Lowell,Boston Red Sox","reason":"Not under any section heading"}
+    ],
+    "format": "csv"
+  },
+  "sections": {
+    "format": "csv",
+    "sections": [],
+    "skipped": [
+      {"line":2,"text":"1,Frank Thomas,Chicago White Sox","reason":"Not under any section heading"},
+      {"line":3,"text":"2,Jacob Wilson,Oakland A's","reason":"Not under any section heading"},
+      {"line":4,"text":"3,Matt Shaw,Chicago Cubs","reason":"Not under any section heading"},
+      {"line":5,"text":"4,Heston Kjerstad,Baltimore Orioles","reason":"Not under any section heading"},
+      {"line":6,"text":"5,Jackson Chourio,Milwaukee Brewers","reason":"Not under any section heading"},
+      {"line":7,"text":"6,Dylan Crews,Washington Nationals","reason":"Not under any section heading"},
+      {"line":8,"text":"7,Konnor Griffin,Pittsburgh Pirates","reason":"Not under any section heading"},
+      {"line":9,"text":"8,Bobby Witt Jr.,Kansas City Royals","reason":"Not under any section heading"},
+      {"line":10,"text":"10,George Lombard Jr.,New York Yankees","reason":"Not under any section heading"},
+      {"line":11,"text":"11,Rhett Lowder,Cincinnati Reds","reason":"Not under any section heading"},
+      {"line":12,"text":"13,Aidan Miller,Philadelphia Phillies","reason":"Not under any section heading"},
+      {"line":13,"text":"14,Kristian Campbell,Boston Red Sox","reason":"Not under any section heading"},
+      {"line":14,"text":"16,Jacob Misiorowski,Milwaukee Brewers","reason":"Not under any section heading"},
+      {"line":15,"text":"17,Mike Lowell,Boston Red Sox","reason":"Not under any section heading"}
+    ],
+    "skippedSections": [],
+    "rowCount": 0
+  }
+}

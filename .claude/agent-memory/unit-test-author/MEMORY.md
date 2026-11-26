@@ -1,6 +1,7 @@
 # Unit Test Author — Agent Memory Index
 
 - [Feedback adversarial pass patterns](feedback_adversarial_pass_patterns.md) — What an adversarial unit-test pass on an already-well-tested NeonBinder feature (NEO-101) actually found — where the real gaps hide when the author already wrote thoro…
+- [NEO-611 roster players tests](reference_neo611_roster_players_tests.md) — epoch helper, budget fixture, held asserts, source pin, boundary + twinOfKey quirks
 - [Feedback batch mutation same row staleness](feedback_batch_mutation_same_row_staleness.md) — A batch mutation that OCC-checks baseVersion per decision, using a workingVersion map it updates after each write, will falsely mark every decision after the first on…
 - [Feedback concurrent agent commit scoping](feedback_concurrent_agent_commit_scoping.md) — When another agent shares this worktree, `git commit -m` after `git add <paths>` still commits their pre-staged files too — use `git commit -F <msgfile> -- <paths>` in…
 - [Project convex test patterns](project_convex_test_patterns.md) — convex-test patterns confirmed working in this repo — calling internal functions directly, spying on structured console.log lines, and simulating stale/concurrent stat…
@@ -47,3 +48,21 @@
 - [Fake-BSC miss store tests](reference_fake_bsc_miss_store_test_patterns.md) — unref timer hang, owner reachability, dist break-checks, sheet drift fixtures
 - [NEO-555 probe/capture adversarial](reference_neo555_probe_capture_adversarial.md) — shallow-freeze trap, signal guard, body-read leak, break-check by revert
 - [NEO-556 No Team adversarial patterns](reference_neo556_no_team_adversarial_patterns.md) — oracle cartesian, ?raw source pins, client-vs-server commit agreement
+- [NEO-591 Onyx PDF + Prospect tests](reference_neo591_onyx_pdf_prospect_test_patterns.md) — hand-built PDF pages via groupPageItems, resolver world fixture, hint-branch split, mutation driver
+- [Full-suite load vs testTimeout](patterns_full_suite_load_and_test_timeout.md) — components tests run 3-4x slower under the full suite; components project timeout 20s
+- [LiveLine effect lag](feedback_live_line_effect_lag.md) — wait on the role=status node itself, not the visible span; forced-lag proof recipe
+- [NEO-587 rAF status race sweep](reference_neo587_raf_status_race_sweep.md) — slow-rAF shim to find one-frame-late status races; useLiveWords joins words; vacuous negatives
+- [NEO-609 title levels tests](reference_neo609_title_levels_test_patterns.md) — atFullLength padding, refill hides city cuts, Proof parity fixture, tsx probe loop
+- [NEO-581 countSeq + busy window](reference_neo581_countseq_and_busy_window.md) — which door seq checks bite; busy-at-zero label window is unobservable
+- [NEO-592 gate parity patterns](reference_neo592_gate_parity_patterns.md) — origin/main differential via sibling copy, db probe, outside-in call counting, mutant runner
+- [NEO-426 teamless sport tests](reference_neo426_teamless_sport_test_patterns.md) — chunk-direct commit tests, undefined->null in t.run, module-registry probe, break results
+- [NEO-426 client teamless tests](reference_neo426_client_teamless_test_patterns.md) — private rule via partition, unresolved-team trap, parity sweep, zsh array trap
+- [NEO-482 call order tap + mutant module](reference_neo482_call_order_tap_and_mutant_module.md) — assert internal-mutation order by wrapping _handler; break-check via mutant copy in the modules glob
+- [vi.mock concurrent-import race](reference_vi_mock_concurrent_import_race.md) — async credentials mock raced under --shard; adapter got real module; fix = top-level warm-up import
+- [NEO-628 gate key adversarial](reference_neo628_gate_key_adversarial_patterns.md) — fake acquire writes no row, source-scan control, test.fails known gaps
+- [NEO-628 guard test patterns](reference_neo628_guard_test_patterns.md) — stub AxeBuilder replace semantics, yaml job-section pins, ?raw scan with control, Sync wait-line stand-down
+- [Slow component test profile recipe](reference_slow_demo_test_profile_recipe.md) — load-only timeouts are CPU-bound; in-test inspector profile, split tests, no real sleeps
+- [NEO-645 tidy test patterns](reference_neo645_tidy_test_patterns.md) — id-only world fixture, fan-out drain, commit-action traps
+- [NEO-645 tidy ported tests](reference_neo645_tidy_ported_tests.md) — porting batch-wizard tests to tidyNames: fixture, walk-driven creates, bulk test removal
+- [NEO-639 chip years + failed lookup tests](reference_neo639_chip_years_and_failed_lookup_tests.md) — reaching an unselected chip, cap vs per-player tie, stints read-cap guard
+- [NEO-673 chosen parallel source tests](reference_neo673_chosen_parallel_source_tests.md) — long-box title fixture, wire-level R1 chain check, mutation checks

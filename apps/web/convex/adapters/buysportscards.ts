@@ -5,6 +5,7 @@ import { v } from "convex/values";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "../auth";
+import { siteTokenForCurrentUser } from "../credentials";
 import {
   recordAdapterCall,
   recordAdapterPhase,
@@ -41,8 +42,11 @@ import {
   boundParsedNames,
   splitMarketplacePlayerNames,
   splitMarketplaceTeamNames,
-  stripZeroWidth,
 } from "./marketplaceNames";
+// NEO-643 — every name or label BSC hands us is cleansed as it comes in (the
+// backslash it uses for an accent, soft hyphens, zero-width characters). Ids,
+// slugs and `platformRef` are never passed through it.
+import { cleanseExternalName } from "../../lib/entities/cleanse-name";
 // NEO-321 follow-up — a structured reason beside `success: false`, and the
 // self-imposed-limiter log line.
 // NEO-325 — the Base match probe's bounds and wire shapes, shared with the
@@ -73,11 +77,12 @@ import {
 } from "../lib/marketplaceFetchFailure";
 import { bscFetch, bscHeaders, isBscBreakerRefusal, type BscCallGate, type BscGrant } from "../lib/bscHttp";
 import { bscPacedCatalogueMessage, pacedRetryAfterS } from "../lib/bscPacedCopy";
-// NEO-552 — every BSC call goes through `bscFetch` and the deployment-wide
-// call gate (breaker + token bucket); fake mode carries a Google ID token.
-import { bscCallGateFor } from "../bscCallGate";
+// NEO-552 — every BSC call goes through `bscFetch` and the call gate of its
+// rate-limit domain (breaker + token bucket); fake mode carries a Google ID token.
+import { BSC_GATE_DEPLOYMENT_KEY } from "../lib/bscGateKey";
+import { bscCallDomainFor, bscCallGateFor, type BscCallDomain } from "../bscCallGate";
 import { nodeBscIdToken } from "../lib/bscFakeIdToken";
-import { fakeBscMode, fakeBscNamespaceFor, fakeBscPrefixFor } from "../testing";
+import { fakeBscMode } from "../testing";
 // NEO-475 — every BSC call is recorded (why it failed, how long it took); one
 // recorder per action invocation, flushed once in its `finally`.
 import {
@@ -151,7 +156,8 @@ export const BSC_TEAM_LOOKUP_RETRY_PAUSE_MAX_MS = 500;
 // is deferred by a 429 or an open cooldown.
 export const BSC_TEAM_ENRICH_DELAY_MS = 1_700;
 // NEO-482 — a lane item that finds a card-listing window with at most this
-// long left waits it out in its slot and then asks, instead of deferring.
+// long left waits it out in its slot and then asks, instead of deferring
+// (NEO-628: only behind the `"deployment"` gate; a per-namespace window defers).
 // Windows are 15 s doubling to 120 s (`lib/bscCallGatePolicy`), so this covers
 // every window we open ourselves; only a longer Retry-After from BSC still
 // defers the card. Deferring meant every item the slot reached during a 15 s
@@ -182,7 +188,7 @@ const BSC_TEAM_LOOKUP_CONCURRENCY = 10;
 // BSC's edge answers 429 (empty body, a few ms) and then blocks the IP for
 // 15 to 45 s (measured, NEO-482), and Convex deployments share egress IPs.
 // So a lookup:
-//   - asks the deployment-wide call gate (`bscCallGate`, NEO-552) once per
+//   - asks the call gate of its domain (`bscCallGate`, NEO-552) once per
 //     wave, for the wave's cards, and makes no call while it refuses (open,
 //     probing, throttled, or unreadable). A half-open gate grants one probe;
 //     the rest of the wave is carried into the next one, never dropped;
@@ -204,25 +210,18 @@ type CardListingGate = {
   gate: BscCallGate;
   /** The wave's grant, for the first attempt only; a retry acquires its own. */
   grant?: BscGrant;
-  /** Fake mode only: the run these calls belong to (`fakeBscCallerNs`). */
+  /** Fake mode only: the run these calls belong to (`bscCallDomainFor`, the same value the gate was keyed on). */
   fakeNs?: string;
 };
 
 /**
- * NEO-552 — fake mode only: which run a tokenless card-listing call belongs
- * to, for the fake's `x-nb-fake-ns`. The caller's own namespace when the
- * action runs as a signed-in user (the same derivation as `testing.ts`),
- * else this deployment's prefix (the background team lane has no user).
- * Undefined in real mode, or when the deployment URL cannot form one.
+ * NEO-628 — the call domain (gate key + the fake's `x-nb-fake-ns`) of a call
+ * that carries the signed-in user's own BSC token: that user's namespace on
+ * the fake, `"deployment"` against real BSC. The token's owner is the current
+ * user (`readBscToken`), so this is the owner's domain.
  */
-function fakeBscCallerNs(userId: string | null): string | undefined {
-  if (!fakeBscMode()) return undefined;
-  try {
-    const cloudUrl = process.env.CONVEX_CLOUD_URL;
-    return userId ? fakeBscNamespaceFor(userId, cloudUrl) : fakeBscPrefixFor(cloudUrl);
-  } catch {
-    return undefined;
-  }
+async function bscCallDomainOfCaller(ctx: ActionCtx): Promise<BscCallDomain> {
+  return bscCallDomainFor(fakeBscMode() ? await getCurrentUserId(ctx) : null);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -262,56 +261,70 @@ export const getBscToken = internalAction({
     error: v.optional(v.string()),
   }),
   handler: async (ctx, args): Promise<{ success: boolean; token?: string; error?: string }> => {
-    const requestId = args.requestId ?? newRequestId();
-    const start = Date.now();
-    try {
-      const tokenResult = await ctx.runAction(
-        internal.credentials.getSiteToken,
-        { site: "buysportscards" },
-      );
-
-      if (tokenResult?.token) {
-        await recordAdapterCall(ctx, {
-          requestId,
-          operation: "getBscToken",
-          platform: "bsc",
-          duration_ms: Date.now() - start,
-          success: true,
-        });
-        return { success: true, token: tokenResult.token };
-      }
-
-      await recordAdapterCall(ctx, {
-        requestId,
-        operation: "getBscToken",
-        platform: "bsc",
-        duration_ms: Date.now() - start,
-        success: false,
-        error_class: "no_credentials",
-      });
-      return {
-        success: false,
-        error: "No BSC token available. Connect your BSC account first.",
-      };
-    } catch (error) {
-      console.error("[getBscToken] Error:", error);
-      await recordAdapterCall(ctx, {
-        requestId,
-        operation: "getBscToken",
-        platform: "bsc",
-        duration_ms: Date.now() - start,
-        success: false,
-        error_class: classifyAdapterError(
-          error instanceof Error ? error.message : String(error),
-        ),
-      });
-      return {
-        success: false,
-        error: `Failed to get BSC token: ${error instanceof Error ? error.message : "Unknown error"}`,
-      };
-    }
+    return await readBscToken(ctx, args.requestId);
   },
 });
+
+/**
+ * The body of `getBscToken` as a plain function. The adapter's own actions
+ * call this directly instead of `ctx.runAction(getBscToken)`: that route is
+ * `getBscToken` -> `credentials.getSiteToken`, two action hops per fetch, and
+ * a CI run saw a parent sit idle for 27 s on a child that had finished in
+ * 0.4 s (NEO-605). Same answer, same `recordAdapterCall`, same error
+ * classification; the identity is `ctx.auth`'s, which is what `runAction`
+ * propagated, so a caller with none still gets "Not authenticated" (as a
+ * `success: false` answer). Never throws, never logs the token.
+ */
+export async function readBscToken(
+  ctx: ActionCtx,
+  requestId?: string,
+): Promise<{ success: boolean; token?: string; error?: string }> {
+  const rid = requestId ?? newRequestId();
+  const start = Date.now();
+  try {
+    const tokenResult = await siteTokenForCurrentUser(ctx, "buysportscards");
+
+    if (tokenResult?.token) {
+      await recordAdapterCall(ctx, {
+        requestId: rid,
+        operation: "getBscToken",
+        platform: "bsc",
+        duration_ms: Date.now() - start,
+        success: true,
+      });
+      return { success: true, token: tokenResult.token };
+    }
+
+    await recordAdapterCall(ctx, {
+      requestId: rid,
+      operation: "getBscToken",
+      platform: "bsc",
+      duration_ms: Date.now() - start,
+      success: false,
+      error_class: "no_credentials",
+    });
+    return {
+      success: false,
+      error: "No BSC token available. Connect your BSC account first.",
+    };
+  } catch (error) {
+    console.error("[getBscToken] Error:", error);
+    await recordAdapterCall(ctx, {
+      requestId: rid,
+      operation: "getBscToken",
+      platform: "bsc",
+      duration_ms: Date.now() - start,
+      success: false,
+      error_class: classifyAdapterError(
+        error instanceof Error ? error.message : String(error),
+      ),
+    });
+    return {
+      success: false,
+      error: `Failed to get BSC token: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
+}
 
 /**
  * NEO-239 — the levels a BSC request is SCOPED by, and the facets a checklist
@@ -429,7 +442,7 @@ export const fetchBscSelectorOptions = action({
       const tokenStart = Date.now();
       const tokenResult: { success: boolean; token?: string; error?: string } =
         await whileWaitingOnBsc(rec, () =>
-          ctx.runAction(internal.adapters.buysportscards.getBscToken, { requestId }),
+          readBscToken(ctx, requestId),
         );
       tokenMs = Date.now() - tokenStart;
 
@@ -561,7 +574,9 @@ export const fetchBscSelectorOptions = action({
       // 1.5 s, which is exactly the burst that extends BSC's IP block.
       // `bscFetch` reports it to the call gate, which opens the breaker for
       // every caller; the gate's own refusal is a 429 too.
-      const gate = bscCallGateFor(ctx);
+      // NEO-628 — the gate is the token owner's domain (the fake's namespace
+      // for them, `"deployment"` against real BSC).
+      const gate = bscCallGateFor(ctx, (await bscCallDomainOfCaller(ctx)).gateKey);
       let response: Response | undefined;
       // NEO-475 — the attempt whose 2xx body is read below.
       let okCall: BscCallToken | undefined;
@@ -741,7 +756,11 @@ export const fetchBscSelectorOptions = action({
         // Skip facet entries with zero inventory — BSC returns them but
         // they're not actually available options.
         if (typeof item.count === "number" && item.count <= 0) continue;
-        const label = item.label?.trim();
+        // NEO-643: the label is a display name ("…B\eisbol…" for Béisbol), so it
+        // is cleansed; the slug is the filter value BSC reads back and is only
+        // trimmed, exactly as before.
+        const label =
+          typeof item.label === "string" ? cleanseExternalName(item.label) : undefined;
         const slug = item.slug?.trim();
         if (!label || !slug) continue;
         options.push({
@@ -992,7 +1011,9 @@ export function parseVariationDescription(
   raw: unknown,
 ): ParsedVariationDescription | undefined {
   if (typeof raw !== "string") return undefined;
-  const trimmed = raw.trim();
+  // NEO-643: a description is display text; BSC's backslash accent stand-in
+  // and the other junk go before the marker is read.
+  const trimmed = cleanseExternalName(raw);
   if (!trimmed) return undefined;
 
   const prefixed = trimmed.match(/^([A-Z]{2,4}):\s*(.*)$/);
@@ -1063,7 +1084,8 @@ export function parsePlayersField(raw: string): {
    */
   unrepresentable?: true;
 } {
-  const trimmed = raw.trim();
+  // NEO-643: "Wilmer R\ios" is "Wilmer Rios" before anything is split or parsed.
+  const trimmed = cleanseExternalName(raw);
   if (!trimmed) return { players: [], teams: [] };
 
   // 1. Team-card suffix — the whole string names a team, not a player.
@@ -1369,7 +1391,8 @@ async function bscChecklistWithSession(
     const rec = limits.recorder;
     const last: { call?: BscCallToken } = {};
     let sends = 0;
-    const gate = bscCallGateFor(ctx);
+    // NEO-628 — the token owner's domain, as the gate key.
+    const gate = bscCallGateFor(ctx, (await bscCallDomainOfCaller(ctx)).gateKey);
     const doFetch = async (token: string): Promise<Response> => {
       requestTimeoutMs = Math.max(
         1,
@@ -1573,7 +1596,7 @@ async function bscChecklistWithSession(
       }
       const refreshed: { success: boolean; token?: string; error?: string } =
         await whileWaitingOnBsc(rec, () =>
-          ctx.runAction(internal.adapters.buysportscards.getBscToken, {}),
+          readBscToken(ctx),
         );
       logMarketplaceLimiter({
         limiter: "bsc_token_reauth",
@@ -2023,7 +2046,7 @@ export const fetchBscChecklist = action({
       // `fetchBscSelectorOptions`).
       const tokenResult: { success: boolean; token?: string; error?: string } =
         await whileWaitingOnBsc(rec, () =>
-          ctx.runAction(internal.adapters.buysportscards.getBscToken, {}),
+          readBscToken(ctx),
         );
 
       if (!tokenResult.success || !tokenResult.token) {
@@ -2141,7 +2164,7 @@ export const probeBscChecklistBatch = internalAction({
       try {
         const tokenResult: { success: boolean; token?: string; error?: string } =
           await whileWaitingOnBsc(rec, () =>
-            ctx.runAction(internal.adapters.buysportscards.getBscToken, {}),
+            readBscToken(ctx),
           );
         token = tokenResult.success ? tokenResult.token : undefined;
       } catch {
@@ -2372,7 +2395,7 @@ async function fetchBscCardTeamNameAttempt(
       data && typeof data === "object" ? (data as BscCardListingPayload) : {};
     const teamNameValue =
       typeof payload.teamName === "string"
-        ? stripZeroWidth(payload.teamName).trim()
+        ? cleanseExternalName(payload.teamName)
         : "";
     // NEO-345 — the card's attribute tokens ride on the same response
     // (`playerAttribute`, a comma string such as "AU, SN25" or "AU ,  SN50";
@@ -2507,7 +2530,8 @@ async function resolveBscCardTeamOnce(
 ): Promise<"answered" | "notNeeded" | "failed" | { rateLimited: true; until: number }> {
   const row = await readBscTeamCheckRow(ctx, cardChecklistId);
   if (!row || !row.needsCheck) return "notNeeded";
-  return askBscCardTeam(ctx, cardChecklistId, row);
+  // No queuing operator: the deployment's domain (NEO-628).
+  return askBscCardTeam(ctx, cardChecklistId, row, bscCallDomainFor(null));
 }
 
 /** The card's BSC id and whether it still needs asking; null when the row is gone or unlinked. */
@@ -2528,19 +2552,20 @@ async function askBscCardTeam(
   ctx: ActionCtx,
   cardChecklistId: Id<"cardChecklist">,
   row: BscTeamCheckRow,
+  /** NEO-628 — the domain the gate was read in; the call is made in it. */
+  domain: BscCallDomain,
 ): Promise<"answered" | "failed" | { rateLimited: true; until: number }> {
   // NEO-475 — the one call is recorded, and its summary goes to the log
   // only: this runs once per card from the background queue, and a table
   // row per card would swamp the per-invocation rows the table is for.
   const rec = createBscRecorder("resolveBscCardTeam", { deployment: deploymentName() });
   const stop: BscLookupStop = { rateLimited: false };
-  const gate = bscCallGateFor(ctx);
+  const gate = bscCallGateFor(ctx, domain.gateKey);
   let value: BscCardTeamValue & { rateLimited?: true };
   try {
-    const fakeNs = fakeBscCallerNs(null);
     value = await fetchBscCardTeamNameRaw(row.bscCardId, rec, stop, {
       gate,
-      ...(fakeNs !== undefined ? { fakeNs } : {}),
+      ...(domain.fakeNs !== undefined ? { fakeNs: domain.fakeNs } : {}),
     });
   } finally {
     await flushBscRecorder(undefined, rec);
@@ -2664,10 +2689,11 @@ export const fetchBscCardTeamNames = internalAction({
     // refusing a wave (open, probing, throttled or unreadable).
     let stopped: "gate" | "rateLimited" | "waveFailed" | undefined;
     const stop: BscLookupStop = { rateLimited: false };
-    const gate = bscCallGateFor(ctx);
     // NEO-552 — the fetching operator's run on the fake (the caller's
     // identity reaches a nested runAction), or the deployment's prefix.
-    const fakeNs = fakeBscCallerNs(fakeBscMode() ? await getCurrentUserId(ctx) : null);
+    // NEO-628 — one value: it keys the gate and is sent as the namespace.
+    const { gateKey, fakeNs } = await bscCallDomainOfCaller(ctx);
+    const gate = bscCallGateFor(ctx, gateKey);
     let asked = 0;
     // One answer per requested id, in request order, however the waves fell.
     const answers = new Map<number, BscCardTeamLookup>();
@@ -2823,19 +2849,34 @@ export const processBscTeamEnrichmentQueue = internalAction({
  *    it out ONCE, holding the slot, then reads the row and the gate again and
  *    asks (NEO-482). A gate still blocked after the wait (another caller's
  *    429 extended it), or one with longer left (only a long Retry-After), is
- *    `deferred` to its end with no call;
+ *    `deferred` to its end with no call. NEO-628: that wait is for the
+ *    `"deployment"` gate only. A card queued by an operator on the fake
+ *    (`queuedBy`) is asked behind THAT operator's gate, and a blocked one is
+ *    `deferred` at once, never slept on: the one slot is every shard's;
  *  - a 429 (BSC's, which `bscFetch` reported to the gate, or the gate's own
  *    refusal): `deferred` to the window's end (no pass spent);
  *  - otherwise `resolveBscCardTeam`'s answer.
  *
  * Paced `BSC_TEAM_ENRICH_DELAY_MS` after its call (the old chain's gap), so
- * the one slot never asks faster than the chain did.
+ * the one slot never asks faster than the chain did, when the call landed in
+ * the `"deployment"` domain: always against real BSC (byte-identical), and an
+ * item with no `queuedBy` on the fake. NEO-644: a call that landed in a fake
+ * namespace (`domain.gateKey !== BSC_GATE_DEPLOYMENT_KEY`) is not paced. The
+ * fake has no rate cap to stay under, and the pause only held the one slot
+ * every shard's cards queue behind (a 32-card fault spec cost ~70 s of it).
  */
 export const runBscTeamCheckItem = internalAction({
   args: {
     cardChecklistId: v.id("cardChecklist"),
     pass: v.number(),
     firstQueuedAt: v.number(),
+    /**
+     * NEO-628 — the Clerk subject of the operator who queued the card, set by
+     * the server when it queues (never by a client). On the fake the card is
+     * asked in THAT user's namespace and behind THAT user's gate; absent
+     * (queued before this field, or by the old shim) is the deployment's.
+     */
+    queuedBy: v.optional(v.string()),
   },
   returns: bscTeamCheckItemResultValidator,
   handler: async (ctx, args): Promise<BscTeamCheckItemResult> => {
@@ -2859,11 +2900,17 @@ export const runBscTeamCheckItem = internalAction({
     // NEO-552 — the call gate, not the old card-listing cooldown: blocked by
     // an open window or another caller's probe. An unreadable gate reads as
     // blocked for a base window (fail closed).
-    const gate = bscCallGateFor(ctx);
+    // NEO-628 — the queuing operator's domain: one value for the gate and for
+    // the namespace the call is made in.
+    const domain = bscCallDomainFor(args.queuedBy ?? null);
+    const gate = bscCallGateFor(ctx, domain.gateKey);
     let blockedUntil = await gate.blockedUntil();
     if (blockedUntil !== null) {
       const leftMs = blockedUntil - Date.now();
-      if (leftMs > BSC_TEAM_WAIT_IN_SLOT_MAX_MS) {
+      // Only the deployment's one gate is waited out in the slot. A
+      // per-namespace window is one test user's, and the lane's ONE slot is
+      // every shard's: it defers at once and the next user's card runs.
+      if (domain.gateKey !== BSC_GATE_DEPLOYMENT_KEY || leftMs > BSC_TEAM_WAIT_IN_SLOT_MAX_MS) {
         return { outcome: "deferred", until: blockedUntil };
       }
       // NEO-482 — a short window: wait it out in the slot, once.
@@ -2883,11 +2930,13 @@ export const runBscTeamCheckItem = internalAction({
     try {
       // The gate's grant (and its probe, and the success that closes a
       // window) is taken inside `bscFetch`.
-      outcome = await askBscCardTeam(ctx, args.cardChecklistId, row);
+      outcome = await askBscCardTeam(ctx, args.cardChecklistId, row, domain);
     } catch (error) {
       logError(error);
     }
-    await sleep(BSC_TEAM_ENRICH_DELAY_MS);
+    // NEO-644 — keyed on the domain the call landed in, never on `queuedBy`
+    // alone: on real BSC an item that carries one is still "deployment".
+    if (domain.gateKey === BSC_GATE_DEPLOYMENT_KEY) await sleep(BSC_TEAM_ENRICH_DELAY_MS);
     if (typeof outcome !== "string") return { outcome: "deferred", until: outcome.until };
     return { outcome };
   },

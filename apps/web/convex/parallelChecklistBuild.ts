@@ -126,6 +126,7 @@ import {
 import {
   listingInputsForStoredCard,
   newStoredCardReadCache,
+  teamNameFor,
 } from "./storedCardTitle";
 import { effectiveCardPlayerDefaults, newSelectorRowCache } from "./cardPlayersBulk";
 import {
@@ -134,7 +135,9 @@ import {
   stampNoTeam,
   teamDefaultOf,
 } from "./lib/selectorTeams";
-import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS, parallelBuildHold } from "./features/cardAttention";
+import { preferCardNumber } from "../lib/cards/card-number";
+import { checklistRowFactsForCards, type ChecklistRowFacts } from "./lib/variantPrintRun";
 import {
   cardKey,
   linkCardsToSide,
@@ -142,7 +145,7 @@ import {
   type FetchedParallelCard,
   type LinkableNbCard,
 } from "./lib/parallelCardLink";
-import { teamFullName } from "../lib/teams/team-name";
+import type { ListingTeamSplit } from "./features/generateListing";
 // NEO-358 — the one card delete (with its collector guard) and the counts.
 import {
   cardIsCollected,
@@ -166,6 +169,7 @@ import {
   type FetchFailure,
   type FetchFailureKind,
 } from "./lib/marketplaceFetchFailure";
+import { queuedByField } from "./lib/bscGateKey";
 
 // ---------------------------------------------------------------------------
 // Bounds
@@ -208,10 +212,13 @@ const LOOKUP_SCHEDULE_WRITES = 1;
  *
  * A source whose lookup has been and gone passes that answer on (its stamp,
  * outcome and hint travel with the copy) and is not asked again. One whose
- * lookup never ran (a hand-added card) or has not run YET (still queued when
- * the build runs) would otherwise leave the copy waiting forever: nothing
- * else queues a copy. Once the lane answers, `applyBscTeamResolution` writes
- * the team, or stamps the parallel's "No Team" when BSC names none.
+ * lookup has not run YET would otherwise leave the copy waiting forever:
+ * nothing else queues a copy. NEO-661: a source still waiting on its lookup
+ * now holds the build back (`BLOCKED_SOURCE_LOOKING_UP_TEAMS`), and a
+ * hand-added teamless source (no lookup will ever run) is refused as pink, so
+ * a source reaches this only when its lookup is queued after the check above,
+ * mid-build. Once the lane answers, `applyBscTeamResolution` writes the team,
+ * or stamps the parallel's "No Team" when BSC names none.
  */
 export function bscTeamLookupOwed(copy: {
   hasBscRef: boolean;
@@ -337,6 +344,23 @@ export const BLOCKED_IDS_UNREACHABLE =
 // NEO-321 — "the insert" became a neutral phrase: a base parallel is built
 // from the Base, not an insert.
 // NEO-321 (audit N1) — the two size sentences now cover the byte cap too.
+/**
+ * NEO-645 (J3, Q4), widened by NEO-661 (Jason, 2026-11-24) — the checklist a
+ * parallel is built from still has a card that shows pink (any pink item: a name
+ * waiting to be linked, a missing autograph format, a team to choose, a title
+ * over the limit). A parallel copies its source, so it is built once no card is
+ * pink. Checked here, before anything is deleted or fetched.
+ */
+export const BLOCKED_SOURCE_NOT_TIDY =
+  "the checklist it's built from still has cards that need fixing — tidy those up first";
+/**
+ * NEO-661 (Jason, 2026-11-24: "Yes, wait for lookups") — no card of the
+ * checklist is pink, but at least one is still waiting on its team lookup
+ * (`isAwaitingTeamLookup`). A parallel copies its source, so it is built once
+ * every lookup has answered. Pink wins when both hold (`BLOCKED_SOURCE_NOT_TIDY`).
+ */
+export const BLOCKED_SOURCE_LOOKING_UP_TEAMS =
+  "the checklist it's built from is still looking up teams for its cards — build again once they're in, or set those cards' teams yourself";
 export const BLOCKED_TOO_MANY_CARDS =
   "the checklist it's built from is bigger than one build can copy (more than 5,000 cards, or too much card data)";
 export const BLOCKED_PARALLEL_TOO_MANY_CARDS =
@@ -486,6 +510,9 @@ const PARALLEL_GONE =
   "That parallel is gone — it may have just been deleted.";
 const NO_INSERT_ABOVE =
   "This parallel doesn't sit under an insert, so there's no checklist to copy.";
+/** NEO-673 — the chosen source parallel is not itself built from anything. */
+export const NOT_BUILT_IS_THE_SOURCE =
+  "This parallel is the one the others copy from, so it saves its own checklist.";
 
 // ---------------------------------------------------------------------------
 // Chains and the side plan
@@ -532,8 +559,17 @@ function prefixOf(chain: readonly ChainRow[]): string | undefined {
 // The source a parallel is built from (NEO-321)
 // ---------------------------------------------------------------------------
 
-/** What kind of row a parallel is copied from. */
-export type BuildSourceKind = "insert" | "base";
+/**
+ * What kind of row a parallel is copied from. NEO-673: `"chosenParallel"` is a
+ * base parallel the operator picked as the source for a set with no Base.
+ */
+export type BuildSourceKind = "insert" | "base" | "chosenParallel";
+
+const sourceKindValidator = v.union(
+  v.literal("insert"),
+  v.literal("base"),
+  v.literal("chosenParallel"),
+);
 
 /**
  * Variant-type rows read under one set when looking for its Base. A set has a
@@ -571,11 +607,21 @@ export function pickBaseVariantType<R extends { value?: string }>(
   return { base: bases[0] };
 }
 
-/** The Base of the set a Parallel variant type sits in. */
-async function baseOfParallelType(
+/**
+ * The row a Parallel variant type's base parallels are copied from: the
+ * set's Base, else (NEO-673, only when the set has zero Bases) the insert the
+ * operator picked (`parallelSourceId`), re-verified here on every read: the
+ * row exists, is an insert and sits directly under this type. Anything else
+ * reads as no pick. More than one Base, or too many variant types, stay
+ * blocked as before.
+ */
+export async function sourceOfParallelType(
   ctx: { db: QueryCtx["db"] },
   parallelType: Doc<"selectorOptions">,
-): Promise<{ base: Doc<"selectorOptions"> } | { blockedReason: string }> {
+): Promise<
+  | { source: Doc<"selectorOptions">; kind: "base" | "chosenParallel" }
+  | { blockedReason: string }
+> {
   const setNameId = parallelType.parentId;
   if (!setNameId) return { blockedReason: BLOCKED_NO_BASE };
   const siblings = await ctx.db
@@ -587,7 +633,19 @@ async function baseOfParallelType(
   if (siblings.length > MAX_VARIANT_TYPES_PER_SET) {
     return { blockedReason: BLOCKED_TOO_MANY_VARIANT_TYPES };
   }
-  return pickBaseVariantType(siblings);
+  const found = pickBaseVariantType(siblings);
+  if ("base" in found) return { source: found.base, kind: "base" };
+  if (found.blockedReason === BLOCKED_NO_BASE && parallelType.parallelSourceId) {
+    const picked = await ctx.db.get(parallelType.parallelSourceId);
+    if (
+      picked &&
+      picked.level === "insert" &&
+      picked.parentId === parallelType._id
+    ) {
+      return { source: picked, kind: "chosenParallel" };
+    }
+  }
+  return found;
 }
 
 /**
@@ -597,7 +655,9 @@ async function baseOfParallelType(
  *   - a `parallel`-level row → its parent insert (NEO-312);
  *   - an `insert`-level row whose parent variant type is of kind `"parallel"` →
  *     the exactly-one sibling variant type titled "Base"; none, or more
- *     than one, is `blocked`;
+ *     than one, is `blocked`. NEO-673: with none, the insert the operator
+ *     picked (`parallelSourceId`) is the source (`"chosenParallel"`), and
+ *     that insert itself is `notBuildable`;
  *   - anything else → `notBuildable` (`NOT_A_PARALLEL`).
  *
  * The list query, the build's context read and every insert page call this
@@ -621,11 +681,15 @@ export async function resolveBuildSource(
       parent.level === "variantType" &&
       variantTypeKind(parent) === "parallel"
     ) {
-      const found = await baseOfParallelType(ctx, parent);
+      const found = await sourceOfParallelType(ctx, parent);
       if ("blockedReason" in found) {
         return { status: "blocked", kind: "base", blockedReason: found.blockedReason };
       }
-      return { status: "ok", kind: "base", source: found.base, parent };
+      // NEO-673 — the chosen source is not built from anything.
+      if (found.kind === "chosenParallel" && found.source._id === target._id) {
+        return { status: "notBuildable", message: NOT_BUILT_IS_THE_SOURCE };
+      }
+      return { status: "ok", kind: found.kind, source: found.source, parent };
     }
   }
   return { status: "notBuildable", message: NOT_A_PARALLEL };
@@ -859,25 +923,13 @@ async function reviewStagedOn(
       q.eq("selectorOptionId", selectorOptionId),
     )
     .first();
-  if (candidate) return true;
-  const queued = await ctx.db
-    .query("entityReviewQueue")
-    .withIndex("by_selector_option", (q) =>
-      q.eq("selectorOptionId", selectorOptionId),
-    )
-    .first();
-  return queued !== null;
-}
-
-/** The last sign of life of a review row — see `sweepAbandonedBatches`. */
-function reviewRowLastActive(row: Doc<"entityReviewQueue">): number {
-  return Math.max(row._creationTime, row.lastTouchedAt ?? 0);
+  return candidate !== null;
 }
 
 /**
- * The list's cheap early warning: the first staged row of each kind, judged
- * for freshness. Approximate on purpose (one read each); the build scans every
- * row before it clears anything.
+ * The list's cheap early warning: the first staged row, judged for freshness.
+ * Approximate on purpose (one read); the build scans every row before it
+ * clears anything.
  */
 async function reviewLooksLive(
   ctx: { db: QueryCtx["db"] },
@@ -890,14 +942,7 @@ async function reviewLooksLive(
       q.eq("selectorOptionId", selectorOptionId),
     )
     .first();
-  if (candidate && candidate._creationTime >= cutoff) return true;
-  const queued = await ctx.db
-    .query("entityReviewQueue")
-    .withIndex("by_selector_option", (q) =>
-      q.eq("selectorOptionId", selectorOptionId),
-    )
-    .first();
-  return queued !== null && reviewRowLastActive(queued) >= cutoff;
+  return candidate !== null && candidate._creationTime >= cutoff;
 }
 
 function hasScans(card: Doc<"cardChecklist">): boolean {
@@ -1003,12 +1048,24 @@ export const getParallelsForBuild = query({
       v.object({
         id: v.id("selectorOptions"),
         value: v.string(),
-        kind: v.union(v.literal("insert"), v.literal("base")),
+        kind: sourceKindValidator,
         hasCards: v.boolean(),
+        /**
+         * NEO-673 — only for a chosen parallel: where it sits among the
+         * parallels in the type's child order (the list leaves it out, so the
+         * picker slots it back at this index).
+         */
+        position: v.optional(v.number()),
       }),
     ),
     /** Why there is no `source` for a Parallel variant type (no single Base). */
     sourceBlocked: v.optional(v.string()),
+    /**
+     * NEO-673 — the operator may pick (or change) the parallel the others
+     * copy from: the set has zero Bases and the type holds base parallels.
+     * Always false for an insert and for a set that has a Base.
+     */
+    sourcePickable: v.boolean(),
     parallels: v.array(
       v.object({
         _id: v.id("selectorOptions"),
@@ -1027,7 +1084,9 @@ export const getParallelsForBuild = query({
     await requireAdmin(ctx);
     const parentId = args.sourceId ?? args.insertId;
     const parent = parentId ? await ctx.db.get(parentId) : null;
-    if (!parentId || !parent) return { parallels: [], truncated: false };
+    if (!parentId || !parent) {
+      return { parallels: [], truncated: false, sourcePickable: false };
+    }
 
     // Which children are the parallels, and which row they are built from —
     // by level and kind only (the same rules as `resolveBuildSource`).
@@ -1035,6 +1094,8 @@ export const getParallelsForBuild = query({
     let source: Doc<"selectorOptions"> | undefined;
     let sourceKind: BuildSourceKind;
     let sourceBlocked: string | undefined;
+    // NEO-673 — the set has zero Bases (the pick may be made or changed).
+    let noBase = false;
     if (parent.level === "insert") {
       childLevel = "parallel";
       source = parent;
@@ -1045,11 +1106,17 @@ export const getParallelsForBuild = query({
     ) {
       childLevel = "insert";
       sourceKind = "base";
-      const found = await baseOfParallelType(ctx, parent);
-      if ("blockedReason" in found) sourceBlocked = found.blockedReason;
-      else source = found.base;
+      const found = await sourceOfParallelType(ctx, parent);
+      if ("blockedReason" in found) {
+        sourceBlocked = found.blockedReason;
+        noBase = found.blockedReason === BLOCKED_NO_BASE;
+      } else {
+        source = found.source;
+        sourceKind = found.kind;
+        noBase = found.kind === "chosenParallel";
+      }
     } else {
-      return { parallels: [], truncated: false };
+      return { parallels: [], truncated: false, sourcePickable: false };
     }
     const sourceRowId = source?._id;
     const sourceHasCards = sourceRowId
@@ -1073,13 +1140,22 @@ export const getParallelsForBuild = query({
     const position = new Map<string, number>(
       (parent.children ?? []).map((id, i) => [id, i]),
     );
-    const parallels = found
+    const inChildOrder = found
       .slice(0, MAX_PARALLELS_PER_INSERT)
       .sort(
         (a, b) =>
           (position.get(a._id) ?? Number.MAX_SAFE_INTEGER) -
           (position.get(b._id) ?? Number.MAX_SAFE_INTEGER),
       );
+    // NEO-673 — a chosen source is not among the parallels built from it, but
+    // the picker lists it where it sits in the child order.
+    const sourcePosition =
+      sourceKind === "chosenParallel"
+        ? inChildOrder.findIndex((row) => row._id === sourceRowId)
+        : -1;
+    const parallels = inChildOrder.filter(
+      (row) => !(sourceKind === "chosenParallel" && row._id === sourceRowId),
+    );
 
     let cardBudget = LIST_BLOCK_CARD_BUDGET;
     let lookupBudget = LIST_BLOCK_LOOKUP_BUDGET;
@@ -1159,10 +1235,12 @@ export const getParallelsForBuild = query({
               value: source.value,
               kind: sourceKind,
               hasCards: sourceHasCards,
+              ...(sourcePosition >= 0 ? { position: sourcePosition } : {}),
             },
           }
         : {}),
       ...(sourceBlocked ? { sourceBlocked } : {}),
+      sourcePickable: noBase && found.length > 0,
       parallels: out,
       truncated,
     };
@@ -1187,8 +1265,6 @@ const sideCardListsValidator = v.object({
   bsc: v.array(v.string()),
   sportlots: v.array(v.string()),
 });
-
-const sourceKindValidator = v.union(v.literal("insert"), v.literal("base"));
 
 /**
  * What one build needs to know before it asks anything: where the target is
@@ -1395,19 +1471,30 @@ export const loadInsertCardsForLink = internalQuery({
     cursor: v.union(v.string(), v.null()),
   },
   returns: v.object({
-    cards: v.array(linkableCardValidator),
+    cards: v.array(
+      v.object({
+        ...linkableCardValidator.fields,
+        pink: v.optional(v.literal(true)),
+        awaitingLookup: v.optional(v.literal(true)),
+      }),
+    ),
     ...cardPageFields,
   }),
   handler: async (ctx, args) => {
     const { page, bytesRead } = await cardPage(ctx, args.sourceId, args.cursor);
     return {
-      cards: page.page.map((row) => ({
-        ...linkableOf(row),
-        ...(row.variationOfCardId
-          ? { variationOfCardId: row.variationOfCardId }
-          : {}),
-        sortOrder: row.sortOrder,
-      })),
+      cards: page.page.map((row) => {
+        // NEO-645 (J3), NEO-661 — the card's hold (`parallelBuildHold`), from
+        // the row alone, no extra read: pink, or waiting on its team lookup.
+        const hold = parallelBuildHold(row);
+        return {
+          ...linkableOf(row),
+          ...(hold === "fix" ? { pink: true as const } : {}),
+          ...(hold === "lookup" ? { awaitingLookup: true as const } : {}),
+          ...(row.variationOfCardId ? { variationOfCardId: row.variationOfCardId } : {}),
+          sortOrder: row.sortOrder,
+        };
+      }),
       isDone: page.isDone,
       continueCursor: page.continueCursor,
       bytesRead,
@@ -1460,13 +1547,12 @@ export const loadParallelCardsForLink = internalQuery({
 /**
  * One page of the parallel's staged review state, for the build's freshness
  * scan: how many rows, and the newest sign of life among them. Reads only;
- * the clear runs after EVERY page of both tables has been judged, so a live
- * session is never half-deleted.
+ * the clear runs after EVERY page has been judged, so a live session is never
+ * half-deleted.
  */
 export const scanParallelReviewPage = internalQuery({
   args: {
     parallelId: v.id("selectorOptions"),
-    table: v.union(v.literal("candidates"), v.literal("entityReview")),
     cursor: v.union(v.string(), v.null()),
   },
   returns: v.object({
@@ -1476,30 +1562,15 @@ export const scanParallelReviewPage = internalQuery({
     continueCursor: v.string(),
   }),
   handler: async (ctx, args) => {
-    const opts = { numItems: REVIEW_SCAN_PAGE, cursor: args.cursor };
-    if (args.table === "candidates") {
-      const page = await ctx.db
-        .query("checklistCandidates")
-        .withIndex("by_selector_option_and_user", (q) =>
-          q.eq("selectorOptionId", args.parallelId),
-        )
-        .paginate(opts);
-      return {
-        rows: page.page.length,
-        lastActiveAt: Math.max(0, ...page.page.map((r) => r._creationTime)),
-        isDone: page.isDone,
-        continueCursor: page.continueCursor,
-      };
-    }
     const page = await ctx.db
-      .query("entityReviewQueue")
-      .withIndex("by_selector_option", (q) =>
+      .query("checklistCandidates")
+      .withIndex("by_selector_option_and_user", (q) =>
         q.eq("selectorOptionId", args.parallelId),
       )
-      .paginate(opts);
+      .paginate({ numItems: REVIEW_SCAN_PAGE, cursor: args.cursor });
     return {
       rows: page.page.length,
-      lastActiveAt: Math.max(0, ...page.page.map(reviewRowLastActive)),
+      lastActiveAt: Math.max(0, ...page.page.map((r) => r._creationTime)),
       isDone: page.isDone,
       continueCursor: page.continueCursor,
     };
@@ -1507,10 +1578,9 @@ export const scanParallelReviewPage = internalQuery({
 });
 
 /**
- * Delete one page of the parallel's STALE review state: `checklistCandidates`
- * first, then `entityReviewQueue`. Both are transient wizard/dialog state
- * (a Cancel deletes exactly these rows); no player, team, league, card or
- * `entityReviewSkips` ruling is touched.
+ * Delete one page of the parallel's STALE review state: `checklistCandidates`.
+ * It is transient dialog state (a Cancel deletes exactly these rows); no
+ * player, team, league or card is touched.
  *
  * A row fresher than `cutoff` stops the page before anything in it is
  * deleted and answers `live` — a session started since the scan.
@@ -1519,7 +1589,6 @@ export const clearParallelReviewPage = internalMutation({
   args: { parallelId: v.id("selectorOptions"), cutoff: v.number() },
   returns: v.object({
     candidates: v.number(),
-    reviewRows: v.number(),
     done: v.boolean(),
     live: v.boolean(),
   }),
@@ -1531,28 +1600,12 @@ export const clearParallelReviewPage = internalMutation({
       )
       .take(REVIEW_CLEAR_PAGE);
     if (candidates.some((r) => r._creationTime >= args.cutoff)) {
-      return { candidates: 0, reviewRows: 0, done: true, live: true };
+      return { candidates: 0, done: true, live: true };
     }
     for (const row of candidates) await ctx.db.delete(row._id);
-    if (candidates.length === REVIEW_CLEAR_PAGE) {
-      return { candidates: candidates.length, reviewRows: 0, done: false, live: false };
-    }
-    const budget = REVIEW_CLEAR_PAGE - candidates.length;
-    const rows = await ctx.db
-      .query("entityReviewQueue")
-      .withIndex("by_selector_option", (q) =>
-        q.eq("selectorOptionId", args.parallelId),
-      )
-      .take(budget + 1);
-    const page = rows.slice(0, budget);
-    if (page.some((r) => reviewRowLastActive(r) >= args.cutoff)) {
-      return { candidates: candidates.length, reviewRows: 0, done: true, live: true };
-    }
-    for (const row of page) await ctx.db.delete(row._id);
     return {
       candidates: candidates.length,
-      reviewRows: page.length,
-      done: rows.length <= budget,
+      done: candidates.length < REVIEW_CLEAR_PAGE,
       live: false,
     };
   },
@@ -1572,7 +1625,14 @@ export const clearParallelReviewPage = internalMutation({
  * card delete, `removeCardRow`, exactly as `deleteCard` does it.
  */
 export const deleteParallelCardsPage = internalMutation({
-  args: { parallelId: v.id("selectorOptions") },
+  args: {
+    parallelId: v.id("selectorOptions"),
+    /**
+     * The source the action planned the build from. Optional so a call made
+     * across a deploy still validates; absent is refused like a moved source.
+     */
+    sourceId: v.optional(v.id("selectorOptions")),
+  },
   returns: v.object({
     deleted: v.number(),
     done: v.boolean(),
@@ -1584,6 +1644,31 @@ export const deleteParallelCardsPage = internalMutation({
   }),
   handler: async (ctx, args) => {
     const empty = { bsc: [] as string[], sportlots: [] as string[] };
+    // NEO-673 (security audit) — the same source check `insertParallelCardsPage`
+    // makes, BEFORE any read or delete: an admin repointing the type's pick to
+    // this parallel mid-build makes its cards the set's only source, and they
+    // must not be wiped. A parallel that no longer resolves to the source the
+    // action planned from stops here, with nothing deleted.
+    const parallel = await ctx.db.get(args.parallelId);
+    const resolved = parallel ? await resolveBuildSource(ctx, parallel) : undefined;
+    if (
+      !resolved ||
+      resolved.status !== "ok" ||
+      args.sourceId === undefined ||
+      resolved.source._id !== args.sourceId
+    ) {
+      console.warn(
+        JSON.stringify({ msg: "parallel_delete_page_refused", parallelId: args.parallelId }),
+      );
+      return {
+        deleted: 0,
+        done: true,
+        // Nothing was removed by THIS page; the action turns it into
+        // BLOCKED_CHANGED_MID_BUILD when an earlier page did remove cards.
+        blockedReason: BLOCKED_CHANGED_NOTHING_CLEARED,
+        refs: empty,
+      };
+    }
     if (await reviewStagedOn(ctx, args.parallelId)) {
       return { deleted: 0, done: true, blockedReason: BLOCKED_REVIEW_OPEN, refs: empty };
     }
@@ -1745,12 +1830,23 @@ export const insertParallelCardsPage = internalMutation({
         bsc: v.optional(copyLinkValidator),
         sportlots: v.optional(copyLinkValidator),
         printRun: v.optional(v.number()),
+        /**
+         * NEO-616 — the parallel's own number, for a card whose marketplace or
+         * checklist number differs from its source's only in the prefix. Absent:
+         * the copy takes its source's number.
+         */
+        cardNumber: v.optional(v.string()),
         keepSku: v.optional(v.string()),
       }),
     ),
     remap: v.array(
       v.object({ from: v.id("cardChecklist"), to: v.id("cardChecklist") }),
     ),
+    /**
+     * NEO-628 — the operator building (the action's verified Clerk subject),
+     * passed to the team lane for the copies' lookups. Never read here.
+     */
+    queuedBy: v.optional(v.string()),
   },
   returns: v.object({
     created: v.array(
@@ -1864,9 +1960,16 @@ export const insertParallelCardsPage = internalMutation({
     };
 
     const readPlayerName = async (id: Id<"players">) => (await ctx.db.get(id))?.name ?? null;
-    const readTeamName = async (id: Id<"teams">) => {
-      const team = await ctx.db.get(id);
-      return team ? teamFullName(team) : null;
+    // NEO-606 — through the shared reader, so a team's split lands in the
+    // cache beside its name (`splitsOf` below reads it from there).
+    const readTeamName = (id: Id<"teams">) => teamNameFor(ctx, id, lookup);
+    const splitsOf = (ids: Array<Id<"teams">> | undefined): ListingTeamSplit[] => {
+      const out: ListingTeamSplit[] = [];
+      for (const id of ids ?? []) {
+        const split = lookup.teamSplits.get(id as string);
+        if (split) out.push(split);
+      }
+      return out;
     };
 
     // NEO-528 round 3 — "Player on every card": the player and cameos a card
@@ -1897,6 +2000,7 @@ export const insertParallelCardsPage = internalMutation({
     const parallelNoTeam =
       parallelDefault.kind === "noTeam" ? parallelDefault.noTeamDefault : undefined;
     const parallelTeamNames = await namesOf(parallelTeamIds, teamName, readTeamName);
+    const parallelTeamSplits = splitsOf(parallelTeamIds);
 
     const created: Array<{ from: Id<"cardChecklist">; to: Id<"cardChecklist"> }> = [];
     let missing = 0;
@@ -1961,6 +2065,7 @@ export const insertParallelCardsPage = internalMutation({
 
       const playerNames = await namesOf(source.playerIds, playerName, readPlayerName);
       const sourceTeamNames = await namesOf(source.teamOnCardIds, teamName, readTeamName);
+      const sourceTeamSplits = splitsOf(source.teamOnCardIds);
       // NEO-528 — the copy pictures the same people as the card it copies:
       // its cameos travel with it (one no longer in NB is left off), then the
       // parallel's defaults: its player on a copy that names nobody and holds
@@ -1977,6 +2082,11 @@ export const insertParallelCardsPage = internalMutation({
           ? { ...parallelDefaults, playerId: null, player: null }
           : parallelDefaults,
       );
+      // NEO-661: a source card still waiting on its team lookup, or pink, holds
+      // the whole build back before this point, so the Set Team / No Team
+      // defaults below now reach a copy only through a lookup that answers
+      // mid-build (`bscTeamLookupOwed`, `applyBscTeamResolution`), not from a
+      // source that was waiting when the build started.
       // The Set Team gap, fill-empty only: never over a card's own team or a
       // team name waiting for review (`defaultTeamOnCardIds`), never on a
       // card an operator ruled teamless, and never where a listing named a
@@ -1991,6 +2101,7 @@ export const insertParallelCardsPage = internalMutation({
           : { ids: undefined, defaulted: false };
       const teamOnCardIds = teamDefault.defaulted ? teamDefault.ids : source.teamOnCardIds;
       const teamNames = teamDefault.defaulted ? parallelTeamNames : sourceTeamNames;
+      const teamSplits = teamDefault.defaulted ? parallelTeamSplits : sourceTeamSplits;
       // NEO-556 — under the parallel's No Team, asked of the copy as it will
       // be born: its teams and pending names, the lookup bookkeeping it
       // carries from its source, and ITS OWN BSC link. A listing that names a
@@ -2013,9 +2124,11 @@ export const insertParallelCardsPage = internalMutation({
           ? stampNoTeam(parallelNoTeam.setByUserId, Date.now())
           : undefined;
 
+      // NEO-645 — the review state (`sourceDisagreements`, `sourceNumbers`)
+      // does NOT travel: it is the source card's own.
       const card: NewCardRow = {
         selectorOptionId: args.parallelId,
-        cardNumber: source.cardNumber,
+        cardNumber: copy.cardNumber ?? source.cardNumber,
         cardName: source.cardName,
         // NEO-254 — the pair, together (the source's, or the parallel's
         // default player on a copy that had none).
@@ -2047,6 +2160,7 @@ export const insertParallelCardsPage = internalMutation({
         sortOrder: source.sortOrder,
         playerNames: born.playerNames,
         teamNames,
+        ...(teamSplits.length > 0 ? { teamSplits } : {}),
         // Hobby A4 — the insert card's own facts (an autograph, Signed By,
         // a short print) survive; the parallel's snapshot wins on what the
         // parallel IS.
@@ -2083,10 +2197,14 @@ export const insertParallelCardsPage = internalMutation({
       const { inputs, assessment } = assessNewCardListing(card, set, {
         playerNames: card.playerNames,
         teamNames: card.teamNames,
+        teamSplits: card.teamSplits,
         cameoNames: born.cameos.map((c) => c.name),
+        // NEO-645 — the name `insertCardRow` titles the copy with.
+        cardName: card.cardName,
+        printedPlayerNames: (card.playerLinks ?? []).map((l) => l.nameOnCard),
       });
       let outcome: ParallelCopyTitle | undefined =
-        assessment.fits && !assessment.firstNameLost
+        assessment.fits && !assessment.tidyUp
           ? { ...assessment, failing: false }
           : undefined;
       if (outcome === undefined) {
@@ -2145,6 +2263,7 @@ export const insertParallelCardsPage = internalMutation({
     if (lookupOwed.length > 0) {
       await ctx.scheduler.runAfter(0, internal.bscTeamPool.enqueueBscTeamChecks, {
         cardChecklistIds: lookupOwed,
+        ...(args.queuedBy !== undefined ? { queuedBy: args.queuedBy } : {}),
       });
     }
     return {
@@ -2329,7 +2448,7 @@ export const buildParallelChecklist = action({
     blockedReason: v.optional(v.string()),
   }),
   handler: async (ctx, args): Promise<BuildParallelResult> => {
-    await requireAdmin(ctx);
+    const adminId = await requireAdmin(ctx);
     if (args.waitKey !== undefined && !isValidWaitKey(args.waitKey)) {
       throw new ConvexError("buildParallelChecklist: waitKey must be 1-64 letters, digits, _ or -.");
     }
@@ -2442,6 +2561,13 @@ export const buildParallelChecklist = action({
       }),
     );
     if (insertCards.overLimit) return blocked(BLOCKED_TOO_MANY_CARDS);
+    // NEO-645 (J3, Q4), NEO-661 — the server's half of "hold the parallels back
+    // while any card is pink or still waiting on its team lookup" (the client
+    // gate is the other half). Pink wins when both hold.
+    if (insertCards.cards.some((c) => c.pink === true)) return blocked(BLOCKED_SOURCE_NOT_TIDY);
+    if (insertCards.cards.some((c) => c.awaitingLookup === true)) {
+      return blocked(BLOCKED_SOURCE_LOOKING_UP_TEAMS);
+    }
 
     // ── 3. fetch every side before anything is touched ──────────────────────
     // NEO-321 follow-up — every side ends in exactly one log line,
@@ -2647,6 +2773,38 @@ export const buildParallelChecklist = action({
       };
     }
 
+    // NEO-616 — where SportLots states no run for a card, the parallel's OWN
+    // linked checklist rows may (a file such as a foil x colour layout prints
+    // one per card); and a row whose number differs from its source card's
+    // only in the prefix gives the copy that number (Jason, 2026-11-24). Read
+    // for every build, SportLots runs or not: a stored checklist too big to
+    // read, or a read that fails, leaves every run and number as it would have
+    // been without the checklist. SportLots wins a run where it has one.
+    let checklistFacts = new Map<Id<"cardChecklist">, ChecklistRowFacts>();
+    try {
+      const stored = await ctx.runQuery(internal.publishedChecklists.rowsForLeaf, {
+        selectorOptionId: args.parallelId,
+      });
+      if (stored.kind === "rows" && stored.rows.length > 0) {
+        checklistFacts = checklistRowFactsForCards(
+          insertCards.cards.map((c) => ({
+            id: c._id,
+            cardNumber: c.cardNumber,
+            players: c.namesOnCard,
+          })),
+          stored.rows,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          msg: "parallel_checklist_runs_unread",
+          parallelId: args.parallelId,
+          error: err instanceof Error ? err.name : "unknown",
+        }),
+      );
+    }
+
     type Copy = {
       sourceCardId: Id<"cardChecklist">;
       expect: { cardNumber: string; cardName: string; namesOnCard: string[] };
@@ -2654,6 +2812,8 @@ export const buildParallelChecklist = action({
       bsc?: { ref: string; setId?: string };
       sportlots?: { ref: string; setId?: string };
       printRun?: number;
+      /** NEO-616 — the parallel's own number, when it differs from its source's only in the prefix. */
+      cardNumber?: string;
       keepSku?: string;
       variationOfCardId?: Id<"cardChecklist">;
       sortOrder: number;
@@ -2682,6 +2842,28 @@ export const buildParallelChecklist = action({
       };
       const bsc = link("bsc");
       const sl = link("sportlots");
+      // NEO-616 — a card linked by a number that differs from its source's
+      // only in the prefix keeps that number (the parallel's own printing),
+      // not the source's. Both sides: the number NB prefers (letters, then
+      // digits, BSC first on a tie). Else the parallel's own checklist row.
+      const prefixNumberOn = (side: PlatformSide): string | undefined => {
+        const outcome = outcomeOn(side);
+        return outcome?.kind === "linked" && outcome.via === "prefix"
+          ? outcome.card.cardNumber.trim()
+          : undefined;
+      };
+      const bscNumber = prefixNumberOn("bsc");
+      const slNumber = prefixNumberOn("sportlots");
+      const candidateNumber =
+        bscNumber !== undefined && slNumber !== undefined
+          ? preferCardNumber(bscNumber, slNumber)
+          : (bscNumber ?? slNumber ?? checklistFacts.get(card._id)?.cardNumber);
+      // Wrapper rule 7 (Jason, 2026-11-18): letters over digits. A side that
+      // printed a bare "1" (SportLots strips prefixes) never replaces the
+      // source's lettered "89B-1"; a lettered "T88-12" does replace a bare "12".
+      const preferredNumber =
+        candidateNumber !== undefined ? preferCardNumber(candidateNumber, card.cardNumber) : undefined;
+      const ownNumber = preferredNumber !== card.cardNumber ? preferredNumber : undefined;
       // J2 — only when a side was asked; an unlinked copy takes every card.
       if (!bsc && !sl && toFetch.length > 0) {
         listPush(lists.leftOff, label);
@@ -2710,9 +2892,15 @@ export const buildParallelChecklist = action({
         }),
         ...(bsc ? { bsc: { ref: bsc.ref, ...(bsc.setId ? { setId: bsc.setId } : {}) } } : {}),
         ...(sl ? { sportlots: { ref: sl.ref, ...(sl.setId ? { setId: sl.setId } : {}) } } : {}),
-        // M3 — the print run is the PARALLEL's, and only SportLots states it
-        // per card. NB has no parallel-level print run to fall back on.
-        ...(sl?.printRun !== undefined ? { printRun: sl.printRun } : {}),
+        // M3 — the print run is the PARALLEL's. SportLots states it per card
+        // and wins; failing that, the parallel's own linked checklist rows
+        // (NEO-616).
+        ...(sl?.printRun !== undefined
+          ? { printRun: sl.printRun }
+          : checklistFacts.get(card._id)?.printRun !== undefined
+            ? { printRun: checklistFacts.get(card._id)!.printRun }
+            : {}),
+        ...(ownNumber !== undefined ? { cardNumber: ownNumber } : {}),
         ...(card.variationOfCardId ? { variationOfCardId: card.variationOfCardId } : {}),
         sortOrder: card.sortOrder,
       });
@@ -2794,7 +2982,7 @@ export const buildParallelChecklist = action({
     for (;;) {
       const page = await ctx.runMutation(
         internal.parallelChecklistBuild.deleteParallelCardsPage,
-        { parallelId: args.parallelId },
+        { parallelId: args.parallelId, sourceId: plan.sourceId },
       );
       if (page.blockedReason) {
         // Security 3 — a block after the first page is a PARTIAL WIPE, and is
@@ -2857,9 +3045,11 @@ export const buildParallelChecklist = action({
             ...(c.bsc ? { bsc: c.bsc } : {}),
             ...(c.sportlots ? { sportlots: c.sportlots } : {}),
             ...(c.printRun !== undefined ? { printRun: c.printRun } : {}),
+            ...(c.cardNumber !== undefined ? { cardNumber: c.cardNumber } : {}),
             ...(c.keepSku ? { keepSku: c.keepSku } : {}),
           })),
           remap,
+          ...queuedByField(adminId),
         },
       );
       if (page.changed) {
@@ -2899,6 +3089,22 @@ export const buildParallelChecklist = action({
         ? classify(oldRefsBySide, landedRefs)
         : classified;
 
+    // NEO-616 — the parallel's own print run, from the cards it now holds.
+    // The build is already done: a failure here is logged, never the build's.
+    try {
+      await ctx.runMutation(internal.variantPrintRun.refreshVariantPrintRun, {
+        selectorOptionId: args.parallelId,
+      });
+    } catch (err) {
+      console.warn(
+        JSON.stringify({
+          msg: "parallel_print_run_refresh_failed",
+          parallelId: args.parallelId,
+          error: err instanceof Error ? err.name : "unknown",
+        }),
+      );
+    }
+
     const copied = newIdOf.size;
     const result: BuildParallelResult = {
       status: "built",
@@ -2930,40 +3136,36 @@ export const buildParallelChecklist = action({
 async function clearStaleReviewState(
   ctx: Pick<ActionCtx, "runQuery" | "runMutation">,
   parallelId: Id<"selectorOptions">,
-): Promise<{ live: boolean; candidates: number; reviewRows: number }> {
+): Promise<{ live: boolean; candidates: number }> {
   const cutoff = Date.now() - REVIEW_ACTIVE_WINDOW_MS;
   let staged = 0;
-  for (const table of ["candidates", "entityReview"] as const) {
-    let cursor: string | null = null;
-    for (;;) {
-      const page: {
-        rows: number;
-        lastActiveAt: number;
-        isDone: boolean;
-        continueCursor: string;
-      } = await ctx.runQuery(
-        internal.parallelChecklistBuild.scanParallelReviewPage,
-        { parallelId, table, cursor },
-      );
-      if (page.lastActiveAt >= cutoff) {
-        return { live: true, candidates: 0, reviewRows: 0 };
-      }
-      staged += page.rows;
-      if (page.isDone) break;
-      cursor = page.continueCursor;
+  let cursor: string | null = null;
+  for (;;) {
+    const page: {
+      rows: number;
+      lastActiveAt: number;
+      isDone: boolean;
+      continueCursor: string;
+    } = await ctx.runQuery(
+      internal.parallelChecklistBuild.scanParallelReviewPage,
+      { parallelId, cursor },
+    );
+    if (page.lastActiveAt >= cutoff) {
+      return { live: true, candidates: 0 };
     }
+    staged += page.rows;
+    if (page.isDone) break;
+    cursor = page.continueCursor;
   }
-  if (staged === 0) return { live: false, candidates: 0, reviewRows: 0 };
+  if (staged === 0) return { live: false, candidates: 0 };
 
   let candidates = 0;
-  let reviewRows = 0;
   for (;;) {
     const page = await ctx.runMutation(
       internal.parallelChecklistBuild.clearParallelReviewPage,
       { parallelId, cutoff },
     );
     candidates += page.candidates;
-    reviewRows += page.reviewRows;
     if (page.live || page.done) {
       // Ids and counts only.
       console.log(
@@ -2971,11 +3173,10 @@ async function clearStaleReviewState(
           msg: "parallel_review_state_cleared",
           parallelId,
           candidates,
-          reviewRows,
           stoppedOnLiveSession: page.live,
         }),
       );
-      return { live: page.live, candidates, reviewRows };
+      return { live: page.live, candidates };
     }
   }
 }

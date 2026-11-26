@@ -44,7 +44,15 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
+
+function armFake() {
+  vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
+  vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+  vi.stubEnv("TESTING_RESET_SECRET", "armed");
+  vi.stubEnv("CONVEX_CLOUD_URL", "https://happy-otter-123.convex.cloud");
+}
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -200,30 +208,6 @@ async function settle(t: T): Promise<Set<string>> {
   return ids;
 }
 
-/** A team-review batch row the operator answered "not a team" for. */
-async function skipTeamName(
-  t: T,
-  opts: {
-    selectorOptionId: Id<"selectorOptions">;
-    sportId: Id<"selectorOptions">;
-    batchId: string;
-    name: string;
-  },
-) {
-  await t.run(async (ctx) =>
-    ctx.db.insert("entityReviewQueue", {
-      selectorOptionId: opts.selectorOptionId,
-      batchId: opts.batchId,
-      createdByUserId: ADMIN_IDENTITY.subject,
-      kind: "team",
-      name: opts.name,
-      sportId: opts.sportId,
-      status: "ready",
-      decision: { action: "skip" },
-    }),
-  );
-}
-
 describe("commitCardChecklist — the fetch-time BSC lookup's answer (NEO-335)", () => {
   test("an ANSWERED blank card is stamped checked at save and never queued", async () => {
     const t = convexTest(schema, modules);
@@ -275,40 +259,6 @@ describe("commitCardChecklist — the fetch-time BSC lookup's answer (NEO-335)",
     const row = (await rowsByNumber(t, leafId)).get("1")!;
     expect(row.teamCheckDoneAt).toBeUndefined();
     expect((await settle(t)).has(row._id)).toBe(true);
-  });
-
-  // NEO-330 × NEO-335 — the operator ruled the name "not a team", so it is
-  // never kept as the hint the fixer reads back as "The listing names …".
-  test("ANSWERED but unmatched (operator skipped BSC's string): stamped, no hint, not queued", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    await skipTeamName(t, {
-      selectorOptionId: leafId,
-      sportId,
-      batchId: "batch-1",
-      name: "Gotham Knights",
-    });
-
-    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: leafId,
-      sportId,
-      batchId: "batch-1",
-      cards: [
-        card({
-          cardNumber: "1",
-          bscRef: "B1",
-          teams: ["Gotham Knights"],
-          teamLookup: "answered",
-        }),
-      ],
-    });
-
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
-    expect(row.bscTeamName).toBeUndefined();
-    expect(row.teamOnCardIds).toBeUndefined();
-    expect(row.pendingTeamNames).toBeUndefined();
-    expect((await settle(t)).has(row._id)).toBe(false);
   });
 
   test("ANSWERED with the name still pending review: stamped, no hint (the pending name carries it), not queued", async () => {
@@ -379,49 +329,8 @@ describe("commitCardChecklist — the hint is BSC's raw value, as the background
   const WSH = "Washington Nationals";
   const RAW = `${CLE}, ${WSH}`;
 
-  async function skipBoth(
-    t: T,
-    sportId: Id<"selectorOptions">,
-    leafId: Id<"selectorOptions">,
-  ) {
-    for (const name of [CLE, WSH]) {
-      await skipTeamName(t, { selectorOptionId: leafId, sportId, batchId: "batch-1", name });
-    }
-  }
-
-  // NEO-330 × NEO-335 — every part ruled "not a team": the raw value would
-  // carry those names back, so nothing is kept (as `applyBscTeamResolution`).
-  test("a split card whose parts were all skipped keeps no hint — neither the raw value nor a part", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    await skipBoth(t, sportId, leafId);
-
-    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: leafId,
-      sportId,
-      batchId: "batch-1",
-      cards: [
-        card({
-          cardNumber: "1",
-          bscRef: "B1",
-          teams: [CLE, WSH],
-          rawTeamName: RAW,
-          teamLookup: "answered",
-        }),
-      ],
-    });
-
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.bscTeamName).toBeUndefined();
-    expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
-    expect(row.teamOnCardIds).toBeUndefined();
-    expect(row.pendingTeamNames).toBeUndefined();
-    expect((await settle(t)).has(row._id)).toBe(false);
-  });
-
   test("the raw value is kept verbatim, spacing included — the hint is what BSC said, not our reading of it", async () => {
-    // No skips (a ruled-out name keeps no hint at all) and no split on the
-    // card — the shape a split refused over the cap arrives in.
+    // No split on the card — the shape a split refused over the cap arrives in.
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
 
@@ -440,59 +349,6 @@ describe("commitCardChecklist — the hint is BSC's raw value, as the background
 
     expect((await rowsByNumber(t, leafId)).get("1")!.bscTeamName).toBe(`${CLE},${WSH}`);
     await settle(t);
-  });
-
-  test("an older client that sends no raw value, every part skipped: no hint either", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    await skipBoth(t, sportId, leafId);
-
-    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: leafId,
-      sportId,
-      batchId: "batch-1",
-      cards: [
-        card({ cardNumber: "1", bscRef: "B1", teams: [CLE, WSH], teamLookup: "answered" }),
-      ],
-    });
-
-    expect((await rowsByNumber(t, leafId)).get("1")!.bscTeamName).toBeUndefined();
-    await settle(t);
-  });
-
-  test("a name an EARLIER save skipped (stored skip, no decision now) keeps no hint", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewSkips", {
-        selectorOptionId: leafId,
-        kind: "team",
-        nameNormalized: normalizeEntityName("Gotham Knights"),
-        name: "Gotham Knights",
-        skippedAt: 1,
-        skippedByUserId: ADMIN_IDENTITY.subject,
-      }),
-    );
-
-    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: leafId,
-      sportId,
-      cards: [
-        card({
-          cardNumber: "1",
-          bscRef: "B1",
-          teams: ["Gotham Knights"],
-          rawTeamName: "Gotham Knights",
-          teamLookup: "answered",
-        }),
-      ],
-    });
-
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.bscTeamName).toBeUndefined();
-    expect(row.pendingTeamNames).toBeUndefined();
-    expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
-    expect((await settle(t)).has(row._id)).toBe(false);
   });
 
   test("a split refused over the cap (no teams on the card) still keeps the raw value as the hint", async () => {
@@ -613,52 +469,6 @@ describe("commitCardChecklist — the hint is BSC's raw value, as the background
     await settle(t);
   });
 
-  test("parity: with every part ruled out, neither path keeps a hint", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    await skipBoth(t, sportId, leafId);
-
-    // The background path, on a card already saved: neither part is a team.
-    const backgroundId = await t.run(async (ctx) =>
-      insertTestCard(ctx, {
-        selectorOptionId: leafId,
-        cardNumber: "BG",
-        cardName: "Card BG",
-        platformData: { bsc: { ref: "B-BG", src: "b0" } },
-        sortOrder: 99,
-        lastUpdated: 1,
-      }),
-    );
-    // The commit path, for a card whose lookup answered before save. It
-    // records the two skips for the set.
-    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: leafId,
-      sportId,
-      batchId: "batch-1",
-      cards: [
-        card({
-          cardNumber: "1",
-          bscRef: "B1",
-          teams: [CLE, WSH],
-          rawTeamName: RAW,
-          teamLookup: "answered",
-        }),
-      ],
-    });
-
-    // The background path, after the ruling is on record.
-    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
-      cardChecklistId: backgroundId,
-      rawTeamName: RAW,
-      teamNames: [CLE, WSH],
-    });
-
-    const background = await t.run(async (ctx) => ctx.db.get(backgroundId));
-    const committed = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(background!.bscTeamName).toBeUndefined();
-    expect(committed.bscTeamName).toBeUndefined();
-    await settle(t);
-  });
 });
 
 describe("commitCardChecklist — operator-chosen teamIds (NEO-335)", () => {
@@ -693,6 +503,30 @@ describe("commitCardChecklist — operator-chosen teamIds (NEO-335)", () => {
     const queued = await settle(t);
     // A card with a team is never queued, whatever its lookup said.
     expect(queued.has(rows.get("2")!._id)).toBe(false);
+  });
+
+  test("NEO-639: a failed-lookup card saved with its pre-filled team is teamed and kept off the BSC lane; its untouched twin is queued", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        // The Teams step pre-filled this one although its lookup failed.
+        card({ cardNumber: "1", bscRef: "B1", teamIds: [reds], teamLookup: "failed" }),
+        // The control: same lookup outcome, left for later.
+        card({ cardNumber: "2", bscRef: "B2", teamLookup: "failed" }),
+      ],
+    });
+
+    const rows = await rowsByNumber(t, leafId);
+    expect(rows.get("1")!.teamOnCardIds).toEqual([reds]);
+    expect(rows.get("2")!.teamOnCardIds).toBeUndefined();
+    const queued = await settle(t);
+    expect(queued.has(rows.get("1")!._id)).toBe(false);
+    expect(queued.has(rows.get("2")!._id)).toBe(true);
   });
 
   test("another sport's team REFUSES the commit before anything is written", async () => {
@@ -855,23 +689,6 @@ describe("commitCardChecklist — \"No team on this card\" (NEO-335)", () => {
     await settle(t);
   });
 
-  test("a skipped team name is no team: teamNone applies", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    await skipTeamName(t, { selectorOptionId: leafId, sportId, batchId: "batch-1", name: "Checklist" });
-
-    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: leafId,
-      sportId,
-      batchId: "batch-1",
-      cards: [card({ cardNumber: "1", bscRef: "B1", teams: ["Checklist"], teamNone: true })],
-    });
-
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.teamNoneConfirmedAt).toEqual(expect.any(Number));
-    expect(row.teamOnCardIds).toBeUndefined();
-    await settle(t);
-  });
 });
 
 describe("commitCardChecklist — re-sync of existing rows, same rule (NEO-335)", () => {
@@ -908,6 +725,48 @@ describe("commitCardChecklist — re-sync of existing rows, same rule (NEO-335)"
     expect([...after].filter((id) => id === rowId).length).toBe(
       [...before].filter((id) => id === rowId).length,
     );
+  });
+
+  test("NEO-628: the lane is handed the committing operator's subject on the fake, which the commit takes from its verified identity", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    const { rowId } = await firstSync(t);
+    const queued = await t.run(async (ctx) =>
+      (
+        ctx as unknown as {
+          db: { system: { query: (n: string) => { collect: () => Promise<Array<{ name: string; args: unknown[] }>> } } };
+        }
+      ).db.system.query("_scheduled_functions").collect(),
+    );
+    const entries = queued
+      .filter((r) => r.name.includes("enqueueBscTeamChecks"))
+      .map((r) => r.args[0] as { cardChecklistIds?: string[]; queuedBy?: string })
+      .filter((a) => (a.cardChecklistIds ?? []).includes(rowId));
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) expect(entry.queuedBy).toBe(ADMIN_IDENTITY.subject);
+    await settle(t);
+  });
+
+  test("NEO-628 N2: on real BSC no scheduled hop carries the operator's subject (finalize, then the lane enqueue)", async () => {
+    const t = convexTest(schema, modules);
+    const { rowId } = await firstSync(t);
+    const queued = await t.run(async (ctx) =>
+      (
+        ctx as unknown as {
+          db: { system: { query: (n: string) => { collect: () => Promise<Array<{ name: string; args: unknown[] }>> } } };
+        }
+      ).db.system.query("_scheduled_functions").collect(),
+    );
+    const finalizes = queued.filter((r) => r.name.includes("commitCardChecklistFinalize"));
+    const enqueues = queued
+      .filter((r) => r.name.includes("enqueueBscTeamChecks"))
+      .map((r) => r.args[0] as { cardChecklistIds?: string[] })
+      .filter((a) => (a.cardChecklistIds ?? []).includes(rowId));
+    // The finalize hop may already have run and been swept; what is left must be clean.
+    expect(finalizes.length + enqueues.length).toBeGreaterThan(0);
+    for (const r of finalizes) expect("queuedBy" in (r.args[0] as object)).toBe(false);
+    for (const a of enqueues) expect("queuedBy" in a).toBe(false);
+    await settle(t);
   });
 
   test("a FAILED re-sync still queues the existing teamless row", async () => {
@@ -1056,6 +915,29 @@ describe("commitCardChecklist — adversarial edges of the team answer (NEO-335)
     expect(row.teamNoneConfirmedAt).toBeUndefined();
     expect(row.teamNoneConfirmedByUserId).toBeUndefined();
     expect((await settle(t)).has(row._id)).toBe(false);
+  });
+
+  test("invariant 8: the set's team is NOT stamped on a card whose listing names a team the commit could not give it", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+    await t.run(async (ctx) => ctx.db.patch(leafId, { teamIds: [reds] }));
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        // BSC answered with a team NB could not split or resolve, and the
+        // operator gave no pick.
+        card({ cardNumber: "1", bscRef: "B1", teamLookup: "answered", rawTeamName: "Cardinals / Browns" }),
+        // The control: no claim at all, so the set's team is the card's.
+        card({ cardNumber: "3", bscRef: "B3", teamLookup: "answered" }),
+      ],
+    });
+
+    const rows = await rowsByNumber(t, leafId);
+    expect(rows.get("1")!.teamOnCardIds).toBeUndefined();
+    expect(rows.get("3")!.teamOnCardIds).toEqual([reds]);
   });
 
   test("a pick whose team was deleted does not count as a team: \"No team on this card\" still applies", async () => {
@@ -1273,18 +1155,11 @@ describe("commitCardChecklist — adversarial edges on re-sync (NEO-335)", () =>
     await t.run(async (ctx) =>
       ctx.db.patch(rowId, { teamCheckDoneAt: 1111, bscTeamName: "Older Hint" }),
     );
-    await skipTeamName(t, {
-      selectorOptionId: leafId,
-      sportId,
-      batchId: "batch-2",
-      name: "Gotham Knights",
-    });
     const queuedBefore = await queueEntriesFor(t, rowId);
 
     await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: leafId,
       sportId,
-      batchId: "batch-2",
       cards: [
         card({ cardNumber: "1", bscRef: "B1", teams: ["Gotham Knights"], teamLookup: "answered" }),
       ],
@@ -1405,44 +1280,6 @@ describe("commitCardChecklist — an answered team NAME fills an existing teamle
     await settle(t);
   });
 
-  test("a team staged as New Team in this review is created by the prelude and fills the existing row", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await firstSync(t);
-    const batchId = "batch-staged-team";
-    await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: leafId,
-        batchId,
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "team",
-        name: "Gotham Knights",
-        sportId,
-        status: "ready",
-        decision: { action: "create", create: { location: "Gotham", name: "Knights" } },
-      }),
-    );
-
-    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
-      selectorOptionId: leafId,
-      sportId,
-      batchId,
-      cards: [
-        card({ cardNumber: "1", bscRef: "B1", teams: ["Gotham Knights"], teamsAnswered: true }),
-      ],
-    });
-
-    const created = await t.run(async (ctx) =>
-      ctx.db
-        .query("teams")
-        .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
-        .collect(),
-    );
-    expect(created).toHaveLength(1);
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.teamOnCardIds).toEqual([created[0]._id]);
-    expect(row.pendingTeamNames ?? []).toEqual([]);
-    await settle(t);
-  });
 
   test("an answered name never overwrites a team the existing row already has", async () => {
     const t = convexTest(schema, modules);
@@ -1548,13 +1385,11 @@ describe("commitCardChecklist — a checklist's No Team answer (NEO-489)", () =>
     sportId: Id<"selectorOptions">,
     leafId: Id<"selectorOptions">,
     cards: ReturnType<typeof card>[],
-    extra: { batchId?: string } = {},
   ) =>
     t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: leafId,
       sportId,
       cards,
-      ...extra,
     });
 
   test("a card the checklist answered with no team is stamped confirmed no-team plus the team check, and never queued", async () => {
@@ -1589,25 +1424,6 @@ describe("commitCardChecklist — a checklist's No Team answer (NEO-489)", () =>
       expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
       expect(row.teamCheckOutcome).toBeUndefined();
     }
-    await settle(t);
-  });
-
-  test("a checklist card whose only team string was ruled not a team is not stamped: it still named a team", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    await skipTeamName(t, { selectorOptionId: leafId, sportId, batchId: "batch-1", name: "Checklist" });
-
-    await commit(
-      t,
-      sportId,
-      leafId,
-      [card({ cardNumber: "1", bscRef: "B1", teams: ["Checklist"], teamLookup: "checklist" })],
-      { batchId: "batch-1" },
-    );
-
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.teamNoneConfirmedAt).toBeUndefined();
-    expect(row.teamNoneConfirmedByUserId).toBeUndefined();
     await settle(t);
   });
 

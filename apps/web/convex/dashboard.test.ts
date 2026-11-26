@@ -318,29 +318,52 @@ describe("awaitingShipment", () => {
 describe("saleLinesOf", () => {
   const card = "card_1" as Id<"cardChecklist">;
 
-  test("a line NB could not tie to a card carries none and reads unmatched; a tied line keeps its card", () => {
+  test("a line NB could not tie to a card carries no card and no problem; a tied line keeps its card", () => {
     const out = saleLinesOf([
       { cardId: card, quantity: 1 },
       { quantity: 2 },
-      { cardId: card, quantity: 1, problem: "linkMismatch" },
       { cardId: card, quantity: 3, problem: "oversold", shortBy: 1 },
     ]);
     expect(out.lines).toEqual([
       { cardId: card, quantity: 1 },
-      { quantity: 2, problem: "unmatched" },
-      { quantity: 1, problem: "linkMismatch" },
+      { quantity: 2 },
       { cardId: card, quantity: 3, problem: "oversold", shortBy: 1 },
     ]);
-    expect(out.cardCount).toBe(7);
-    expect(out.problemPastCut).toBe(false);
+    expect(out.cardCount).toBe(6);
+    expect(out.oversoldPastCut).toBe(false);
   });
 
-  test("past SALE_LINES the lines are cut, still counted, and a problem there is reported", () => {
+  test("a linkMismatch or unmatched line has neither a problem nor a card id", () => {
+    const out = saleLinesOf([
+      { cardId: card, quantity: 1, problem: "linkMismatch" },
+      { cardId: card, quantity: 1, problem: "unmatched" },
+    ]);
+    expect(out.lines).toEqual([{ quantity: 1 }, { quantity: 1 }]);
+  });
+
+  test("a line's listed words pass through, on a line with a card and one without", () => {
+    const listed = { title: "2023 Topps Chrome #121 Gunnar Henderson RC" };
+    const tiedListed = { year: "1990", setName: "Score", cardNo: "12" };
+    const out = saleLinesOf([
+      { quantity: 1, listed },
+      { cardId: card, quantity: 1, listed: tiedListed },
+      { quantity: 1, problem: "linkMismatch", listed },
+    ]);
+    expect(out.lines).toEqual([
+      { quantity: 1, listed },
+      { cardId: card, quantity: 1, listed: tiedListed },
+      { quantity: 1, listed },
+    ]);
+  });
+
+  test("past SALE_LINES the lines are cut and still counted; only an oversold line there is reported", () => {
     const items = Array.from({ length: SALE_LINES + 3 }, () => ({ cardId: card, quantity: 1 }));
-    expect(saleLinesOf(items)).toMatchObject({ cardCount: SALE_LINES + 3, problemPastCut: false });
+    expect(saleLinesOf(items)).toMatchObject({ cardCount: SALE_LINES + 3, oversoldPastCut: false });
     expect(saleLinesOf(items).lines).toHaveLength(SALE_LINES);
-    const withProblem = [...items, { quantity: 1 }];
-    expect(saleLinesOf(withProblem).problemPastCut).toBe(true);
+    expect(saleLinesOf([...items, { quantity: 1 }]).oversoldPastCut).toBe(false);
+    expect(saleLinesOf([...items, { cardId: card, quantity: 1, problem: "unmatched" }]).oversoldPastCut).toBe(false);
+    expect(saleLinesOf([...items, { cardId: card, quantity: 1, problem: "linkMismatch" }]).oversoldPastCut).toBe(false);
+    expect(saleLinesOf([...items, { cardId: card, quantity: 1, problem: "oversold", shortBy: 1 }]).oversoldPastCut).toBe(true);
   });
 });
 
@@ -714,6 +737,8 @@ describe("newSince", () => {
     await tick();
     const since = Date.now();
     expect((await s.me.query(api.dashboard.newSince, { sinceMs: since })).lines).toEqual([]);
+    // The move's stamp must be strictly later than `since`; on a fast run both land in one millisecond.
+    await tick();
     await s.me.mutation(api.collectionContainers.empty, { containerId: mets });
     const lines = (await s.me.query(api.dashboard.newSince, { sinceMs: since })).lines;
     expect(lines.map((l) => [l.homeId, l.cardId])).toEqual([[s.homes.main, s.fx.strawberry2]]);
@@ -1533,7 +1558,7 @@ describe("intake", () => {
 });
 
 describe("sales", () => {
-  type Item = { cardId?: Id<"cardChecklist">; quantity?: number; problem?: "unmatched" | "linkMismatch" | "oversold"; shortBy?: number };
+  type Item = { cardId?: Id<"cardChecklist">; quantity?: number; problem?: "unmatched" | "linkMismatch" | "oversold"; shortBy?: number; listed?: { title?: string; players?: string } };
   function order(s: S, o: { platform?: "bsc" | "ebay"; orderNo: string; status: string; orderDate: number; items?: Item[]; ownerId?: string }) {
     return s.t.run((ctx) =>
       ctx.db.insert("marketplaceSales", {
@@ -1553,6 +1578,7 @@ describe("sales", () => {
           applied: true,
           ...(item.problem ? { problem: item.problem } : {}),
           ...(item.shortBy !== undefined ? { shortBy: item.shortBy } : {}),
+          ...(item.listed ? { listed: item.listed } : {}),
         })),
         firstSeenAt: o.orderDate,
         lastUpdated: o.orderDate,
@@ -1595,7 +1621,7 @@ describe("sales", () => {
       orderNo: "E-2",
       status: "PAID",
       orderDate: NOW,
-      items: [{ cardId: s.fx.gooden1, quantity: 2, problem: "oversold", shortBy: 1 }, { problem: "unmatched" }],
+      items: [{ cardId: s.fx.gooden1, quantity: 2, problem: "oversold", shortBy: 1 }, { problem: "unmatched", listed: { title: "2023 Topps Chrome #121 Gunnar Henderson RC" } }],
     });
     const out = await s.me.query(api.dashboard.sales, {});
     expect(out.dealer).toBe(true);
@@ -1603,13 +1629,15 @@ describe("sales", () => {
     expect(out.orders[0]).toMatchObject({
       platform: "ebay",
       orderNo: "E-2",
-      status: "PAID",
       cardCount: 3,
       lines: [
         { cardId: s.fx.gooden1, quantity: 2, problem: "oversold", shortBy: 1 },
-        { quantity: 1, problem: "unmatched" },
+        { quantity: 1, listed: { title: "2023 Topps Chrome #121 Gunnar Henderson RC" } },
       ],
     });
+    expect(out.orders[0].oversoldPastCut).toBe(false);
+    expect(out.orders[0]).not.toHaveProperty("status");
+    expect(out.orders[0].lines[1]).not.toHaveProperty("problem");
   });
 
   test("an unpaid order, or one whose status NB does not know, stays hidden: never to ship", async () => {

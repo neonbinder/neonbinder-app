@@ -47,8 +47,8 @@ disagrees with its deployment fails by name.
    Set" (no write); only the seed confirms BSC-only. Do not anchor on "Re-map Base"
    under the pause.
 3. The checklist fetch takes the NEO-255 solo path (`Kept all N cards from BSC`,
-   no Match Cards dialog). With a wizard the sentence persists in the wizard
-   notice; with no wizard the immediate commit replaces it with `Saved N cards`:
+   no Match Cards dialog). The commit replaces that sentence with `Saved N cards`
+   (a card needing a person then opens the walk):
    assert the negative (`Match Cards` absent) and let the strict `Saved N` assertion
    be the positive pair. With ONE marketplace the insert-level sync fills the
    column directly; there is no `Reconcile Inserts` dialog at all.

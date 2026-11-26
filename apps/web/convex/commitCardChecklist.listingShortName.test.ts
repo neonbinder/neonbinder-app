@@ -120,7 +120,7 @@ async function seedTree(
 function card(opts: { cardNumber: string; listingTitleKept?: string }) {
   return {
     cardNumber: opts.cardNumber,
-    cardName: `Card ${opts.cardNumber}`,
+    cardName: `Card #${opts.cardNumber}`,
     teams: [],
     players: [],
     platformData: { sportlots: { ref: `SL-${opts.cardNumber}` } },
@@ -203,9 +203,10 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
     await settle(t);
   });
 
-  test("control: the same kept title WITHOUT the batch's short name is not what the server generates, so it is flagged", async () => {
+  test("control: the same kept title WITHOUT the batch's short name is not what the server generates", async () => {
     // The set carries a different box, so the server still builds from a box
-    // (the card is on the step) but not the one the operator was shown.
+    // but not the one the operator was shown. That title fits with nothing left
+    // out, so it is not flagged cut short either (Jason, 2026-11-23).
     const t = convexTest(schema, modules);
     const ids = await seedTree(t, { setNameMetadata: { listingShortName: "Topps Other" } });
     const shown = await shownTitle(t, ids, "1", "Topps Sapphire");
@@ -216,7 +217,7 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
     const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
     expect(row.listingTitle).toBe("Topps Other Hologram Heroes #1 Baseball");
     expect(row.listingTitle).not.toBe(shown.title);
-    expect(row.listingTitleTruncated).toBe(true);
+    expect(row.listingTitleTruncated).toBeUndefined();
     await settle(t);
   });
 
@@ -227,7 +228,10 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
     const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
     expect(row.listingTitle).toBe(`2026 Topps ${LONG_SET_NAME} Hologram Heroes`);
     expect(row.listingTitle!.length).toBeGreaterThan(80);
-    expect(row.listingTitleTruncated).toBeUndefined();
+    // NEO-609: the card number it had to cut (row 13) is a Tidy Up cut, so the
+    // row is also born flagged; the attention list still reports one thing,
+    // the length (`titleAttentionItems`: over the cap wins over truncated).
+    expect(row.listingTitleTruncated).toBe(true);
     await settle(t);
   });
 
@@ -337,33 +341,36 @@ describe("every title walk reports the insert's name only on the insert ROLE (NE
     expect(prelude.insertIsRole).toBe(expected ? true : undefined);
   });
 
+  // NEO-609: a level's NAME and its type's singular name are in the title for
+  // ANY type (the level facts are not role-gated); only the role facts above
+  // stay gated on the type's kind.
   test.each([
-    ["under an Insert type", "Inserts", true],
-    ["under a type with no kind", "Promo", false],
-  ])("the commit's insert (prelude → chunk), %s", async (_label, typeTitle, expected) => {
+    ["under an Insert type", "Inserts", "Dugout Collection Insert"],
+    ["under a type with no kind", "Promo", "Dugout Collection Promo"],
+  ])("the commit's insert (prelude → chunk), %s", async (_label, typeTitle, fragment) => {
     const t = convexTest(schema, modules);
     const ids = await seedTree(t, { ...SHORT, typeTitle });
     await commit(t, ids, [card({ cardNumber: "7" })]);
     const title = (await rowsByNumber(t, ids.leafId)).get("7")!.listingTitle!;
-    expect(title.includes("Dugout Collection")).toBe(expected);
+    expect(title).toContain(fragment);
     expect(title).toBe((await shownTitle(t, ids, "7")).title);
     await settle(t);
   });
 
   test.each([
-    ["under an Insert type", "Inserts", true],
-    ["under a type with no kind", "Promo", false],
-  ])("addCustomCard and previewListingTitle (findAncestorLabels), %s", async (_label, typeTitle, expected) => {
+    ["under an Insert type", "Inserts", true, "Dugout Collection Insert"],
+    ["under a type with no kind", "Promo", false, "Dugout Collection Promo"],
+  ])("addCustomCard and previewListingTitle (findAncestorLabels), %s", async (_label, typeTitle, expected, fragment) => {
     const t = convexTest(schema, modules);
     const ids = await seedTree(t, { ...SHORT, typeTitle });
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: ids.leafId,
       cardNumber: "9",
-      cardName: "Card 9",
+      cardName: "Card #9",
     });
     const row = await t.run(async (ctx) => ctx.db.get(cardId));
-    expect(row!.listingTitle!.includes("Dugout Collection")).toBe(expected);
+    expect(row!.listingTitle).toContain(fragment);
 
     const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
     expect(preview.inputs.insertName).toBe(expected ? "Dugout Collection" : undefined);
@@ -379,7 +386,7 @@ describe("every title walk reports the insert's name only on the insert ROLE (NE
     const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: ids.leafId,
       cardNumber: "9",
-      cardName: "Card 9",
+      cardName: "Card #9",
     });
     const before = await t.run(async (ctx) => ctx.db.get(cardId));
     // NEO-535: born over the cap (no box yet), flagged by its length.

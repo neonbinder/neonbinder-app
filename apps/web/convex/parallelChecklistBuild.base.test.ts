@@ -25,7 +25,10 @@ import {
   pickBaseVariantType,
   snapshotForCopies,
 } from "./parallelChecklistBuild";
-import { insertTestCard } from "../lib/testing/card-row";
+import { insertTestCard, testCardSport } from "../lib/testing/card-row";
+import { teamRowFields } from "./lib/teamRow";
+import type { MutationCtx } from "./_generated/server";
+
 
 const modules = (
   import.meta as unknown as {
@@ -182,6 +185,29 @@ async function seedSet(
   });
 }
 
+/**
+ * NEO-661: a source card with no team shows pink, and any pink card holds the
+ * parallel build. A fixture card therefore carries this neutral team unless it
+ * names its own (or passes `teamOnCardIds: []` to be the teamless case). Not
+ * `teamNoneConfirmedAt`: it is copied to the parallel's copy and would switch
+ * off the Set Team fill those tests are about.
+ */
+async function neutralTeam(
+  ctx: Pick<MutationCtx, "db">,
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<Id<"teams">> {
+  const sportId = await testCardSport(ctx, selectorOptionId);
+  const existing = (await ctx.db.query("teams").collect()).find(
+    (team) => team.sportId === sportId && team.name === "Neutrals",
+  );
+  if (existing) return existing._id;
+  return ctx.db.insert("teams", {
+    ...teamRowFields({ location: "Neutral", name: "Neutrals" }),
+    sportId,
+    lastUpdated: SENTINEL,
+  });
+}
+
 async function addCard(
   t: T,
   selectorOptionId: Id<"selectorOptions">,
@@ -191,6 +217,7 @@ async function addCard(
     insertTestCard(ctx, {
       selectorOptionId,
       platformData: {},
+      teamOnCardIds: [await neutralTeam(ctx, selectorOptionId)],
       sortOrder: 0,
       lastUpdated: SENTINEL,
       ...card,
@@ -325,7 +352,7 @@ describe("getParallelsForBuild — standing on the Parallel variant type", () =>
     const result = await t
       .withIdentity(ADMIN)
       .query(api.parallelChecklistBuild.getParallelsForBuild, { sourceId: base! });
-    expect(result).toEqual({ parallels: [], truncated: false });
+    expect(result).toEqual({ parallels: [], truncated: false, sourcePickable: false });
   });
 });
 
@@ -611,10 +638,14 @@ describe("copies carry the parallel row's NB name as parallelName and in the tit
     });
     await addCard(t, gold, {
       cardNumber: "7",
-      cardName: "Juan Soto",
+      // NEO-661: a card with no name ("Card #7") is pink and holds the build, so
+      // it is named; "No Team" keeps a team's name out of the title asserted below.
+      cardName: "Team Card",
+      teamOnCardIds: [],
+      teamNoneConfirmedAt: SENTINEL,
       features: { cardType: "Parallel", parallelName: "Base" },
     });
-    bscState.cards = [{ cardNumber: "7", cardName: "Juan Soto", platformRef: "bsc-7" }];
+    bscState.cards = [{ cardNumber: "7", cardName: "Team Card", platformRef: "bsc-7" }];
 
     const result = await t
       .withIdentity(ADMIN)
@@ -623,6 +654,9 @@ describe("copies carry the parallel row's NB name as parallelName and in the tit
 
     const [copy] = await cardsOn(t, refractors);
     expect(copy.features?.parallelName).toBe("Gold Wave Refractors");
-    expect(copy.listingTitle).toContain("Gold Wave Refractors");
+    // NEO-609: each level is named with its type, so the parallel's words are
+    // split by the level above's type name (the shared "Gold Wave" is said
+    // once, by that level).
+    expect(copy.listingTitle).toBe("Topps Chrome Gold Wave Refractors Parallel Team Card #7 Baseball");
   });
 });

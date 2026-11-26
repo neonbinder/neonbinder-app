@@ -4,12 +4,12 @@
  * once-per-session 401 refresh. `fetch` is stubbed; nothing reaches eBay.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { __resetBscIdTokenCache } from "../lib/bscHttp";
 import {
   bulkCreateOffers,
   bulkCreateOrReplaceInventoryItems,
   bulkUpdatePriceQuantity,
   createPolicy,
-  deleteInventoryItem,
   ebayErrorDetailsOf,
   errorIdsOf,
   getCardCategoryAspects,
@@ -20,9 +20,11 @@ import {
   getShippingServices,
   openEbaySellerSession,
   optInToProgram,
+  EBAY_POLICY_READ_MS,
   EBAY_PUBLISH_RETRY_PAUSE_MS,
   publishOffer,
   redactEbayText,
+  startPolicyReadBudget,
   updateOffer,
   upsertInventoryLocation,
   uploadImage,
@@ -623,44 +625,6 @@ describe("request shapes and headers", () => {
     expect(seen[1].init.method).toBe("POST");
   });
 
-  test("deleteInventoryItem DELETEs the URL-encoded SKU with no body; 204 is success", async () => {
-    answers.push(new Response(null, { status: 204 }));
-    expect(await deleteInventoryItem(noCredentialCalls, session(), "NB2/a b-NM")).toEqual({ ok: true, value: null });
-    expect(seen).toHaveLength(1);
-    expect(seen[0].init.method).toBe("DELETE");
-    expect(seen[0].url.pathname).toBe("/sell/inventory/v1/inventory_item/NB2%2Fa%20b-NM");
-    expect(seen[0].init.body).toBeUndefined();
-  });
-
-  test("deleteInventoryItem: a 404 means already gone, so success", async () => {
-    answers.push(json({ errors: [{ errorId: 25710 }] }, 404));
-    expect(await deleteInventoryItem(noCredentialCalls, session(), "S")).toEqual({ ok: true, value: null });
-  });
-
-  test.each([
-    [400, 25702],
-    [400, 25709],
-    [500, 25001],
-  ])("deleteInventoryItem: a %i with error %i is a failure", async (status, errorId) => {
-    answers.push(json({ errors: [{ errorId }] }, status));
-    expect(await deleteInventoryItem(noCredentialCalls, session(), "S")).toMatchObject({
-      ok: false,
-      failure: { kind: "http", httpStatus: status, errorIds: [errorId] },
-    });
-  });
-
-  test("deleteInventoryItem logs its operation and outcome, never the token", async () => {
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    answers.push(new Response(null, { status: 204 }));
-    await deleteInventoryItem(noCredentialCalls, session(), "S");
-    const lines = linesFor(log, "deleteInventoryItem");
-    const text = JSON.stringify(log.mock.calls);
-    log.mockRestore();
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({ msg: "ebay_seller_call", outcome: "ok", httpStatus: 204 });
-    expect(text).not.toContain("tok-1");
-  });
-
   test("getOrdersPage passes the filter, page size and offset and reports whether more follow", async () => {
     answers.push(json({ orders: [{ orderId: "1" }], next: "https://x", total: 120 }), json({ orders: [] }));
     const first = await getOrdersPage(noCredentialCalls, session(), { filter: "lastmodifieddate:[2026..]", offset: 200 });
@@ -1094,5 +1058,295 @@ describe("the 401 refresh path", () => {
     const r = await getOptedInPrograms({ runAction } as never, s);
     expect(r).toMatchObject({ ok: false, failure: { kind: "signed_out" } });
     expect(runAction).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── The policy-read path: 3 s a try, one retry, one shared clock (NEO-592) ───
+
+describe("policy-read path: bounded tries, one retry on a timeout", () => {
+  const timedOut = () => Object.assign(new Error("t"), { name: "TimeoutError" });
+  const programs = () => json({ programs: [{ programType: "SELLING_POLICY_MANAGEMENT" }] });
+  let waits: number[];
+  let log: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    waits = [];
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      waits.push(ms);
+      return real(ms);
+    });
+    log = vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("a slow first try is tried again, and the second answer is the result", async () => {
+    answers.push(timedOut(), programs());
+    const r = await getOptedInPrograms(noCredentialCalls, session(), startPolicyReadBudget());
+    expect(r).toEqual({ ok: true, value: ["SELLING_POLICY_MANAGEMENT"] });
+    expect(seen).toHaveLength(2);
+    expect(waits[0]).toBe(EBAY_POLICY_READ_MS.attemptMs);
+    expect(waits[1]).toBeLessThanOrEqual(EBAY_POLICY_READ_MS.attemptMs);
+    // Each try logs its own line; the retry's carries attempt 2.
+    const lines = linesFor(log, "getOptedInPrograms");
+    expect(lines.map((l) => [l.outcome, l.attempt])).toEqual([
+      ["timeout", undefined],
+      ["ok", 2],
+    ]);
+  });
+
+  test("two slow tries are a timeout failure in NB's words, never a missing policy, and never a third try", async () => {
+    answers.push(timedOut(), timedOut(), programs());
+    const r = await getPolicies(noCredentialCalls, session(), "fulfillment_policy", startPolicyReadBudget());
+    expect(r).toMatchObject({ ok: false, failure: { kind: "timeout", message: "eBay took too long to answer. Try again in a bit." } });
+    expect(seen).toHaveLength(2);
+  });
+
+  test("a try never waits past what is left of the shared budget", async () => {
+    answers.push(timedOut(), timedOut());
+    const budget = { deadline: Date.now() + 1_500 };
+    await getPolicies(noCredentialCalls, session(), "payment_policy", budget);
+    expect(waits).toHaveLength(2);
+    for (const w of waits) expect(w).toBeLessThanOrEqual(1_500);
+  });
+
+  test("a budget with too little left starts no retry", async () => {
+    answers.push(timedOut(), programs());
+    const r = await getOptedInPrograms(noCredentialCalls, session(), { deadline: Date.now() + 100 });
+    expect(r).toMatchObject({ ok: false, failure: { kind: "timeout" } });
+    expect(seen).toHaveLength(1);
+    // Even a spent budget gives the first try a real wait.
+    expect(waits[0]).toBe(EBAY_POLICY_READ_MS.minRetryMs);
+  });
+
+  test("a call marked retry: false (the shipping names) gets one bounded try", async () => {
+    answers.push(timedOut(), json({ shippingServices: [] }));
+    const r = await getShippingServices(noCredentialCalls, session(), { ...startPolicyReadBudget(), retry: false });
+    expect(r).toMatchObject({ ok: false, failure: { kind: "timeout" } });
+    expect(seen).toHaveLength(1);
+  });
+
+  test.each([
+    ["a network failure", () => new TypeError("fetch failed"), "network"],
+    ["eBay busy (503)", () => json({}, 503), "http"],
+    ["eBay refusing (403)", () => json({}, 403), "http"],
+  ])("%s is not retried", async (_name, answer, kind) => {
+    answers.push(answer(), programs());
+    const r = await getOptedInPrograms(noCredentialCalls, session(), startPolicyReadBudget());
+    expect(r).toMatchObject({ ok: false, failure: { kind } });
+    expect(seen).toHaveLength(1);
+  });
+
+  test("an answer on the first try is one call; the account's programs read as before", async () => {
+    answers.push(programs());
+    expect(await getOptedInPrograms(noCredentialCalls, session(), startPolicyReadBudget())).toEqual({
+      ok: true,
+      value: ["SELLING_POLICY_MANAGEMENT"],
+    });
+    expect(seen).toHaveLength(1);
+  });
+
+  test("without a budget a read is the plain 30 s call, never retried (other callers are unchanged)", async () => {
+    answers.push(timedOut(), programs());
+    expect(await getOptedInPrograms(noCredentialCalls, session())).toMatchObject({ ok: false, failure: { kind: "timeout" } });
+    expect(seen).toHaveLength(1);
+    expect(waits).toEqual([30_000]);
+  });
+
+  test("the two stages fit the page's 7 s budget with room to spare", () => {
+    expect(EBAY_POLICY_READ_MS.budgetMs).toBeLessThan(7_000);
+    expect(EBAY_POLICY_READ_MS.attemptMs * 2).toBeGreaterThan(EBAY_POLICY_READ_MS.budgetMs - EBAY_POLICY_READ_MS.attemptMs);
+  });
+});
+
+describe("the fake eBay (NEO-555)", () => {
+  const FAKE_ORIGIN = "https://neonbinder-fake-bsc-0000-uc.a.run.app";
+
+  function armFake() {
+    vi.stubEnv("EBAY_ENVIRONMENT", "fake");
+    vi.stubEnv("EBAY_CLIENT_ID", "");
+    vi.stubEnv("EBAY_RU_NAME", "");
+    vi.stubEnv("TESTING_RESET_SECRET", "armed");
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", FAKE_ORIGIN);
+    vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+  }
+
+  /** Serves the ID token (the one call that takes no `site`); counts it. */
+  function fakeCtx(opts: { idToken?: null | { audience: string; token: string; expiresAt: number } } = {}) {
+    const calls = { idToken: 0 };
+    const runAction = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("site" in args) return null;
+      calls.idToken += 1;
+      return opts.idToken === undefined
+        ? { audience: FAKE_ORIGIN, token: "id-token-1", expiresAt: Date.now() + 3_600_000 }
+        : opts.idToken;
+    });
+    return { ctx: { runAction } as never, calls };
+  }
+
+  beforeEach(() => {
+    __resetBscIdTokenCache();
+    armFake();
+  });
+
+  const headersOf = (i: number) => new Headers(seen[i].init.headers);
+
+  test("a session opened in fake mode targets the fake's /ebay/api and /ebay/apim", async () => {
+    const runAction = vi.fn(async () => ({ token: "user-tok" }));
+    const opened = await openEbaySellerSession({ runAction } as never, "owner");
+    expect(opened.ok && opened.value.config).toMatchObject({
+      environment: "fake",
+      apiBase: `${FAKE_ORIGIN}/ebay/api`,
+      mediaBase: `${FAKE_ORIGIN}/ebay/apim`,
+    });
+  });
+
+  test("every call carries the caller key and the ID token in both headers, and never follows a redirect", async () => {
+    const { ctx } = fakeCtx();
+    const s = session({
+      config: {
+        clientId: "c",
+        ruName: "r",
+        environment: "fake",
+        apiBase: `${FAKE_ORIGIN}/ebay/api`,
+        mediaBase: `${FAKE_ORIGIN}/ebay/apim`,
+        authBase: "",
+        webBase: "https://www.ebay.com",
+      },
+    });
+    answers.push(json({ programs: [] }));
+    await getOptedInPrograms(ctx, s);
+    expect(seen[0].url.origin + seen[0].url.pathname).toBe(
+      `${FAKE_ORIGIN}/ebay/api/sell/account/v1/program/get_opted_in_programs`,
+    );
+    const h = headersOf(0);
+    expect(h.get("x-nb-fake-bsc-key")).toBe("caller-key");
+    expect(h.get("X-Serverless-Authorization")).toBe("Bearer id-token-1");
+    expect(h.get("x-nb-fake-id-token")).toBe("id-token-1");
+    // eBay's own bearer is the user's token, untouched.
+    expect(h.get("authorization")).toBe("Bearer tok-1");
+    expect(seen[0].init.redirect).toBe("error");
+  });
+
+  test("the Media host is the fake's /ebay/apim, signed the same way", async () => {
+    const { ctx } = fakeCtx();
+    const s = session({
+      config: {
+        clientId: "c",
+        ruName: "r",
+        environment: "fake",
+        apiBase: `${FAKE_ORIGIN}/ebay/api`,
+        mediaBase: `${FAKE_ORIGIN}/ebay/apim`,
+        authBase: "",
+        webBase: "https://www.ebay.com",
+      },
+    });
+    answers.push(json({ imageUrl: "https://i.ebayimg.com/x.jpg" }, 201));
+    const r = await uploadImage(ctx, s, { bytes: new ArrayBuffer(4), contentType: "image/jpeg", fileName: "a.jpg" });
+    expect(r.ok).toBe(true);
+    expect(seen[0].url.origin + seen[0].url.pathname).toBe(
+      `${FAKE_ORIGIN}/ebay/apim/commerce/media/v1_beta/image/create_image_from_file`,
+    );
+    expect(headersOf(0).get("x-nb-fake-bsc-key")).toBe("caller-key");
+  });
+
+  test("the ID token is minted once for a run of calls in a session", async () => {
+    const { ctx, calls } = fakeCtx();
+    const s = session({
+      config: {
+        clientId: "c",
+        ruName: "r",
+        environment: "fake",
+        apiBase: `${FAKE_ORIGIN}/ebay/api`,
+        mediaBase: `${FAKE_ORIGIN}/ebay/apim`,
+        authBase: "",
+        webBase: "https://www.ebay.com",
+      },
+    });
+    answers.push(json({ programs: [] }), json({ programs: [] }), json({ programs: [] }));
+    await getOptedInPrograms(ctx, s);
+    await getOptedInPrograms(ctx, s);
+    await getOptedInPrograms(ctx, s);
+    expect(calls.idToken).toBe(1);
+    expect(seen).toHaveLength(3);
+  });
+
+  test("a call that cannot be signed (no ID token) sends nothing and is a network failure", async () => {
+    const { ctx } = fakeCtx({ idToken: null });
+    const s = session({
+      config: {
+        clientId: "c",
+        ruName: "r",
+        environment: "fake",
+        apiBase: `${FAKE_ORIGIN}/ebay/api`,
+        mediaBase: `${FAKE_ORIGIN}/ebay/apim`,
+        authBase: "",
+        webBase: "https://www.ebay.com",
+      },
+    });
+    const r = await getOptedInPrograms(ctx, s);
+    expect(r).toMatchObject({ ok: false, failure: { kind: "network" } });
+    expect(seen).toHaveLength(0);
+  });
+
+  test("a session opened in fake mode never sends once the deployment has left fake mode", async () => {
+    const { ctx } = fakeCtx();
+    const s = session({
+      config: {
+        clientId: "c",
+        ruName: "r",
+        environment: "fake",
+        apiBase: `${FAKE_ORIGIN}/ebay/api`,
+        mediaBase: `${FAKE_ORIGIN}/ebay/apim`,
+        authBase: "",
+        webBase: "https://www.ebay.com",
+      },
+    });
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "");
+    const r = await getOptedInPrograms(ctx, s);
+    expect(r).toMatchObject({ ok: false, failure: { kind: "network" } });
+    expect(seen).toHaveLength(0);
+  });
+
+  test("a sandbox session sends none of the fake's headers and mints no ID token", async () => {
+    vi.stubEnv("EBAY_ENVIRONMENT", "sandbox");
+    const { ctx, calls } = fakeCtx();
+    answers.push(json({ programs: [] }));
+    await getOptedInPrograms(ctx, session());
+    const h = headersOf(0);
+    expect(h.get("x-nb-fake-bsc-key")).toBeNull();
+    expect(h.get("X-Serverless-Authorization")).toBeNull();
+    expect(calls.idToken).toBe(0);
+    expect(seen[0].url.host).toBe("api.sandbox.ebay.com");
+  });
+
+  test("a 401 in fake mode refreshes, and the retry is signed too", async () => {
+    const calls: string[] = [];
+    const ctx = {
+      runAction: vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+        if (!("site" in args)) return { audience: FAKE_ORIGIN, token: "id-token-1", expiresAt: Date.now() + 3_600_000 };
+        calls.push("site");
+        return calls.length === 1 ? { refreshed: true } : { token: "tok-2" };
+      }),
+    } as never;
+    const s = session({
+      config: {
+        clientId: "c",
+        ruName: "r",
+        environment: "fake",
+        apiBase: `${FAKE_ORIGIN}/ebay/api`,
+        mediaBase: `${FAKE_ORIGIN}/ebay/apim`,
+        authBase: "",
+        webBase: "https://www.ebay.com",
+      },
+    });
+    answers.push(json({}, 401), json({ programs: [] }));
+    const r = await getOptedInPrograms(ctx, s);
+    expect(r.ok).toBe(true);
+    expect(seen).toHaveLength(2);
+    expect(headersOf(1).get("authorization")).toBe("Bearer tok-2");
+    expect(headersOf(1).get("x-nb-fake-bsc-key")).toBe("caller-key");
+    expect(headersOf(1).get("x-nb-fake-id-token")).toBe("id-token-1");
   });
 });

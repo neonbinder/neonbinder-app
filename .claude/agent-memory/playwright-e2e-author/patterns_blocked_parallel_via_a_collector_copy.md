@@ -28,4 +28,4 @@ one, writes the NEXT parallel — widen the registry claim. Remove the copy in a
 wait for `Removed ...`), or that parallel stays blocked for every later run.
 
 Planted break that proves it: drop the Have click + notice; the spec reds at the
-attention item. Related: [[collector-insert-checklist-names]], [[patterns-finally-cleanup-without-an-isvisible-branch]]
+attention item. Related: [[patterns_collector_insert_checklist_names]], [[patterns_finally_cleanup_without_an_isvisible_branch]]

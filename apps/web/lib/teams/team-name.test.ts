@@ -20,7 +20,7 @@
 
 import { describe, expect, test } from "vitest";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
-import { splitTeamName, teamFullName, teamShortName } from "./team-name";
+import { splitTeamName, teamFullName, teamShortName, teamSplitOf } from "./team-name";
 
 describe("teamFullName", () => {
   test("joins location and name with a single space", () => {
@@ -190,5 +190,27 @@ describe("the dedup-key invariant", () => {
     expect(normalizeEntityName(teamFullName({ name: "Aztecs" }))).toBe(
       normalizeEntityName("Aztecs"),
     );
+  });
+});
+
+describe("teamSplitOf (NEO-606)", () => {
+  test("is the trimmed Location / Name of a row that has a location", () => {
+    expect(teamSplitOf({ name: " Yankees ", location: " New York " })).toEqual({
+      location: "New York",
+      name: "Yankees",
+    });
+  });
+
+  test.each([undefined, null, "", "   "])("is undefined when the location is %j", (location) => {
+    expect(teamSplitOf({ name: "Athletics", location })).toBeUndefined();
+  });
+
+  test("is undefined when there is no name left to say", () => {
+    expect(teamSplitOf({ name: "  ", location: "New York" })).toBeUndefined();
+  });
+
+  test("its parts rejoin to the row's full name", () => {
+    const row = { name: "Red Sox", location: "Boston" };
+    expect(teamFullName(teamSplitOf(row)!)).toBe(teamFullName(row));
   });
 });

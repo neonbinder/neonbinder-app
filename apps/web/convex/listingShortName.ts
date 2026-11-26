@@ -8,6 +8,9 @@
  * call `normalizeListingShortName`, so they cannot apply two rules (the
  * NEO-291 finding `cardNumberPrefix.ts` exists for).
  *
+ * NEO-619 — the chain reading also honours the insert's "Parallels name
+ * themselves" switch, so the four walks below agree on it for free.
+ *
  * Four walks read a chain for a new card's title — the commit prelude,
  * `findAncestorLabels` (hand-added cards and Regenerate), `titleSetFacts` (the
  * pre-save Card titles step) and the parallel build — and all four hand the
@@ -21,7 +24,7 @@
  */
 
 import { ConvexError, v } from "convex/values";
-import { derivedVariantFlags } from "./variantRole";
+import { derivedVariantFlags, variantTypeKindFromTitle } from "./variantRole";
 import type { Id } from "./_generated/dataModel";
 
 /**
@@ -77,11 +80,34 @@ export type TitleChainRow = {
   value: string;
   metadata?: {
     listingShortName?: string;
+    /** NEO-619 — read off the chain's insert-role row (see `titleChainFacts`). */
+    parallelsNameThemselves?: boolean;
   };
 };
 
 /**
- * The chain's title facts: the four `ListingSetContext` fields NEO-335 adds.
+ * NEO-609 — one level of the chain as the title names it: the level's own NB
+ * name and the name of the variant type above it. Top level first in
+ * `TitleChainFacts.titleLevels`. See `ListingTitleLevel` in
+ * `features/generateListing` (same shape; this file is the pure-validator side).
+ */
+export type TitleLevelFact = {
+  name: string;
+  typeName?: string;
+  /** A card sitting directly on the Base variant type (its KIND, never a name). */
+  base?: true;
+};
+
+/** `TitleLevelFact` as a validator, for every hand-kept copy of the facts. */
+export const titleLevelValidator = v.object({
+  name: v.string(),
+  typeName: v.optional(v.string()),
+  base: v.optional(v.literal(true)),
+});
+
+/**
+ * The chain's title facts: the `ListingSetContext` fields NEO-335 adds, and
+ * (NEO-609) every level.
  * Every key is omitted when it has nothing to say, so a set with no insert
  * role, no parallel leaf and no short name hands its chunks exactly the
  * context it did before.
@@ -98,8 +124,24 @@ export type TitleChainFacts = {
    * nearest self-or-ancestor value, up to the setName row, with the insert's
    * name appended when the value sits above the insert row and the parallel
    * leaf's name appended when it sits above the leaf (see `titleChainFacts`).
+   * NEO-619 — with "Parallels name themselves" on, a parallel leaf skips the
+   * insert row's own box and appends only the parallel's name.
    */
   listingShortName?: string;
+  /**
+   * NEO-609 — EVERY level of the chain below the set, top level first, named
+   * by the variant-type rows: an insert-level row is {its value, its type's
+   * value}; a sub-variant row is {its value, "Parallel"} (it has no type row
+   * of its own); a card sitting directly on a variant type that is not Base
+   * is {the type's value} (Base included: the title says it and cuts it first).
+   * Omitted when the chain has no level.
+   * NEO-619 — a parallel leaf under an insert-role row with "Parallels name
+   * themselves" on leaves that insert OUT: the parallel is the top level,
+   * keeps its "Parallel" type name, and is said whole.
+   * Unlike `insertNameValue` / `parallelLeafValue` (kept: the eBay aspects
+   * read them), no NB role gates it: a "Proof" type's rows name their cards.
+   */
+  titleLevels?: TitleLevelFact[];
 };
 
 /**
@@ -112,7 +154,24 @@ export const titleChainFactsFields = {
   insertIsRole: v.optional(v.boolean()),
   parallelLeafValue: v.optional(v.string()),
   listingShortName: v.optional(v.string()),
+  titleLevels: v.optional(v.array(titleLevelValidator)),
 };
+
+/**
+ * Every title fact, copied from `source` by KEY, so a caller that hands the
+ * facts from one place to another (the commit prelude to its chunks) names
+ * none of them: a new fact in `titleChainFactsFields` travels on its own.
+ * Keys with no value are left off, so a set with no facts hands on exactly the
+ * context it had before.
+ */
+export function pickTitleChainFacts(source: TitleChainFacts): TitleChainFacts {
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(titleChainFactsFields)) {
+    const value = (source as Record<string, unknown>)[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return out as TitleChainFacts;
+}
 
 /**
  * Read the title facts off a chain, LEAF FIRST. Rows past the first `setName`
@@ -130,6 +189,21 @@ export const titleChainFactsFields = {
  *
  * The variant type is read off the chain itself — every caller walks up to
  * the setName row, so it is already in hand and costs no read.
+ *
+ * NEO-619 — "Parallels name themselves" (`metadata.parallelsNameThemselves`
+ * on the insert-role row). For a PARALLEL leaf beneath such an insert:
+ *  - the insert's level is left out of `titleLevels`, so the parallel is the
+ *    top level, keeps its "Parallel" type name and is said whole (no
+ *    `parallelAfterInsert` trimming: there is no insert above it to share
+ *    words with);
+ *  - the insert row's own `listingShortName` is skipped when finding the
+ *    nearest box, so the next box up applies with only the parallel's name
+ *    appended; a box on the parallel row itself still wins verbatim;
+ *  - `insertNameValue` / `insertIsRole` are unchanged: the eBay Insert Set
+ *    aspect is dropped by its reader (`ebayCardFacts`), which asks the same
+ *    `parallelsNameThemselvesApplies`.
+ * The insert's own cards (leaf = the insert row or a card on it) are not
+ * touched. Roles only: the insert role is read from the variant type's kind.
  */
 export function titleChainFacts(
   leafFirst: ReadonlyArray<TitleChainRow | null | undefined>,
@@ -142,11 +216,36 @@ export function titleChainFacts(
   }
   const variantType = chain.find((row) => row.level === "variantType");
 
+  // NEO-619 — "Parallels name themselves": a parallel leaf under an insert-role
+  // row carrying the switch leaves that insert out of its title (below).
+  const parallelsNameThemselves = parallelsNameThemselvesApplies(chain);
+
   const facts: TitleChainFacts = {};
   let insertIndex: number | undefined;
   let shortIndex: number | undefined;
   let short: string | undefined;
+  // NEO-609 — the levels, leaf first, each with its chain index (below).
+  const levels: Array<TitleLevelFact & { index: number }> = [];
+  const typeName = variantType?.value?.trim();
   for (const [index, row] of chain.entries()) {
+    if (row.level === "parallel") {
+      levels.push({ index, name: row.value, typeName: SUB_VARIANT_TYPE_NAME });
+    } else if (row.level === "insert") {
+      // NEO-619 — the switch drops the insert's level from the title: the
+      // parallel becomes the top level and says its own name.
+      if (!parallelsNameThemselves) {
+        levels.push({ index, name: row.value, ...(typeName ? { typeName } : {}) });
+      }
+    } else if (row.level === "variantType" && index === 0) {
+      // A card sitting directly on a variant type. Base included (NEO-609, Q1:
+      // the title says "Base" and cuts it first): flagged by the type's KIND.
+      // Named in the singular, as a type name is everywhere else.
+      if (variantTypeKindFromTitle(row.value) === "base") {
+        levels.push({ index, name: row.value, base: true });
+      } else {
+        levels.push({ index, name: singularTypeName(row.value) });
+      }
+    }
     if (index === 0 && derivedVariantFlags(row.level, variantType)?.isParallel === true) {
       facts.parallelLeafValue = row.value;
     }
@@ -157,7 +256,13 @@ export function titleChainFacts(
         facts.insertIsRole = true;
       }
     }
-    const value = row.metadata?.listingShortName?.trim();
+    // NEO-619 — with the switch on, the insert's own box is not the parallel's
+    // box (it names the insert, which the parallel no longer says): the next
+    // box up applies, with only the parallel's name appended.
+    const value =
+      parallelsNameThemselves && row.level === "insert"
+        ? undefined
+        : row.metadata?.listingShortName?.trim();
     if (value && short === undefined) {
       short = value;
       shortIndex = index;
@@ -169,22 +274,102 @@ export function titleChainFacts(
     // above a parallel leaf, the parallel's. Appended verbatim (the box is the
     // operator's text, and nothing is prepended to it), and skipped when the
     // value already says it, in any spelling `roughlySays` folds together.
-    if (facts.insertIsRole && insertIndex !== undefined && shortIndex > insertIndex) {
-      short = appendUnsaid(short, facts.insertNameValue);
-    }
-    if (facts.parallelLeafValue !== undefined && shortIndex > 0) {
-      // The parallel's own words only: its leading insert words are said by
-      // the insert (in the box or appended above), never twice.
-      short = appendUnsaid(
-        short,
-        facts.insertIsRole
-          ? parallelAfterInsert(facts.parallelLeafValue, facts.insertNameValue)
-          : facts.parallelLeafValue,
-      );
+    // NEO-609 — every level below the box's row, top level first (never a
+    // type name): the box says the set, and the levels it does not cover are
+    // the card's own. A level lower than the first is appended as its own
+    // words only: its leading words the level above it says are said once.
+    let above: string | undefined;
+    for (const level of [...levels].reverse()) {
+      // Base is not part of the description a box stands for (the title cuts
+      // it first); a box title never says it.
+      if (level.base) continue;
+      if (level.index < shortIndex) {
+        short = appendUnsaid(
+          short,
+          above === undefined ? level.name : parallelAfterInsert(level.name, above),
+        );
+      }
+      above = level.name;
     }
     facts.listingShortName = short;
   }
+  if (levels.length > 0) {
+    facts.titleLevels = levels.reverse().map(({ name, typeName, base }) => ({
+      name,
+      ...(typeName ? { typeName } : {}),
+      ...(base ? { base } : {}),
+    }));
+  }
   return facts;
+}
+
+/**
+ * NEO-619 — does "Parallels name themselves" apply to this chain (LEAF
+ * FIRST, as `titleChainFacts` takes it)? The leaf is a parallel-level row (a
+ * sub-variant), and the chain's insert row is an insert-role row (its variant
+ * type's KIND is Insert, `derivedVariantFlags`, never its name) with the
+ * switch on. A chain whose leaf is the insert itself, a card on the insert, or
+ * an insert-level row under a Parallel type is not touched: the insert's own
+ * cards still name the insert.
+ *
+ * Exported so every reader of the switch asks this one question:
+ * `titleChainFacts` (the title) and `ebayCardFacts` (the Insert Set aspect,
+ * dropped when it applies) cannot disagree. Rows past the first `setName` row
+ * are ignored, as in `titleChainFacts`.
+ */
+export function parallelsNameThemselvesApplies(
+  leafFirst: ReadonlyArray<TitleChainRow | null | undefined>,
+): boolean {
+  const chain: TitleChainRow[] = [];
+  for (const row of leafFirst) {
+    if (!row) break;
+    chain.push(row);
+    if (row.level === "setName") break;
+  }
+  if (chain[0]?.level !== "parallel") return false;
+  const insertRow = chain.find((row) => row.level === "insert");
+  if (!insertRow) return false;
+  const variantType = chain.find((row) => row.level === "variantType");
+  return (
+    derivedVariantFlags("insert", variantType)?.isInsert === true &&
+    insertRow.metadata?.parallelsNameThemselves === true
+  );
+}
+
+/**
+ * NEO-609 — a sub-variant row has no variant type of its own (it hangs under
+ * an insert row), so its type name is the NB word for what it is.
+ */
+const SUB_VARIANT_TYPE_NAME = "Parallel";
+
+/**
+ * A word in the singular, by suffix alone: "Inserts" -> "Insert", "Legacies"
+ * -> "Legacy", "Rookies" -> "Rookie" (a "kies" word keeps its "ie"). A word
+ * ending in ss, us, is, series or species, and one already singular, is left
+ * alone.
+ */
+export function singularWord(word: string): string {
+  const lower = word.toLowerCase();
+  if (lower.length < 3 || /(ss|us|is)$/.test(lower) || !lower.endsWith("s")) return word;
+  // The two English words that are their own plural.
+  if (/(series|species)$/.test(lower)) return word;
+  if (lower.length > 4 && lower.endsWith("ies") && !lower.endsWith("kies")) {
+    const y = word.endsWith("S") ? "Y" : "y";
+    return `${word.slice(0, -3)}${y}`;
+  }
+  return word.slice(0, -1);
+}
+
+/**
+ * A variant type's name as a title, a description line and a preview chip
+ * say it (one source, so they agree): the singular of its LAST word, so
+ * "Short Prints" reads "Short Print".
+ */
+export function singularTypeName(typeName: string): string {
+  const words = typeName.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "";
+  words[words.length - 1] = singularWord(words[words.length - 1]);
+  return words.join(" ");
 }
 
 /** The autograph spellings a set description uses for one word. */
@@ -202,7 +387,7 @@ const AUTO_WORDS: ReadonlySet<string> = new Set([
  * autograph spellings made one word, and a plural "s" dropped (not from "ss",
  * nor from a word of three letters or fewer).
  */
-function foldWord(word: string): string {
+export function foldWord(word: string): string {
   const bare = word.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
   if (AUTO_WORDS.has(bare)) return "auto";
   if (bare.length > 3 && bare.endsWith("s") && !bare.endsWith("ss")) return bare.slice(0, -1);

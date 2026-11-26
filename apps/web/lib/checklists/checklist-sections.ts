@@ -90,7 +90,11 @@ export function checklistSectionKey(name: string): string {
   return sectionKeyOf(name);
 }
 
-/** A section name as stored: control characters gone, spacing collapsed. */
+/**
+ * A section name as stored: control characters gone, spacing collapsed. Not
+ * cleansed like an entity name: a section name is a stored link key
+ * (`sectionKeyOf`) and NEO-643 has no backfill.
+ */
 export function cleanSectionName(name: string): string {
   // eslint-disable-next-line no-control-regex
   return name.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
@@ -125,6 +129,13 @@ function withoutSubset(row: PublishedChecklistRow): ChecklistSectionRow {
   const out: ChecklistSectionRow = { number: row.number, players: row.players, teams: row.teams };
   if (row.noNumber) out.noNumber = true;
   if (row.noTeam) out.noTeam = true;
+  // NEO-616: a parallel section's per-card print run (foil × colour layout).
+  if (row.printRun !== undefined) out.printRun = row.printRun;
+  if (row.prospect) out.prospect = true;
+  if (row.prospectClaimedTeams) out.prospectClaimedTeams = row.prospectClaimedTeams;
+  if (row.variationName) out.variationName = row.variationName;
+  // NEO-645: the subject of a row with no player is the card's name.
+  if (row.cardName) out.cardName = row.cardName;
   return out;
 }
 

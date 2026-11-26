@@ -50,6 +50,9 @@ import {
   type PreprocessBaseline,
   type PreprocessBaselineWire,
 } from "../lib/preprocessBaseline";
+// NEO-643 — the names the classify step reads off a card are cleansed as they
+// come in, like every external name.
+import { cleanseExternalName } from "../../lib/entities/cleanse-name";
 import { parseCropBox, photoEditToWire, type PhotoEdit, type PhotoEditCrop } from "../lib/photoEdit";
 
 // The escalation-hint contract (NEO-315 D4) lives in a pure lib module so the
@@ -340,12 +343,39 @@ export type ProcessEntryResponse = {
   crop_box?: PhotoEditCrop;
 };
 
-/** Narrow the escalation hints and the crop box; pass everything else through. */
+/**
+ * NEO-643 — cleanse one classify name field (`team`, `player`): cleansed, or
+ * `null` when nothing is left of it. The wire is a third party's, so a value
+ * that is not a string at run time passes through untouched.
+ */
+function cleanseNameField(value: string | null): string | null {
+  if (typeof value !== "string") return value;
+  return cleanseExternalName(value) || null;
+}
+
+/**
+ * NEO-643 — cleanse a classify `players` list; empties drop. A non-list, or a
+ * non-string entry, passes through untouched.
+ */
+function cleansePlayerList(value: string[]): string[] {
+  if (!Array.isArray(value)) return value;
+  return value
+    .map((p) => (typeof p === "string" ? cleanseExternalName(p) : p))
+    .filter((p) => p !== "");
+}
+
+/**
+ * Narrow the escalation hints and the crop box, cleanse the names the classify
+ * step read (NEO-643), and pass everything else through.
+ */
 function normalizeProcessEntry(wire: ProcessEntryWire): ProcessEntryResponse {
   const { crop_box: rawCropBox, ...rest } = wire as ProcessEntryWire & { crop_box?: unknown };
   const cropBox = parseCropBox(rawCropBox);
   return {
     ...rest,
+    players: cleansePlayerList(rest.players),
+    player: cleanseNameField(rest.player),
+    team: cleanseNameField(rest.team),
     dhash: parseDhash(wire.dhash),
     baseline: parseWireBaseline(wire.baseline),
     ...(cropBox ? { crop_box: cropBox } : {}),
@@ -723,6 +753,9 @@ export async function callRenderEdit(
   if (!args.classify || !wire || typeof wire !== "object" || wire.classified !== true) return { classified: null };
   const classified: RenderEditClassify = {};
   for (const key of CLASSIFY_KEYS) if (key in wire) classified[key] = wire[key];
+  // NEO-643: the names the new crop read are cleansed like a process result's.
+  if (Array.isArray(classified.players)) classified.players = cleansePlayerList(classified.players as string[]);
+  if (typeof classified.team === "string") classified.team = cleanseNameField(classified.team);
   return { classified };
 }
 

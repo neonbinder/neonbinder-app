@@ -24,7 +24,7 @@ import {
   SleeveStrip,
   pulseText,
 } from "../modules/RunLedger";
-import { ParallelTitlesDoor } from "./ParallelTitlesDialog";
+import { ParallelTitlesDoor, type ParallelTitleCount } from "./ParallelTitlesDialog";
 
 // NEO-325 — the ledger pieces moved to `modules/RunLedger` on their second
 // use; re-exported so every existing import of them from here keeps working.
@@ -126,9 +126,18 @@ export type ParallelPlanEntry = {
 export type ParallelBuildSource = {
   id: Id<"selectorOptions">;
   value: string;
-  /** An insert's own checklist, or the Base checklist for the base set's parallels. */
-  kind: "insert" | "base";
+  /**
+   * An insert's own checklist, the Base checklist for the base set's
+   * parallels, or (NEO-673, a set with no Base) the parallel the operator
+   * picked for the others to copy from.
+   */
+  kind: "insert" | "base" | "chosenParallel";
   hasCards: boolean;
+  /**
+   * NEO-673 — a chosen parallel only: its index in the type's child order,
+   * for the picker to slot it back into the list.
+   */
+  position?: number;
 };
 
 export type ParallelBuildPlan = {
@@ -142,6 +151,11 @@ export type ParallelBuildPlan = {
   source?: ParallelBuildSource | null;
   /** Why there is no `source` (a Parallel variant type with no single Base). */
   sourceBlocked?: string;
+  /**
+   * NEO-673 — no source, no Base in the set, and parallels to choose from:
+   * the panel asks which one the others copy from.
+   */
+  sourcePickable?: boolean;
 };
 
 type SideCounts = { bsc: number; sportlots: number };
@@ -318,6 +332,45 @@ export function runTitlesToFix(run: Pick<ParallelRun, "entries">): {
     total += count;
   }
   return { parallels, total };
+}
+
+/** The sentence a run that has ended says: its heading, then the titles left to fix. */
+export function endedAnnouncement(run: ParallelRun): string {
+  const titles = runTitlesToFix(run).total;
+  return titles > 0
+    ? `${panelHeading(run)}. ${runTitlesAnnouncement(titles)}`
+    : `${panelHeading(run)}.`;
+}
+
+/**
+ * NEO-581 — the run with each built parallel's titles-to-fix count replaced
+ * by the live one (parallel id to count). The count stored when a build ended
+ * goes stale once titles are fixed; everything the panel says about titles
+ * (the built line's clause, the button, the end-of-run sentence) reads the
+ * run through this. A parallel with no live count keeps what was stored, and
+ * a run nothing changed in is returned as it came.
+ */
+export function withLiveTitles(
+  run: ParallelRun,
+  counts: Readonly<Record<string, number>>,
+): ParallelRun {
+  let changed = false;
+  const entries = run.entries.map((entry) => {
+    const live = counts[entry.id];
+    if (live === undefined || entry.line.kind !== "built") return entry;
+    if ((entry.line.result.titlesToFix ?? 0) === live) return entry;
+    changed = true;
+    return {
+      ...entry,
+      line: { ...entry.line, result: { ...entry.line.result, titlesToFix: live } },
+    };
+  });
+  if (!changed) return run;
+  const next: ParallelRun = { ...run, entries };
+  if (run.phase === "finished" || run.phase === "stopped") {
+    next.announcement = endedAnnouncement(next);
+  }
+  return next;
 }
 
 /** The heading's id, for a held control's `aria-describedby` on the source. */
@@ -989,10 +1042,7 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
         // string from the heading itself, for the same reason as the start.
         // NEO-535 — and the titles left to fix, which the Card titles button
         // under the ledger opens.
-        const titles = runTitlesToFix(done).total;
-        done.announcement = titles > 0
-          ? `${panelHeading(done)}. ${runTitlesAnnouncement(titles)}`
-          : `${panelHeading(done)}.`;
+        done.announcement = endedAnnouncement(done);
         return done;
       });
       return null;
@@ -1044,7 +1094,7 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
 const SCROLL_AFTER = 100;
 
 export default function ParallelBuildPanel({
-  run,
+  run: storedRun,
   onStop,
   headingLevel = 3,
   waitingSlot,
@@ -1076,19 +1126,52 @@ export default function ParallelBuildPanel({
   // DOM id (which would also hide an aria-label from its `id:` finds).
   const fieldClass = useFieldTestClass();
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
-  const live = run.phase === "running" || run.phase === "stopping";
-  const stopping = run.phase === "stopping";
-  const scrolls = run.entries.length > SCROLL_AFTER;
+  const live = storedRun.phase === "running" || storedRun.phase === "stopping";
+  const stopping = storedRun.phase === "stopping";
+  const scrolls = storedRun.entries.length > SCROLL_AFTER;
   // NEO-535 — once the run has ended, the parallels whose copies' titles need
   // a fix get the Card titles button. It opens on its own once when the run
   // ends while the operator is here (keyed by the run, so a remount or a
   // left-behind pickup never reopens it); a run picked up after leaving gets
   // the button only.
+  // NEO-581 — the count stored when a build ended goes stale the moment a
+  // title is fixed (and was stale already on a reload). The Card titles door
+  // reports the live count per parallel (its load, its recount after a close,
+  // and one on mount); the panel reads the run through it, so the clause, the
+  // button and the end-of-run sentence all drop together. Held with the run
+  // they belong to, like the door's line.
+  const runKey = `parallel-run:${storedRun.waitKey ?? storedRun.startedFrom}`;
+  const [liveTitles, setLiveTitles] = useState<{
+    run: string;
+    counts: Record<string, number>;
+  } | null>(null);
+  const onTitleCounts = useCallback(
+    (counts: readonly ParallelTitleCount[]) =>
+      setLiveTitles((prev) => ({
+        run: runKey,
+        counts: {
+          ...(prev?.run === runKey ? prev.counts : {}),
+          ...Object.fromEntries(counts.map((c) => [c.id, c.count])),
+        },
+      })),
+    [runKey],
+  );
+  const liveCounts = liveTitles?.run === runKey ? liveTitles.counts : null;
+  const run = useMemo(
+    () => (liveCounts ? withLiveTitles(storedRun, liveCounts) : storedRun),
+    [storedRun, liveCounts],
+  );
   const { parallels: titleParallels, total: titleTotal } = useMemo(
     () => runTitlesToFix(run),
     [run],
   );
-  const runKey = `parallel-run:${run.waitKey ?? run.startedFrom}`;
+  // The door leaves the moment the live count reaches zero. Its dialog is
+  // already closed by then (the recount runs after a close, and a load that
+  // finds nothing opens none), so nothing is torn out. The door's busy
+  // window is its own (`aria-busy`); the checklist, whose door hangs off a
+  // live flag count, needs `onActiveChange` and this panel does not.
+  const doorShown = !live && titleParallels.length > 0;
+  const doorLabel = fixRunTitlesLabel(titleTotal);
   const titlesAutoOpenKey =
     run.phase === "finished" || run.phase === "stopped" ? runKey : undefined;
   // NEO-535 (a11y) — the Card titles door's lines ("Loading titles…", "Saved
@@ -1100,6 +1183,27 @@ export default function ParallelBuildPanel({
     [runKey],
   );
   const doorLine = titlesLine?.run === runKey ? titlesLine.line : "";
+
+  /**
+   * a11y (WCAG 2.4.3) — the door leaves once its last title is fixed. If it
+   * had focus the browser drops it to `<body>`; park it on the panel, whose
+   * live line has just said "Saved N titles." Only when the door really held
+   * focus (a silent recount on a reload focused nothing, and must not steal
+   * it) and focus was then dropped: anywhere else, the operator put it there.
+   */
+  const wasDoorShownRef = useRef(doorShown);
+  const doorHadFocusRef = useRef(false);
+  useEffect(() => {
+    const gone = wasDoorShownRef.current && !doorShown;
+    wasDoorShownRef.current = doorShown;
+    if (!gone) return;
+    const hadFocus = doorHadFocusRef.current;
+    doorHadFocusRef.current = false;
+    if (!hadFocus) return;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    panelRef.current?.focus({ preventScroll: true });
+  }, [doorShown]);
 
   /**
    * a11y (WCAG 2.4.3) — Stop unmounts when the run ends. If it had focus the
@@ -1312,16 +1416,48 @@ export default function ParallelBuildPanel({
         <p className="mt-2 text-xs">{truncatedText(run.entries.length)}</p>
       )}
 
-      {!live && titleParallels.length > 0 && (
-        <div className="mt-2">
+      {doorShown && (
+        <div
+          className="mt-2"
+          // Whether the door held focus when it left (see the blur handler).
+          onFocusCapture={() => {
+            doorHadFocusRef.current = true;
+          }}
+          onBlurCapture={(event) => {
+            if (event.relatedTarget) {
+              doorHadFocusRef.current = false;
+              return;
+            }
+            // No `relatedTarget`: focus went nowhere (a click on blank page)
+            // or the door was removed under it. After the commit the wrapper
+            // is still there in the first case, gone in the second; and if focus is
+            // back inside it by then (a blur on removal, then the door regained
+            // focus at once), the door still holds it.
+            const wrapper = event.currentTarget;
+            queueMicrotask(() => {
+              if (wrapper.isConnected && !wrapper.contains(document.activeElement)) {
+                doorHadFocusRef.current = false;
+              }
+            });
+          }}
+        >
           <ParallelTitlesDoor
             parallels={titleParallels}
-            label={fixRunTitlesLabel(titleTotal)}
+            label={doorLabel}
             autoOpenKey={titlesAutoOpenKey}
             announceStatus={false}
             onStatusChange={onTitlesLine}
+            onCounts={onTitleCounts}
+            countOnMount
           />
         </div>
+      )}
+
+      {/* NEO-581 — the door's last line ("Saved 12 titles.") once the door has
+          gone with the last title, so a sighted operator sees why it left.
+          Plain text: the live line below says it. */}
+      {!doorShown && doorLine && (
+        <span className="mt-2 block text-xs">{doorLine}</span>
       )}
 
       {waitingSlot}

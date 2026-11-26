@@ -43,7 +43,9 @@
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
 import type { Id } from "../../convex/_generated/dataModel";
 import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
 import {
@@ -58,6 +60,7 @@ import {
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
+    careerCoverage: { careerGaps: "careerCoverage.careerGaps" },
     selectorOptions: {
       getCardChecklist: "getCardChecklist",
       getSelectorOptionById: "getSelectorOptionById",
@@ -99,7 +102,6 @@ vi.mock("../../convex/_generated/api", () => ({
       findOrCreate: "players.findOrCreate",
     },
     cardChecklist: {
-      suggestedTeamsForCard: "cardChecklist.suggestedTeamsForCard",
       confirmCardNoTeam: "cardChecklist.confirmCardNoTeam",
     },
     // NEO-345: the header's "how are these autographs signed?" prompt.
@@ -175,171 +177,29 @@ vi.mock("react-virtuoso", () => ({
 // CardLeagueRow.test.tsx's, so here it is out of the way.
 vi.mock("./CardLeagueRow", () => ({ default: () => null }));
 
-vi.mock("./EntityReviewWizard", () => ({
+// NEO-645: the Tidy Up walk is covered by tidy/TidyUpWalk.test.tsx. Here a
+// stand-in makes "the walk opened" observable without its queries, and shows
+// the URL's own position so a test can see which card the checklist asked for.
+vi.mock("./tidy/TidyUpWalk", () => ({
   default: ({
-    summary,
-    onConfirm,
-    onCancel,
-    onBack,
-    commitError,
-    onDismissCommitError,
-    teamsOnly,
-    previewCards,
-    onTeamAnswersChange,
-    cardsWithSettledTeam,
-    cardsWithNoPlayers,
-    skippedPlayerNames,
-    skippedTeamNames,
-    titleContext,
-    existingCardIndexes,
-    onTitleAnswersChange,
-    onListingShortNameChange,
-    hasAutographFormat,
-    onAutographFormatChange,
+    onClose,
     title,
+    setNoTeam,
   }: {
-    // NEO-497 — the header's title, which the parent reads off the chain.
+    onClose: () => void;
     title?: string;
-    // NEO-345 — the autograph step, reduced to the parent's half: whether the
-    // leaf already has a format, and the answer channel.
-    hasAutographFormat?: boolean;
-    onAutographFormatChange?: (value: "On Card" | "Sticker/Label" | undefined) => void;
-    // NEO-335 Phase 2 — the titles step, reduced to the parent's half: the
-    // context and positions it hands down, and the commit-field channel.
-    titleContext?: unknown;
-    existingCardIndexes?: number[];
-    onTitleAnswersChange?: (
-      fields: Array<{ listingTitleKept?: string; listingTitle?: string } | undefined> | undefined,
-    ) => void;
-    // NEO-335 title rules — the step's short name for titles.
-    onListingShortNameChange?: (value: string | undefined) => void;
-    // NEO-335 — the final step's teams section, reduced to what the parent
-    // owns: whether the wizard opened teams-only, and the answer channel.
-    teamsOnly?: boolean;
-    previewCards?: unknown[];
-    onTeamAnswersChange?: (answers: Array<{ teamNone?: true } | undefined>) => void;
-    cardsWithSettledTeam?: number[];
-    // NEO-335 — who the stored data says is on the cards.
-    cardsWithNoPlayers?: number[];
-    skippedPlayerNames?: string[];
-    skippedTeamNames?: string[];
-    summary: {
-      cardCount: number;
-      deleteCount: number;
-      reviewDecisionCount: number;
-    };
-    onConfirm: () => void;
-    onCancel: () => void;
-    onBack?: () => void;
-    commitError?: string | null;
-    onDismissCommitError?: () => void;
+    setNoTeam?: boolean;
   }) => (
-    <div>
-      <p>
-        {`Wizard summary: ${summary.cardCount} cards, ${summary.deleteCount} deletions, ${summary.reviewDecisionCount} field decisions`}
-      </p>
-      {title !== undefined && <p>{`Wizard title: ${title}`}</p>}
-      {commitError && <p>{`Wizard commit error: ${commitError}`}</p>}
-      {teamsOnly && <p>Wizard opened teams-only</p>}
-      {onTeamAnswersChange && (
-        <button
-          type="button"
-          onClick={() =>
-            onTeamAnswersChange((previewCards ?? []).map(() => ({ teamNone: true })))
-          }
-        >
-          Answer every card with no team
-        </button>
-      )}
-      {onTeamAnswersChange && (
-        <button
-          type="button"
-          onClick={() =>
-            onTeamAnswersChange(
-              (previewCards ?? []).map((_, i) => (i === 1 ? { teamNone: true } : undefined)),
-            )
-          }
-        >
-          Answer only the second card
-        </button>
-      )}
-      {cardsWithSettledTeam && (
-        <p>{`Settled-team positions: [${cardsWithSettledTeam.join(",")}]`}</p>
-      )}
-      {cardsWithNoPlayers && (
-        <p>{`No-player positions: [${cardsWithNoPlayers.join(",")}]`}</p>
-      )}
-      {skippedPlayerNames && (
-        <p>{`Skipped player names: [${skippedPlayerNames.join(",")}]`}</p>
-      )}
-      {skippedTeamNames && (
-        <p>{`Skipped team names: [${skippedTeamNames.join(",")}]`}</p>
-      )}
-      <p>{`Title context: ${titleContext ? "yes" : "no"}`}</p>
-      {existingCardIndexes && (
-        <p>{`Existing positions: [${existingCardIndexes.join(",")}]`}</p>
-      )}
-      {onTitleAnswersChange && (
-        <button
-          type="button"
-          onClick={() =>
-            onTitleAnswersChange(
-              (previewCards ?? []).map((_, i) =>
-                i === 0 ? { listingTitleKept: "Kept title" } : { listingTitle: "My own title" },
-              ),
-            )
-          }
-        >
-          Report title answers
-        </button>
-      )}
-      {onTitleAnswersChange && (
-        <button type="button" onClick={() => onTitleAnswersChange(undefined)}>
-          Report no titles step
-        </button>
-      )}
-      {onListingShortNameChange && (
-        <button type="button" onClick={() => onListingShortNameChange("Topps Hologram")}>
-          Report a short name
-        </button>
-      )}
-      {onListingShortNameChange && (
-        <button type="button" onClick={() => onListingShortNameChange(undefined)}>
-          Report no short name
-        </button>
-      )}
-      <p>{`Leaf has autograph format: ${hasAutographFormat ? "yes" : "no"}`}</p>
-      {onAutographFormatChange && (
-        <button type="button" onClick={() => onAutographFormatChange("Sticker/Label")}>
-          Report autographs on stickers
-        </button>
-      )}
-      {onAutographFormatChange && (
-        <button type="button" onClick={() => onAutographFormatChange(undefined)}>
-          Report no autograph answer
-        </button>
-      )}
-      <button type="button" onClick={onConfirm}>
-        Confirm entity review
+    <div role="dialog" aria-label={title ?? "Tidy up stand-in"}>
+      <button type="button" onClick={onClose}>
+        Close the walk
       </button>
-      <button type="button" onClick={onCancel}>
-        Cancel entity review
-      </button>
-      {/* Rendered ONLY when the prop is present — that presence is itself the
-          assertion in the "custom subtree has nothing to go back to" test. */}
-      {onBack && (
-        <button type="button" onClick={onBack}>
-          Back to matching
-        </button>
-      )}
-      {onDismissCommitError && (
-        <button type="button" onClick={onDismissCommitError}>
-          Dismiss commit error
-        </button>
-      )}
+      {/* NEO-639 (decision A): what the checklist tells the walk about the set's team default. */}
+      <p>{`Set No Team: ${setNoTeam ? "yes" : "no"}`}</p>
     </div>
   ),
 }));
+
 
 const mockFetchChecklist = vi.fn();
 /**
@@ -365,6 +225,38 @@ const mockResolveEntities = vi.fn();
 const mockCommitChecklist = vi.fn();
 const mockDiffChecklist = vi.fn();
 const mockDiscardCandidates = vi.fn();
+/**
+ * NEO-638 — a Sync that ended without its rows leaves a component's bounded
+ * stream wait polling (up to 30 s on a real timer) after its test is over, and
+ * the next test's clock step makes that stale wait time out and call
+ * `discardCandidates` on the SHARED mock, which broke the next test's
+ * "not called" check whenever the poll landed inside it (load-dependent). The
+ * mutation a component receives is therefore tied to the test it was rendered
+ * in: a call from an earlier test's component is dropped, so only the
+ * component under test can reach the mock.
+ */
+let testEpoch = 0;
+beforeEach(() => {
+  testEpoch += 1;
+  // Tests that set the skipped-names list in their body must not hand it to
+  // whichever describe a shuffle runs next (the NEO-321 group never sets it).
+  state.skippedNames = [];
+});
+// One function per test, like production's stable mutation reference: a
+// component re-rendering inside a test sees the same identity every time.
+const discardByEpoch = new Map<number, (...args: unknown[]) => unknown>();
+const discardCandidatesForThisTest = () => {
+  const renderedIn = testEpoch;
+  let fn = discardByEpoch.get(renderedIn);
+  if (!fn) {
+    fn = (...args: unknown[]) =>
+      renderedIn === testEpoch
+        ? (mockDiscardCandidates as (...a: unknown[]) => unknown)(...args)
+        : Promise.resolve();
+    discardByEpoch.set(renderedIn, fn);
+  }
+  return fn;
+};
 // NEO-312 — the parallel-build runner's two calls. Both default to a
 // no-parallels / never-called shape in every describe block that does not
 // reset them, so every pre-existing test in this file is unaffected: a plain
@@ -447,9 +339,6 @@ vi.mock("convex/react", () => ({
     if (ref === "getAncestorChain") return state.ancestorChain;
     if (ref === "getReadyCandidates") return state.liveCandidates;
     if (ref === "getPausedPlatforms") return state.paused;
-    // NEO-102: the walker's fixer reads suggestions per card; [] keeps it
-    // resolved-but-empty, which is the "no career history" shape.
-    if (ref === "cardChecklist.suggestedTeamsForCard") return [];
     if (ref === "teams.getManyByIds") return state.teams;
     // NEO-331: the picker's candidate pool arrives ranked, as `{ team, tier }`.
     if (ref === "teams.pickerCandidates") {
@@ -464,7 +353,7 @@ vi.mock("convex/react", () => ({
     return undefined;
   },
   useMutation: (ref: string) => {
-    if (ref === "discardCandidates") return mockDiscardCandidates;
+    if (ref === "discardCandidates") return discardCandidatesForThisTest();
     if (ref === "addCustomCard") return mockAddCustomCard;
     if (ref === "teams.findOrCreate") return mockFindOrCreateTeam;
     if (ref === "players.findOrCreate") return mockFindOrCreatePlayer;
@@ -515,10 +404,18 @@ vi.mock("convex/react", () => ({
 
 import CardChecklist, {
   SOLO_STREAM_TIMEOUT_MESSAGE,
+  matchedKeptMessage,
+  savedReasonMessage,
   TEAMS_LATE_NOTICE,
   streamRowsArrived,
   streamTeamsLanded,
 } from "./CardChecklist";
+
+/**
+ * The card checklist's fetch control. It has no aria-label (NEO-645), so its name is its
+ * visible words, which change with the state: Fetch from Marketplaces, Fetching..., Saving..., Refresh.
+ */
+const SYNC_BUTTON = /^(Fetch from Marketplaces|Fetching\.\.\.|Saving\.\.\.|Refresh)$/;
 
 /**
  * Every live-region line on the page, hidden ones included: the sync banner
@@ -611,11 +508,13 @@ const soloSlChain = () => [
 
 function renderChecklist() {
   return render(
-    <CardChecklist
-      variantId={VARIANT_ID}
-      sourceChips={{}}
-      sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-    />,
+    <MemoryRouter>
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      />
+    </MemoryRouter>,
   );
 }
 
@@ -635,12 +534,34 @@ async function streamCandidates(
   state.liveCandidates = value;
   await act(async () => {
     rerender(
-      <CardChecklist
-        variantId={VARIANT_ID}
-        sourceChips={{}}
-        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-      />,
+      <MemoryRouter>
+        <CardChecklist
+          variantId={VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        />
+      </MemoryRouter>,
     );
+  });
+}
+
+/**
+ * NEO-640 — Sync no longer opens Match Cards at the press: a multi-source run
+ * starts on the progress line and the dialog opens when a row of THIS run's
+ * batch (a batch id that differs from the one on screen at the press) needs
+ * the operator. A fixture that wants the dialog open mid-fetch streams its
+ * rows again under a fresh batch id after the press. The rows keep whatever
+ * they carry, so `streamedCandidate` (no `pairedBy`: a pair nobody vouched for)
+ * is exactly a row that needs the operator.
+ */
+let neededBatches = 0;
+async function streamNeedingOperator(
+  rerender: (ui: React.ReactElement) => void,
+  value: unknown = state.liveCandidates,
+) {
+  await streamCandidates(rerender, {
+    ...(value as object),
+    batchId: `needs-operator-${++neededBatches}`,
   });
 }
 
@@ -708,12 +629,27 @@ describe("CardChecklist — cancel during an in-flight fetch (NEO-189)", () => {
     );
   });
 
-  it("does not reopen the dialog or overwrite the cancelled message when the abandoned fetch resolves afterward", async () => {
+  it("the fetch button's accessible name is its visible words, in every state (NEO-645)", async () => {
     renderChecklist();
+    // Empty checklist: no aria-label, so "Fetch from Marketplaces" is the name.
+    const button = screen.getByRole("button", { name: "Fetch from Marketplaces" });
+    expect(button.getAttribute("aria-label")).toBeNull();
+    expect(button.textContent).toBe("Fetch from Marketplaces");
+    expect(screen.queryByRole("button", { name: "Sync card checklist" })).toBeNull();
+    // Pressed: the words change and the name follows them.
+    fireEvent.click(button);
+    const busy = await screen.findByRole("button", { name: "Fetching..." });
+    expect(busy.getAttribute("aria-label")).toBeNull();
+  });
+
+  it("does not reopen the dialog or overwrite the cancelled message when the abandoned fetch resolves afterward", async () => {
+    const { rerender } = renderChecklist();
 
     // Kick off the sync — the empty-checklist state renders its own
-    // "Sync card checklist" button (sortedCards.length === 0 branch).
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    // "Fetch from Marketplaces" button (sortedCards.length === 0 branch).
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    // NEO-640: the dialog opens when a streamed row of this run needs the operator.
+    await streamNeedingOperator(rerender);
 
     // The pairing dialog opens on the streamed candidate while the fetch is
     // still in flight — this is the "opens seconds in" behavior itself.
@@ -784,8 +720,9 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
   });
 
   it("keeps the dialog open once the fetch resolves, and unlocks Confirm", async () => {
-    renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamNeedingOperator(rerender);
 
     // Open mid-fetch on the streamed candidate, Confirm still gated.
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
@@ -880,7 +817,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
 
     it("stays gated after the fetch resolves, says how far the teams have got, and unlocks once they land", async () => {
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, halfResolved);
       expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
@@ -931,78 +868,20 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
       }
     });
 
-    /**
-     * Jason, 2026-10-11: "If a team lookup never returns then the user must
-     * select a team." The wait ends; the operator's pairing survives it.
-     */
-    // NEO-335: a card that would save with no team now opens the wizard
-    // teams-only first; confirming it unanswered commits the card teamless,
-    // exactly as this path committed it before.
-    it("when a team misses the wait, unlocks Confirm with the notice and commits that card with no team", async () => {
-      const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
-      await streamCandidates(rerender, halfResolved);
-      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
-
-      vi.useFakeTimers();
-      try {
-        await act(async () => {
-          resolveFetch(fetchDone);
-        });
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(31_000);
-        });
-      } finally {
-        vi.useRealTimers();
-      }
-
-      // Confirm unlocks; the dialog — and the pairing in it — is still there.
-      await waitFor(() =>
-        expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
-          "Confirm",
-        ),
-      );
-      expect(screen.getByText(/Match Cards/)).toBeTruthy();
-      expect(mockDiscardCandidates).not.toHaveBeenCalled();
-      expect(liveRegionText()).not.toContain(SOLO_STREAM_TIMEOUT_MESSAGE);
-      expect(liveRegionText()).toContain(TEAMS_LATE_NOTICE);
-
-      await act(async () => {
-        fireEvent.click(screen.getByLabelText("Confirm card matches"));
-      });
-      await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
-      const cards = mockResolveEntities.mock.calls[0][0].cards;
-      expect(cards).toHaveLength(2);
-      expect(cards.find((c: { cardNumber: string }) => c.cardNumber === "1").teams).toEqual([
-        "Cincinnati Reds",
-      ]);
-      // Never a guess: the card whose lookup never landed carries no team.
-      expect(
-        cards.find((c: { cardNumber: string }) => c.cardNumber === "2").teams,
-      ).toBeUndefined();
-      // The operator is asked about it before save (NEO-335).
-      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
-      expect(mockCommitChecklist).not.toHaveBeenCalled();
-      await act(async () => {
-        fireEvent.click(screen.getByText("Confirm entity review"));
-      });
-      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
-      // Said again on the line the cards land with.
-      await waitFor(() =>
-        expect(liveRegionText()).toMatch(/Saved \d+ cards\./),
-      );
-      expect(liveRegionText()).toContain(TEAMS_LATE_NOTICE);
-    });
 
     it("with a team fence the subscription never reaches, still ends the wait with the notice (NEO-330 × NEO-333)", async () => {
       // The fence is the readiness signal, but it does not lift the bound: a
       // fence the stream never reaches ends like any other late team.
+      // The clock is faked BEFORE the Sync starts: the bounded stream wait
+      // reads Date.now() once and then polls on a 50 ms setTimeout, so a clock
+      // swapped in mid-wait leaves a real timer pending that, under load, wakes
+      // after the fake 31 s step and the wait ends on the wrong clock (NEO-638).
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, halfResolved);
-      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+      expect(screen.getByText(/Match Cards/)).toBeTruthy();
 
-      vi.useFakeTimers();
       try {
         await act(async () => {
           resolveFetch({
@@ -1033,12 +912,16 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     });
 
     it("drops the notice if the late teams all land before Confirm", async () => {
+      // The clock is faked BEFORE the Sync starts: the bounded stream wait
+      // reads Date.now() once and then polls on a 50 ms setTimeout, so a clock
+      // swapped in mid-wait leaves a real timer pending that, under load, wakes
+      // after the fake 31 s step and the wait ends on the wrong clock (NEO-638).
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, halfResolved);
-      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+      expect(screen.getByText(/Match Cards/)).toBeTruthy();
 
-      vi.useFakeTimers();
       try {
         await act(async () => {
           resolveFetch(fetchDone);
@@ -1071,12 +954,16 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
 
     it("still saves nothing when the ROWS never arrive", async () => {
       // A short batch is a partial checklist, not a late team.
+      // The clock is faked BEFORE the Sync starts: the bounded stream wait
+      // reads Date.now() once and then polls on a 50 ms setTimeout, so a clock
+      // swapped in mid-wait leaves a real timer pending that, under load, wakes
+      // after the fake 31 s step and the wait ends on the wrong clock (NEO-638).
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, halfResolved);
-      expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+      expect(screen.getByText(/Match Cards/)).toBeTruthy();
 
-      vi.useFakeTimers();
       try {
         await act(async () => {
           resolveFetch({ ...fetchDone, candidateCount: 3 });
@@ -1100,9 +987,27 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
       expect(liveRegionText()).not.toContain(TEAMS_LATE_NOTICE);
     });
 
+    it("a wait whose component is gone never discards afterwards (it would bin a newer Sync's candidates for the same set)", async () => {
+      // NEO-638: candidates are keyed by set + admin, not by session, so a
+      // stale wait timing out after the operator left and came back would
+      // delete the NEW Sync's rows. The wait ends with its component instead.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      const { rerender, unmount } = renderChecklist();
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+      await streamCandidates(rerender, halfResolved);
+      await act(async () => {
+        resolveFetch({ ...fetchDone, candidateCount: 3 });
+      });
+
+      unmount();
+      await vi.advanceTimersByTimeAsync(31_000);
+
+      expect(mockDiscardCandidates).not.toHaveBeenCalled();
+    });
+
     it("cancelling while it waits ends the run with the cancel message, not the timeout", async () => {
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, halfResolved);
       await act(async () => {
         resolveFetch(fetchDone);
@@ -1137,7 +1042,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     // still predate the batch write.
     state.liveCandidates = { ready: 0, total: 0, cards: [] };
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await act(async () => {
       resolveFetch({
@@ -1159,8 +1064,9 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
   });
 
   it("closes the dialog and discards the batch when the fetch reports failure", async () => {
-    renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamNeedingOperator(rerender);
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
     await act(async () => {
@@ -1188,7 +1094,7 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     // the sport off the chain lets it fail before the fetch, not after.
     state.ancestorChain = [{ _id: VARIANT_ID, level: "variantType", value: "Base" }];
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await waitFor(() =>
       expect(screen.getByText(/no sport ancestor/)).toBeTruthy(),
@@ -1202,10 +1108,10 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     // identical refusal changed nothing and a screen-reader user heard silence.
     state.ancestorChain = [{ _id: VARIANT_ID, level: "variantType", value: "Base" }];
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     const first = await screen.findByText(/no sport ancestor/);
 
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await waitFor(() =>
       expect(screen.getByText(/no sport ancestor/)).not.toBe(first),
     );
@@ -1286,7 +1192,7 @@ describe("CardChecklist — Confirm waits for the streamed team lookups (NEO-341
 
   it("keeps Confirm blocked after the fetch resolves until the last team lookup is seen, then confirms with it", async () => {
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, lookupOutstanding);
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
@@ -1325,7 +1231,7 @@ describe("CardChecklist — Confirm waits for the streamed team lookups (NEO-341
 
   it("does not settle on a batch shorter than the count the fetch reported", async () => {
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     // Every row that has ARRIVED is ready, but only one of two has arrived.
     await streamCandidates(rerender, {
       batchId: "batch-341",
@@ -1348,7 +1254,7 @@ describe("CardChecklist — Confirm waits for the streamed team lookups (NEO-341
 
   it("a failed fetch releases everything: no dialog, Sync usable, and the next run gates afresh", async () => {
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, lookupOutstanding);
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
@@ -1364,7 +1270,7 @@ describe("CardChecklist — Confirm waits for the streamed team lookups (NEO-341
     // Nothing is left waiting on lookups that will never land.
     expect(screen.queryByText(/Match Cards/)).toBeNull();
     expect(screen.queryByText(/teams are still resolving/)).toBeNull();
-    const sync = screen.getByLabelText("Sync card checklist");
+    const sync = screen.getByRole("button", { name: SYNC_BUTTON });
     expect((sync as HTMLButtonElement).disabled).toBe(false);
 
     // A second run is gated on ITS OWN report, not the failed one's.
@@ -1405,7 +1311,7 @@ describe("CardChecklist — Confirm waits for the streamed team lookups (NEO-341
       ],
     });
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, solo(1));
     await act(async () => {
       resolveFetch({
@@ -1521,7 +1427,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
 
   it("keeps every fetched card as a single and commits it, with no dialog at any point", async () => {
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     // (2) No dialog while the fetch runs — which is exactly when it appears on
     // a two-sided set — and the inline progress line standing in for it.
@@ -1576,9 +1482,118 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // focus and hands it back; here nothing does, so the run has to.
     await waitFor(() =>
       expect(document.activeElement).toBe(
-        screen.getByLabelText("Sync card checklist"),
+        screen.getByRole("button", { name: SYNC_BUTTON }),
       ),
     );
+  });
+
+  /**
+   * NEO-656 — the gate's answers are FACTS: resolve returns them and the commit
+   * is handed them back verbatim (`gateLinks`, `gateTeamNames`). Nothing else
+   * carries them from one call to the other, so dropping them here loses links.
+   */
+  it("passes the gate's links and unknown team names from resolve into the commit, and nothing else", async () => {
+    const gateLinks = [
+      { kind: "player", name: "Solo Player", playerId: "p-solo" },
+      { kind: "team", name: "Solo Team", teamId: "t-solo" },
+    ];
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: ["Mystery Team"],
+      batchId: undefined,
+      gateLinks,
+    });
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, arrivedBatch);
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    const sent = mockCommitChecklist.mock.calls[0][0];
+    expect(sent.gateLinks).toEqual(gateLinks);
+    expect(sent.gateTeamNames).toEqual(["Mystery Team"]);
+  });
+
+  it("sends no gateLinks key when the gate linked nothing (an empty list is left off)", async () => {
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+      gateLinks: [],
+    });
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, arrivedBatch);
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "0 matched, 0 BSC-only, 2 SL-only",
+        candidateCount: 2,
+        attachedSides: ["sportlots"],
+      });
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    const sent = mockCommitChecklist.mock.calls[0][0];
+    expect(sent).not.toHaveProperty("gateLinks");
+    expect(sent).not.toHaveProperty("gateTeamNames");
+  });
+
+  /**
+   * NEO-574 — a new card whose team its existing player's career does not
+   * show is a question for the wizard, even with every name known and every
+   * card teamed; the answers ride on the commit as `careerStints` and as edits
+   * on the cards.
+   */
+  describe("NEO-574: the career check", () => {
+    const playerBatch = {
+      ...arrivedBatch,
+      cards: slCandidates.map((card) => ({ ...card, players: ["Solo Player"] })),
+    };
+    const careerContext = {
+      setYear: 2022,
+      players: [{ printed: "Solo Player", playerId: "p-solo" }],
+      teams: [{ printed: "Solo Team", teamId: "t-solo" }],
+      gaps: [{ teamId: "t-solo", playerIds: ["p-solo"] }],
+    };
+
+    async function syncPlayers(rerender: Parameters<typeof streamCandidates>[0], context?: unknown) {
+      mockResolveEntities.mockResolvedValue({
+        unknownPlayers: [],
+        unknownTeams: [],
+        batchId: undefined,
+        ...(context ? { careerContext: context } : {}),
+      });
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+      await streamCandidates(rerender, playerBatch);
+      await act(async () => {
+        resolveFetch({
+          success: true,
+          message: "0 matched, 0 BSC-only, 2 SL-only",
+          candidateCount: 2,
+          attachedSides: ["sportlots"],
+        });
+      });
+      await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+    }
+
+
+    it("commits straight away when the gate listed no gap", async () => {
+      state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
+      const { rerender } = renderChecklist();
+      await syncPlayers(rerender, { ...careerContext, gaps: [] });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      expect(screen.queryByText("Wizard opened teams-only")).toBeNull();
+      expect(mockCommitChecklist.mock.calls[0][0]).not.toHaveProperty("careerStints");
+    });
+
+
+
   });
 
   /**
@@ -1594,7 +1609,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     };
 
     async function syncAutos(rerender: Parameters<typeof streamCandidates>[0]) {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, autoBatch);
       await act(async () => {
         resolveFetch({
@@ -1607,40 +1622,8 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
     }
 
-    it("opens the wizard instead of committing, telling it the leaf has no format", async () => {
-      const { rerender } = renderChecklist();
-      await syncAutos(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      expect(mockCommitChecklist).not.toHaveBeenCalled();
-      expect(screen.getByText("Leaf has autograph format: no")).toBeTruthy();
-    });
 
-    it("the answer rides on the commit as the batch-level arg, never on a card", async () => {
-      const { rerender } = renderChecklist();
-      await syncAutos(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      fireEvent.click(screen.getByText("Report autographs on stickers"));
-      await act(async () => {
-        fireEvent.click(screen.getByText("Confirm entity review"));
-      });
-      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-      const args = mockCommitChecklist.mock.calls[0][0];
-      expect(args.autographFormat).toBe("Sticker/Label");
-      for (const card of args.cards) expect(card).not.toHaveProperty("autographFormat");
-    });
 
-    it("an answer withdrawn (or never given) sends no such arg", async () => {
-      const { rerender } = renderChecklist();
-      await syncAutos(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      fireEvent.click(screen.getByText("Report autographs on stickers"));
-      fireEvent.click(screen.getByText("Report no autograph answer"));
-      await act(async () => {
-        fireEvent.click(screen.getByText("Confirm entity review"));
-      });
-      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-      expect(mockCommitChecklist.mock.calls[0][0]).not.toHaveProperty("autographFormat");
-    });
 
     it("a leaf that already says how it is signed commits straight away", async () => {
       state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
@@ -1695,7 +1678,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       batch: unknown,
       result: Record<string, unknown> = {},
     ) {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, batch);
       await act(async () => {
         resolveFetch({
@@ -1797,6 +1780,19 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       checklistLink: { via: "number" as const },
     }));
     const linkedBatch = { ...arrivedBatch, cards: linkedCandidates };
+    /**
+     * NEO-640 — a card the server paired with a checklist row by the player's
+     * NAME shows a % in Match Cards, so it needs the operator: the fixture for
+     * a run that must open the dialog.
+     */
+    const linkedByNameBatch = {
+      ...arrivedBatch,
+      cards: slCandidates.map((card) => ({
+        ...card,
+        teamLookup: "checklist" as const,
+        checklistLink: { via: "playerName" as const, confidence: 0.9 },
+      })),
+    };
 
     /** NEO-496 — a checklist makes two sources: Match Cards opens; confirm it. */
     async function confirmMatchCards() {
@@ -1806,24 +1802,6 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       });
     }
 
-    it("renders 'Teams from your checklist: N of M cards' from checklistTeams while the wizard is open", async () => {
-      // The line rides on the sync banner, read here where the run stops: on
-      // a card the wizard has to settle. (The no-question case is below.)
-      const conflictBatch = {
-        ...linkedBatch,
-        cards: linkedCandidates.map((card, i) =>
-          i === 0
-            ? { ...card, checklistConflict: { teams: { marketplace: [], checklist: ["Reds"] } } }
-            : card,
-        ),
-      };
-      const { rerender } = renderChecklist();
-      await addChecklist();
-      await syncWith(rerender, conflictBatch, { checklistTeams: { matched: 1, total: 2 } });
-      await confirmMatchCards();
-      await screen.findByText("Wizard opened teams-only");
-      expect(liveRegionText()).toContain("Teams from your checklist: 1 of 2 cards");
-    });
 
     it("keeps 'Teams from your checklist: N of M cards' on the saved line when the run commits with no question", async () => {
       // No disagreement, no unknown names: Confirm commits straight away and
@@ -1831,8 +1809,9 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       const { rerender } = renderChecklist();
       await addChecklist();
       await syncWith(rerender, linkedBatch, { checklistTeams: { matched: 2, total: 2 } });
-      await confirmMatchCards();
+      // NEO-640: every card is Matched at 100%, so there is no dialog to confirm.
       await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      expect(screen.queryByRole("heading", { name: /^Match Cards/ })).toBeNull();
       await waitFor(() => expect(liveRegionText()).toMatch(/Saved \d+ cards\./));
       expect(liveRegionText()).toContain("Teams from your checklist: 2 of 2 cards");
       expect(screen.queryByText("Wizard opened teams-only")).toBeNull();
@@ -1881,7 +1860,8 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       it("every card on the checklist still opens Match Cards; Confirm saves them all", async () => {
         const { rerender } = renderChecklist();
         await addChecklist();
-        await syncWith(rerender, linkedBatch);
+        // NEO-640: linked by name, so the dialog opens (a number link skips it).
+        await syncWith(rerender, linkedByNameBatch);
 
         await confirmMatchCards();
         await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
@@ -1894,7 +1874,8 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       it("a stored checklist the client could not see is learned from the fetch, and opens Match Cards", async () => {
         // Nothing pasted: the client predicted one source, the server says two.
         const { rerender } = renderChecklist();
-        await syncWith(rerender, linkedBatch, { sources: ["sportlots", "checklist"] });
+        // NEO-640: linked by name, so the learned second source opens the dialog.
+        await syncWith(rerender, linkedByNameBatch, { sources: ["sportlots", "checklist"] });
         expect(await screen.findByText(/Match Cards/)).toBeTruthy();
         expect(mockCommitChecklist).not.toHaveBeenCalled();
       });
@@ -1989,9 +1970,9 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         };
         const { rerender } = renderChecklist();
         await addChecklist();
-        fireEvent.click(screen.getByLabelText("Sync card checklist"));
-        expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+        fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
         await streamCandidates(rerender, { ...(state.liveCandidates as object), batchId: "batch-490b" });
+        expect(await screen.findByText(/Match Cards/)).toBeTruthy();
         await act(async () => {
           resolveFetch({
             success: true,
@@ -2094,42 +2075,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(liveRegionText()).not.toContain("Teams from your checklist");
     });
 
-    it("an open checklistConflict forces the wizard open instead of committing", async () => {
-      const conflictBatch = {
-        ...arrivedBatch,
-        cards: slCandidates.map((card, i) =>
-          i === 0
-            ? {
-                ...card,
-                checklistConflict: {
-                  players: { marketplace: ["Solo One"], checklist: ["Solo Won"] },
-                },
-              }
-            : card,
-        ),
-      };
-      const { rerender } = renderChecklist();
-      await syncWith(rerender, conflictBatch);
-      await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
-      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
-      expect(mockCommitChecklist).not.toHaveBeenCalled();
-    });
 
-    it("a conflict on the card reaches the wizard's preview cards", async () => {
-      const checklistConflict = {
-        teams: { marketplace: ["Reds"], checklist: ["Cincinnati Reds"] },
-      };
-      const conflictBatch = {
-        ...arrivedBatch,
-        cards: slCandidates.map((card, i) => (i === 0 ? { ...card, checklistConflict } : card)),
-      };
-      const { rerender } = renderChecklist();
-      await syncWith(rerender, conflictBatch);
-      await screen.findByText("Wizard opened teams-only");
-      expect(mockResolveEntities.mock.calls[0][0].cards[0].checklistConflict).toEqual(
-        checklistConflict,
-      );
-    });
   });
 
   /**
@@ -2145,7 +2091,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     };
 
     async function syncTeamless(rerender: Parameters<typeof streamCandidates>[0]) {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, teamlessBatch);
       await act(async () => {
         resolveFetch({
@@ -2158,53 +2104,8 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
     }
 
-    it("opens the wizard teams-only instead of committing, and commits on its Confirm with the answers on", async () => {
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
 
-      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
-      expect(screen.getByText(/Wizard summary: 2 cards/)).toBeTruthy();
-      // NEO-497: the wizard is titled with the set and variant off the chain
-      // (this chain has no year row, so the title simply leaves it out, and
-      // the leaf is Base, which the title drops).
-      expect(screen.getByText("Wizard title: Tidy up Test Set")).toBeTruthy();
-      expect(mockCommitChecklist).not.toHaveBeenCalled();
 
-      fireEvent.click(screen.getByText("Answer every card with no team"));
-      await act(async () => {
-        fireEvent.click(screen.getByText("Confirm entity review"));
-      });
-
-      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-      const committed = mockCommitChecklist.mock.calls[0][0];
-      expect(committed.batchId).toBeUndefined();
-      expect(committed.cards.map((c: { teamNone?: true }) => c.teamNone)).toEqual([true, true]);
-      await waitFor(() => expect(screen.queryByText(/Wizard summary/)).toBeNull());
-    });
-
-    it("an unanswered card commits exactly as it did before", async () => {
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      await act(async () => {
-        fireEvent.click(screen.getByText("Confirm entity review"));
-      });
-      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-      for (const card of mockCommitChecklist.mock.calls[0][0].cards) {
-        expect(card).not.toHaveProperty("teamNone");
-        expect(card).not.toHaveProperty("teamIds");
-        expect(card.teams).toBeUndefined();
-      }
-    });
-
-    it("Cancel abandons the run and saves nothing", async () => {
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      fireEvent.click(screen.getByText("Cancel entity review"));
-      expect(screen.getByText("Fetch cancelled — no cards saved.")).toBeTruthy();
-      expect(mockCommitChecklist).not.toHaveBeenCalled();
-    });
 
     it("commits straight through when every teamless card re-syncs a stored row that has a team", async () => {
       // A re-sync keeps a stored row's team, so nothing would save teamless —
@@ -2226,69 +2127,9 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(screen.queryByText(/Wizard summary/)).toBeNull();
     });
 
-    it("still asks when only some of the re-synced rows already have a team", async () => {
-      state.cards = [settledCard({ _id: "row-1", cardNumber: "1" })];
-      mockDiffChecklist.mockResolvedValue({
-        ...emptyDiff,
-        cards: [
-          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", fields: [] },
-        ],
-      });
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
-      expect(mockCommitChecklist).not.toHaveBeenCalled();
-    });
 
-    it("answers ride POSITIONALLY: only the card answered carries the answer", async () => {
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      fireEvent.click(screen.getByText("Answer only the second card"));
-      await act(async () => {
-        fireEvent.click(screen.getByText("Confirm entity review"));
-      });
-      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-      const cards = mockCommitChecklist.mock.calls[0][0].cards;
-      expect(cards[0]).not.toHaveProperty("teamNone");
-      expect(cards[1].teamNone).toBe(true);
-    });
 
-    it("answers from a cancelled run never ride on the next run's commit", async () => {
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      fireEvent.click(screen.getByText("Answer every card with no team"));
-      fireEvent.click(screen.getByText("Cancel entity review"));
-      expect(mockCommitChecklist).not.toHaveBeenCalled();
 
-      mockResolveEntities.mockClear();
-      // The cancelled run's candidates are gone; the next run streams afresh.
-      await streamCandidates(rerender, undefined);
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      await act(async () => {
-        fireEvent.click(screen.getByText("Confirm entity review"));
-      });
-      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-      for (const card of mockCommitChecklist.mock.calls[0][0].cards) {
-        expect(card).not.toHaveProperty("teamNone");
-      }
-    });
-
-    it("hands the wizard the stored-team positions so a partly re-synced set asks only about the rest", async () => {
-      state.cards = [settledCard({ _id: "row-2", cardNumber: "2" })];
-      mockDiffChecklist.mockResolvedValue({
-        ...emptyDiff,
-        cards: [
-          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "identical", existingId: "row-2", fields: [] },
-        ],
-      });
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      expect(screen.getByText("Settled-team positions: [1]")).toBeTruthy();
-    });
 
     it("commits straight through when the node's set-level team covers the new cards", async () => {
       state.variantRow = { value: "Test Set", teamIds: ["team-set"] };
@@ -2308,111 +2149,75 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(screen.queryByText(/Wizard summary/)).toBeNull();
     });
 
-    it("under a set-level team, still asks about a re-synced EXISTING teamless row (the commit only defaults new rows)", async () => {
-      state.variantRow = { value: "Test Set", teamIds: ["team-set"] };
-      // Card 1 re-syncs a stored row with no team; card 2 is a new row.
-      state.cards = [
-        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
-      ];
-      mockDiffChecklist.mockResolvedValue({
-        ...emptyDiff,
-        cards: [
-          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", fields: [] },
-          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "new", fields: [] },
-        ],
-      });
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
-      expect(mockCommitChecklist).not.toHaveBeenCalled();
-      // Only the new row is settled by the set's team; the existing one is asked.
-      expect(screen.getByText("Settled-team positions: [1]")).toBeTruthy();
-    });
 
-    it("NEO-335 Phase 2: hands the wizard the title context and the re-synced positions", async () => {
-      mockResolveEntities.mockResolvedValue({
-        unknownPlayers: [],
-        unknownTeams: [],
-        batchId: undefined,
-        titleContext: { sportValue: "Baseball", setTeamNames: [], players: [], teams: [] },
+    /**
+     * NEO-426 — a NEW card every one of whose people plays a sport flagged "No
+     * teams in this sport" is not asked about: the commit stamps it No team.
+     * Every name resolved on this path, so the fetch's `teamlessPlayerNames` is
+     * the whole fact. A sitting left with nothing to ask commits with no wizard.
+     */
+    describe("NEO-426: the teamless-sport default", () => {
+      const playersBatch = (
+        players: string[][],
+        extra: Array<Record<string, unknown>> = [],
+      ) => ({
+        ...arrivedBatch,
+        cards: slCandidates.map(({ teams: _teams, ...card }, i) => ({
+          ...card,
+          players: players[i],
+          ...(extra[i] ?? {}),
+        })),
       });
-      state.cards = [settledCard({ _id: "row-2", cardNumber: "2", teamOnCardIds: undefined })];
-      mockDiffChecklist.mockResolvedValue({
-        ...emptyDiff,
-        cards: [
-          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "identical", existingId: "row-2", fields: [] },
-        ],
-      });
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      expect(screen.getByText("Title context: yes")).toBeTruthy();
-      expect(screen.getByText("Existing positions: [1]")).toBeTruthy();
-    });
 
-    it("NEO-335 Phase 2: the titles step's answers ride positionally onto the commit", async () => {
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      fireEvent.click(screen.getByText("Answer only the second card"));
-      fireEvent.click(screen.getByText("Report title answers"));
-      await act(async () => {
-        fireEvent.click(screen.getByText("Confirm entity review"));
-      });
-      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-      const cards = mockCommitChecklist.mock.calls[0][0].cards;
-      expect(cards[0].listingTitleKept).toBe("Kept title");
-      expect(cards[0]).not.toHaveProperty("listingTitle");
-      // Both answers on the same card: team and title.
-      expect(cards[1].listingTitle).toBe("My own title");
-      expect(cards[1].teamNone).toBe(true);
-    });
-
-    it("NEO-335 Phase 2: no title field rides when the titles step was not part of the sitting", async () => {
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      // Reported, then withdrawn (the wizard reports `undefined` until the
-      // step has shown a card) — the commit must carry nothing of it.
-      fireEvent.click(screen.getByText("Report title answers"));
-      fireEvent.click(screen.getByText("Report no titles step"));
-      await act(async () => {
-        fireEvent.click(screen.getByText("Confirm entity review"));
-      });
-      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-      for (const card of mockCommitChecklist.mock.calls[0][0].cards) {
-        expect(card).not.toHaveProperty("listingTitleKept");
-        expect(card).not.toHaveProperty("listingTitle");
-        expect(card).not.toHaveProperty("cardVariationAnswered");
+      async function syncWith(
+        rerender: Parameters<typeof streamCandidates>[0],
+        batch: ReturnType<typeof playersBatch>,
+        teamlessPlayerNames?: string[],
+      ) {
+        mockResolveEntities.mockResolvedValue({
+          unknownPlayers: [],
+          unknownTeams: [],
+          batchId: undefined,
+          ...(teamlessPlayerNames ? { teamlessPlayerNames } : {}),
+        });
+        fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+        await streamCandidates(rerender, batch);
+        await act(async () => {
+          resolveFetch({
+            success: true,
+            message: "0 matched, 0 BSC-only, 2 SL-only",
+            candidateCount: 2,
+            attachedSides: ["sportlots"],
+          });
+        });
+        await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
       }
+
+      it("commits with no wizard when every card's people are all teamless, sending no team answer", async () => {
+        const { rerender } = renderChecklist();
+        await syncWith(rerender, playersBatch([["Pat Nonsport"], ["Pat Nonsport", "Kim Nonsport"]]), [
+          "Pat Nonsport",
+          "Kim Nonsport",
+        ]);
+        await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+        expect(screen.queryByText(/Wizard summary/)).toBeNull();
+        // The commit stamps these itself; the client sends nothing for them.
+        for (const card of mockCommitChecklist.mock.calls[0][0].cards) {
+          expect(card).not.toHaveProperty("teamNone");
+          expect(card).not.toHaveProperty("teamIds");
+        }
+      });
+
+
+
+
+
     });
 
-    it("NEO-335: the titles step's short name rides on the commit as the batch-level arg", async () => {
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      fireEvent.click(screen.getByText("Report a short name"));
-      await act(async () => {
-        fireEvent.click(screen.getByText("Confirm entity review"));
-      });
-      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-      const args = mockCommitChecklist.mock.calls[0][0];
-      expect(args.listingShortName).toBe("Topps Hologram");
-      for (const card of args.cards) expect(card).not.toHaveProperty("listingShortName");
-    });
 
-    it("NEO-335: no short name reported (or withdrawn) — the commit carries no such arg", async () => {
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      fireEvent.click(screen.getByText("Report a short name"));
-      fireEvent.click(screen.getByText("Report no short name"));
-      await act(async () => {
-        fireEvent.click(screen.getByText("Confirm entity review"));
-      });
-      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-      expect(mockCommitChecklist.mock.calls[0][0]).not.toHaveProperty("listingShortName");
-    });
+
+
+
 
     it("a re-synced row carrying only a pending team name is settled, not asked about", async () => {
       // A pending name already counts as a team for attention; the walker's
@@ -2445,7 +2250,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
      * it), so it must not pass for a team that resolved without review.
      */
     async function syncPrintingSoloTeam(rerender: Parameters<typeof streamCandidates>[0]) {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, arrivedBatch);
       await act(async () => {
         resolveFetch({
@@ -2465,68 +2270,8 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(screen.queryByText(/Wizard summary/)).toBeNull();
     });
 
-    it("…unless the set's skip records rule that name 'not a team': the wizard opens teams-only", async () => {
-      state.skippedNames = [{ _id: "skip-1", kind: "team", name: "Solo Team", skippedAt: 1 }];
-      const { rerender } = renderChecklist();
-      await syncPrintingSoloTeam(rerender);
-      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
-      expect(mockCommitChecklist).not.toHaveBeenCalled();
-      expect(screen.getByText("Skipped team names: [Solo Team]")).toBeTruthy();
-    });
 
-    it("a re-synced row whose only pending team name the set skipped is NOT settled", async () => {
-      // A save before the server fix stamped the skipped name as pending; it
-      // is no team waiting, so the card is asked about.
-      state.skippedNames = [
-        { _id: "skip-1", kind: "team", name: "gotham  KNIGHTS", skippedAt: 1 },
-      ];
-      state.cards = [
-        settledCard({ _id: "row-1", cardNumber: "1" }),
-        settledCard({
-          _id: "row-2",
-          cardNumber: "2",
-          teamOnCardIds: undefined,
-          pendingTeamNames: ["Gotham Knights"],
-        }),
-      ];
-      mockDiffChecklist.mockResolvedValue({
-        ...emptyDiff,
-        cards: [
-          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", fields: [] },
-          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "identical", existingId: "row-2", fields: [] },
-        ],
-      });
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
-      expect(screen.getByText("Settled-team positions: [0]")).toBeTruthy();
-      expect(mockCommitChecklist).not.toHaveBeenCalled();
-    });
 
-    it("a re-synced row whose only pending player name the set skipped is playerless", async () => {
-      state.skippedNames = [
-        { _id: "skip-1", kind: "player", name: "Chris Potter", skippedAt: 1 },
-      ];
-      state.cards = [
-        settledCard({
-          _id: "row-1",
-          cardNumber: "1",
-          teamOnCardIds: undefined,
-          pendingPlayerNames: ["Chris Potter"],
-        }),
-      ];
-      mockDiffChecklist.mockResolvedValue({
-        ...emptyDiff,
-        cards: [
-          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", fields: [] },
-          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "new", fields: [] },
-        ],
-      });
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      expect(screen.getByText("No-player positions: [0]")).toBeTruthy();
-    });
 
     /**
      * The re-sync of an already-saved set, as the E2E drives it
@@ -2538,7 +2283,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       rerender: Parameters<typeof streamCandidates>[0],
       decide: "skip" | { applyFieldOf: RegExp },
     ) {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, teamlessBatch);
       await act(async () => {
         resolveFetch({
@@ -2571,123 +2316,10 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       foldEqual: false,
     });
 
-    it("the stored-team positions survive the content review's Skip", async () => {
-      state.cards = [
-        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
-        settledCard({ _id: "row-2", cardNumber: "2" }),
-      ];
-      mockDiffChecklist.mockResolvedValue({
-        ...emptyDiff,
-        cards: [
-          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", baseVersion: 1, fields: [] },
-          {
-            index: 1,
-            cardNumber: "2",
-            cardName: "Solo Two",
-            bucket: "contentChanges",
-            existingId: "row-2",
-            baseVersion: 1,
-            fields: [contentChange("teamOnCardIds", "Gotham Knights", "")],
-          },
-        ],
-      });
-      const { rerender } = renderChecklist();
-      await syncThroughReview(rerender, "skip");
-      expect(screen.getByText("Settled-team positions: [1]")).toBeTruthy();
-    });
 
-    it("hands the wizard the re-synced rows the save keeps with nobody on them", async () => {
-      // Card 1 re-syncs a stored row with no players (its printed name was
-      // skipped as "not a person" in the first save); card 2 re-syncs a row
-      // that has a player. Neither has a team, so both are asked about — but
-      // only card 1 belongs on the no-players line.
-      state.cards = [
-        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
-        settledCard({
-          _id: "row-2",
-          cardNumber: "2",
-          teamOnCardIds: undefined,
-          playerIds: ["player-1"],
-        }),
-      ];
-      mockDiffChecklist.mockResolvedValue({
-        ...emptyDiff,
-        cards: [
-          {
-            index: 0,
-            cardNumber: "1",
-            cardName: "Solo One",
-            bucket: "contentChanges",
-            existingId: "row-1",
-            baseVersion: 1,
-            fields: [contentChange("playerIds", "", "Chris Potter")],
-          },
-          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "identical", existingId: "row-2", baseVersion: 1, fields: [] },
-        ],
-      });
-      const { rerender } = renderChecklist();
-      await syncThroughReview(rerender, "skip");
-      expect(screen.getByText("Settled-team positions: []")).toBeTruthy();
-      expect(screen.getByText("No-player positions: [0]")).toBeTruthy();
-    });
 
-    it("a row whose incoming players were ACCEPTED in the review is not playerless", async () => {
-      state.cards = [
-        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
-        settledCard({ _id: "row-2", cardNumber: "2", teamOnCardIds: undefined }),
-      ];
-      mockDiffChecklist.mockResolvedValue({
-        ...emptyDiff,
-        cards: [
-          {
-            index: 0,
-            cardNumber: "1",
-            cardName: "Solo One",
-            bucket: "contentChanges",
-            existingId: "row-1",
-            baseVersion: 1,
-            fields: [contentChange("playerIds", "", "Chris Potter")],
-          },
-          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "identical", existingId: "row-2", baseVersion: 1, fields: [] },
-        ],
-      });
-      const { rerender } = renderChecklist();
-      await syncThroughReview(rerender, { applyFieldOf: /to #1 Solo One/ });
-      expect(screen.getByText("No-player positions: [1]")).toBeTruthy();
-    });
 
-    it("a stored row still holding a pending player name, and a NEW card, are never playerless", async () => {
-      state.cards = [
-        settledCard({
-          _id: "row-1",
-          cardNumber: "1",
-          teamOnCardIds: undefined,
-          pendingPlayerNames: ["Chris Potter"],
-        }),
-      ];
-      mockDiffChecklist.mockResolvedValue({
-        ...emptyDiff,
-        cards: [
-          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", fields: [] },
-          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "new", fields: [] },
-        ],
-      });
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      expect(screen.getByText("No-player positions: []")).toBeTruthy();
-    });
 
-    it("hands the wizard the set's skipped PLAYER names, and not its skipped team names", async () => {
-      state.skippedNames = [
-        { _id: "skip-1", kind: "player", name: "Chris Potter", skippedAt: 1 },
-        { _id: "skip-2", kind: "team", name: "Team Photo", skippedAt: 1 },
-      ];
-      const { rerender } = renderChecklist();
-      await syncTeamless(rerender);
-      await screen.findByText("Wizard opened teams-only");
-      expect(screen.getByText("Skipped player names: [Chris Potter]")).toBeTruthy();
-    });
   });
 
   /**
@@ -2708,7 +2340,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     };
 
     async function syncTeamed(rerender: Parameters<typeof streamCandidates>[0]) {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, arrivedBatch);
       await act(async () => {
         resolveFetch({
@@ -2721,19 +2353,6 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
     }
 
-    it("opens the wizard (the no-names entry) when a new card's title needs a look", async () => {
-      mockResolveEntities.mockResolvedValue({
-        unknownPlayers: [],
-        unknownTeams: [],
-        batchId: undefined,
-        titleContext: longTitles,
-      });
-      const { rerender } = renderChecklist();
-      await syncTeamed(rerender);
-      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
-      expect(screen.getByText("Title context: yes")).toBeTruthy();
-      expect(mockCommitChecklist).not.toHaveBeenCalled();
-    });
 
     it("commits straight through when no title needs a look", async () => {
       mockResolveEntities.mockResolvedValue({
@@ -2789,7 +2408,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       () => new Promise((resolve) => (finishCommit = resolve)),
     );
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, arrivedBatch);
     await act(async () => {
       resolveFetch({
@@ -2814,13 +2433,20 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     await act(async () => {
       finishCommit({ count: 2 });
     });
+    // NEO-640: the saved line replaces that sentence within a frame, so it
+    // says why on its own: no count, right after "Saved 2 cards.".
+    await waitFor(() =>
+      expect(screen.getByText(/^Saved 2 cards\./).textContent).toBe(
+        "Saved 2 cards. Only SportLots was in play, so there was nothing to match.",
+      ),
+    );
   });
 
   it("does not commit until the whole streamed batch has arrived", async () => {
     // (3) The action's `candidateCount` is the contract, and the subscription
     // has to agree with it before a single card is promoted.
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     // Half the batch on the wire so far.
     await streamCandidates(rerender, {
@@ -2854,11 +2480,11 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // and it has to be the same abort: supersede the run, bin the candidates,
     // and survive the fetch resolving afterwards.
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     expect(screen.getByText(/Fetching from SportLots/)).toBeTruthy();
 
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Cancel checklist fetch"));
+      fireEvent.click(screen.getByLabelText("Cancel card fetch"));
     });
 
     await waitFor(() =>
@@ -2874,7 +2500,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // on <body> and a keyboard operator restarts from the top of the document.
     await waitFor(() =>
       expect(document.activeElement).toBe(
-        screen.getByLabelText("Sync card checklist"),
+        screen.getByRole("button", { name: SYNC_BUTTON }),
       ),
     );
 
@@ -2905,8 +2531,9 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       total: 1,
       cards: [streamedCandidate],
     };
-    renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamNeedingOperator(rerender);
 
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
     expect(screen.queryByText(/Fetching from SportLots/)).toBeNull();
@@ -2931,7 +2558,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // slots at fetch time, saw two. The honest answer to "I am not sure how
     // many marketplaces this set has" is the dialog, never a silent commit.
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     expect(screen.queryByText(/Match Cards/)).toBeNull();
 
     await streamCandidates(rerender, arrivedBatch);
@@ -2965,7 +2592,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
    */
   it("hands over to the dialog when the one-sided batch contains a matched pair", async () => {
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     expect(screen.queryByText(/Match Cards/)).toBeNull();
 
     await streamCandidates(rerender, {
@@ -3009,7 +2636,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // checked because either one on its own is a disagreement the operator
     // has to settle, and `candidatesToPairingCards` drops both.
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await streamCandidates(rerender, {
       batchId: "batch-255",
@@ -3044,7 +2671,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // one set's cards onto another — and this path has no operator in front of
     // it to notice.
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await act(async () => {
       resolveFetch({
@@ -3062,11 +2689,13 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     state.liveCandidates = arrivedBatch;
     await act(async () => {
       rerender(
-        <CardChecklist
-          variantId={OTHER_VARIANT_ID}
-          sourceChips={{}}
-          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-        />,
+        <MemoryRouter>
+          <CardChecklist
+            variantId={OTHER_VARIANT_ID}
+            sourceChips={{}}
+            sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+          />
+        </MemoryRouter>,
       );
     });
 
@@ -3085,7 +2714,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // park a keyboard operator spends the whole fetch at the top of the
     // document with nothing announcing that anything began.
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await waitFor(() => {
       const parked = document.activeElement as HTMLElement | null;
@@ -3097,7 +2726,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // …and Cancel is inside it, so a single Tab reaches the way out.
     expect(
       (document.activeElement as HTMLElement).contains(
-        screen.getByLabelText("Cancel checklist fetch"),
+        screen.getByLabelText("Cancel card fetch"),
       ),
     ).toBe(true);
   });
@@ -3108,7 +2737,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     renderChecklist();
     const addCard = screen.getByLabelText("Open add card form");
     addCard.focus();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await waitFor(() =>
       expect(screen.getByText(/Fetching from SportLots/)).toBeTruthy(),
@@ -3120,7 +2749,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     // The pre-existing `candidateCount === 0` short-circuit is untouched by
     // this ticket, and has to stay reachable from the one-sided path too.
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     await act(async () => {
       resolveFetch({
@@ -3142,7 +2771,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
 
   it("a failed one-sided fetch closes the run and discards, as a two-sided one does", async () => {
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     expect(screen.getByText(/Fetching from SportLots/)).toBeTruthy();
 
     await act(async () => {
@@ -3199,7 +2828,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     );
     try {
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
       expect(screen.queryByText(/Match Cards/)).toBeNull();
       expect(screen.getByText(/Fetching from BSC/)).toBeTruthy();
@@ -3233,6 +2862,14 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await act(async () => {
         finishCommit({ count: 2 });
       });
+      // NEO-640: the saved line keeps the paused-side sentence, with no count
+      // of its own after "Saved 2 cards.".
+      await waitFor(() =>
+        expect(screen.getByText(/^Saved 2 cards\./).textContent).toBe(
+          "Saved 2 cards. Only BSC was in play, so there was nothing to match. " +
+            "SportLots is on pause: nothing from SportLots was asked for or changed.",
+        ),
+      );
     } finally {
       state.paused = [];
     }
@@ -3250,8 +2887,9 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       total: 1,
       cards: [streamedCandidate],
     };
-    renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamNeedingOperator(rerender);
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
     await act(async () => {
       resolveFetch({
@@ -3336,7 +2974,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
 
     it("does not commit a complete batch whose teams have not landed, and hands entity resolution the teams once they do", async () => {
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       expect(screen.getByText(/Fetching from BSC/)).toBeTruthy();
 
       await streamCandidates(rerender, prePatch);
@@ -3384,54 +3022,14 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       }
     });
 
-    // NEO-335: teamless cards now open the wizard teams-only before save;
-    // confirmed unanswered, they commit with no team, as before.
-    it("when the teams miss the wait, commits anyway with no team on those cards, and says so", async () => {
-      const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
-      await streamCandidates(rerender, prePatch);
-
-      // Fake the clock only for the wait itself: `awaitStreamedBatch` reads
-      // `Date.now()` for its deadline and polls on `setTimeout`.
-      vi.useFakeTimers();
-      try {
-        await act(async () => {
-          resolveFetch(fetchDone);
-        });
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(31_000);
-        });
-      } finally {
-        vi.useRealTimers();
-      }
-
-      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
-      expect(mockCommitChecklist).not.toHaveBeenCalled();
-      await act(async () => {
-        fireEvent.click(screen.getByText("Confirm entity review"));
-      });
-      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
-      expect(liveRegionText()).not.toContain(SOLO_STREAM_TIMEOUT_MESSAGE);
-      // Never a guess: what arrived is what commits.
-      for (const card of mockResolveEntities.mock.calls[0][0].cards) {
-        expect(card.teams).toBeUndefined();
-      }
-      for (const card of mockCommitChecklist.mock.calls[0][0].cards) {
-        expect(card.teams).toBeUndefined();
-      }
-      await waitFor(() =>
-        expect(liveRegionText()).toMatch(/Saved \d+ cards\./),
-      );
-      expect(liveRegionText()).toContain(TEAMS_LATE_NOTICE);
-      expect(screen.queryByText(/Fetching from BSC/)).toBeNull();
-    });
 
     it("still saves nothing when the ROWS never arrive", async () => {
+      // Fake clock first, as in the two-marketplace twin above (NEO-638).
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, patched);
 
-      vi.useFakeTimers();
       try {
         await act(async () => {
           resolveFetch({ ...fetchDone, candidateCount: 3 });
@@ -3453,6 +3051,22 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         selectorOptionId: VARIANT_ID,
       });
       expect(screen.queryByText(/Fetching from BSC/)).toBeNull();
+    });
+
+    it("a wait whose component is gone never discards afterwards (it would bin a newer Sync's candidates for the same set)", async () => {
+      // NEO-638: same rule as the two-marketplace path; see the twin above.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      const { rerender, unmount } = renderChecklist();
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+      await streamCandidates(rerender, patched);
+      await act(async () => {
+        resolveFetch({ ...fetchDone, candidateCount: 3 });
+      });
+
+      unmount();
+      await vi.advanceTimersByTimeAsync(31_000);
+
+      expect(mockDiscardCandidates).not.toHaveBeenCalled();
     });
   });
 });
@@ -3501,7 +3115,7 @@ describe("CardChecklist — commit paints 'Saved' only after the queries catch u
   /** Drive the fetch → resolve → commit path to the point of the discard. */
   async function runToCommit() {
     renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await act(async () => {
       resolveFetch({
         success: true,
@@ -3629,7 +3243,7 @@ async function commitZeroCandidatePath() {
   );
 
   const rendered = renderChecklist();
-  fireEvent.click(screen.getByLabelText("Sync card checklist"));
+  fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
   await act(async () => {
     resolveFetch({
       success: true,
@@ -3639,40 +3253,6 @@ async function commitZeroCandidatePath() {
     });
   });
   await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-  return rendered;
-}
-
-/**
- * Drives the same zero-candidate route as `commitZeroCandidatePath`, but stops
- * one step short: `resolveChecklistEntities` reports an unknown player, so the
- * entity-review wizard opens instead of the commit running — and the operator
- * cancels it. NOTHING is saved on this path, which is exactly why the banner
- * it leaves behind must not offer to fix anything.
- */
-async function cancelEntityReviewPath() {
-  state.liveCandidates = { ready: 0, total: 0, cards: [] };
-  mockResolveEntities.mockResolvedValue({
-    unknownPlayers: [{ name: "Unknown Guy" }],
-    unknownTeams: [],
-    batchId: "batch-1",
-  });
-  mockDiscardCandidates.mockResolvedValue(undefined);
-  let resolveFetch!: (value: unknown) => void;
-  mockFetchChecklist.mockImplementation(
-    () => new Promise((resolve) => (resolveFetch = resolve)),
-  );
-
-  const rendered = renderChecklist();
-  fireEvent.click(screen.getByLabelText("Sync card checklist"));
-  await act(async () => {
-    resolveFetch({
-      success: true,
-      message: NOTHING_TO_FETCH_MESSAGE,
-      candidateCount: 0,
-      attachedSides: ["bsc", "sportlots"],
-    });
-  });
-  await waitFor(() => expect(mockResolveEntities).toHaveBeenCalledTimes(1));
   return rendered;
 }
 
@@ -3686,14 +3266,14 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
   });
 
   /** The header's one attention control; its visible text is its name. */
-  const needsYou = (name: string | RegExp = /^\d+ needs? you$/) =>
+  const needsYou = (name: string | RegExp = /^\d+ needs? you(, \d+ to fix)?$/) =>
     screen.getByRole("button", { name });
-  const queryNeedsYou = () => screen.queryByRole("button", { name: /^\d+ needs? you$/ });
+  const queryNeedsYou = () => screen.queryByRole("button", { name: /^\d+ needs? you(, \d+ to fix)?$/ });
 
   it("counts the flagged rows and marks only those rows in the grid", () => {
     renderChecklist();
 
-    expect(needsYou("1 needs you")).toBeTruthy();
+    expect(needsYou("1 needs you, 1 to fix")).toBeTruthy();
     expect(screen.getAllByLabelText(/needs attention/)).toHaveLength(1);
     // NEO-272: the mark names the row's identity — number AND card name — so
     // twenty-five same-numbered rows no longer all announce the same sentence.
@@ -3757,9 +3337,6 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
     // NEO-497: titled off the chain (this one has no year row; Base is dropped).
     const dialog = await screen.findByRole("dialog", { name: "Tidy up Test Set" });
     expect(dialog).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe(
-      "#1 AL Leaders ERA LL",
-    );
   });
 
   /**
@@ -3782,83 +3359,90 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
     }
   });
 
-  it("NEO-331: the attention walker's TeamPicker ranks by THIS checklist's row (contextOptionId = variantId)", async () => {
-    renderChecklist();
-    pickerArgs.length = 0;
-
-    fireEvent.click(
-      screen.getByRole("button", { name: /^[0-9]+ needs? you$/ }),
-    );
-    const dialog = await screen.findByRole("dialog");
-
-    // The flagged card has no team, so the walker opens on the team fixer.
-    expect(within(dialog).getAllByLabelText("Add team")).toHaveLength(1);
-    expect(pickerArgs.length).toBeGreaterThan(0);
-    for (const args of pickerArgs) {
-      expect(args).toMatchObject({ contextOptionId: VARIANT_ID });
-    }
-  });
-
   it("does not open the walker on its own", () => {
     renderChecklist();
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   /**
-   * `walkerOpenedByHand` is the only thing that mounts the walker — see the
-   * state block in CardChecklist.tsx. Nothing in
-   * CardAttentionWalker.test.tsx exercises this seam: that file drives the
-   * walker directly with `isOpen` pinned true, never through the parent, so
-   * a change that reintroduced an automatic open would go unnoticed there.
+   * The walk is opened by the pill (or by a commit that leaves flagged cards)
+   * and nothing else. Its position lives in the URL (`?tidy=`), so a card
+   * getting fixed elsewhere does not close it.
    */
-  it("opened BY HAND, stays open and shows All clear once the last flagged row is fixed elsewhere", () => {
+  it("opened BY HAND, stays open when the last flagged row is fixed elsewhere", () => {
     const { rerender } = renderChecklist();
 
     fireEvent.click(needsYou());
     expect(screen.getByRole("dialog")).toBeTruthy();
 
-    // The BSC pass (or another tab) answers the one flagged card — nothing
-    // the walker itself did.
     state.cards = [settledCard()];
     rerender(
-      <CardChecklist
-        variantId={VARIANT_ID}
-        sourceChips={{}}
-        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-      />,
+      <MemoryRouter>
+        <CardChecklist
+          variantId={VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        />
+      </MemoryRouter>,
     );
 
     expect(screen.getByRole("dialog")).toBeTruthy();
-    expect(screen.getByText(/All clear/)).toBeTruthy();
+  });
+
+  describe("NEO-639 (decision A): the set's own No Team reaches the walk", () => {
+    it("under a No Team set the walk is told the set says No Team", () => {
+      state.variantRow = { value: "Test Set", noTeamDefault: { setAt: 1, setByUserId: "u" } };
+      renderChecklist();
+      fireEvent.click(needsYou());
+      expect(screen.getByText("Set No Team: yes")).toBeTruthy();
+    });
+
+    it("under a set with no team default, or a set-level team, it is not", () => {
+      renderChecklist();
+      fireEvent.click(needsYou());
+      expect(screen.getByText("Set No Team: no")).toBeTruthy();
+    });
+
+    it("a set-level TEAM is not a No Team", () => {
+      state.variantRow = { value: "Test Set", teamIds: ["team-set"] };
+      renderChecklist();
+      fireEvent.click(needsYou());
+      expect(screen.getByText("Set No Team: no")).toBeTruthy();
+    });
+  });
+
+  it("closing the walk puts the pill back, and the walk is gone", () => {
+    renderChecklist();
+    fireEvent.click(needsYou());
+    fireEvent.click(screen.getByRole("button", { name: "Close the walk" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(needsYou("1 needs you, 1 to fix")).toBeTruthy();
   });
 
   /**
-   * NEO-102 regression — the walker used to ARM itself on a completed commit
-   * and open across the grid the moment the background BSC team pass flagged
-   * a row. Two E2E flows (checklist-fetch-unknown-entities-link-existing,
-   * checklist-fetch-wizard-add-career-team) commit a custom set whose one
-   * card has no team, so it was flagged immediately and the walker's
-   * `fixed inset-0` overlay swallowed the flow's next tap on the grid. The
-   * commit says what it saved; the header pill offers the walker.
-   *
-   * NEO-335: the banner no longer carries its own "K need attention — Fix
-   * them one at a time" button. The header pill is the one way in.
+   * NEO-645: the commit says what it saved, then opens the Tidy Up walk when
+   * the checklist has cards that need a person (NEO-102's rule that nothing
+   * opens by itself is replaced on purpose: the walk IS the next step of the
+   * sync). Closing it leaves the saved line and the pill.
    */
-  it("after a commit, does NOT open the walker, and the banner offers no button — the header pill carries the count", async () => {
+  it("after a commit that leaves flagged cards, opens the walk; closing it shows the saved line and the pill", async () => {
     await commitZeroCandidatePath();
+
+    expect(await screen.findByRole("dialog", { name: "Tidy up Test Set" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close the walk" }));
 
     const banner = screen.getByText(/Saved 2 cards\./);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(within(banner).queryByRole("button")).toBeNull();
     expect(screen.queryByRole("button", { name: /one at a time/ })).toBeNull();
-    expect(needsYou("1 needs you")).toBeTruthy();
+    expect(needsYou("1 needs you, 1 to fix")).toBeTruthy();
   });
 
   it("the header pill carries the live count after a commit", async () => {
     state.cards = [attentionCard(), attentionCard({ _id: "card-c", cardNumber: "3" })];
     await commitZeroCandidatePath();
 
-    expect(needsYou("2 need you")).toBeTruthy();
+    expect(needsYou("2 need you, 2 to fix")).toBeTruthy();
   });
 
   it("after a commit that flagged nothing, the banner is there and the pill is not", async () => {
@@ -3876,35 +3460,17 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
     // The BSC pass (or another tab) answers the one flagged card.
     state.cards = [settledCard()];
     rerender(
-      <CardChecklist
-        variantId={VARIANT_ID}
-        sourceChips={{}}
-        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-      />,
+      <MemoryRouter>
+        <CardChecklist
+          variantId={VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        />
+      </MemoryRouter>,
     );
 
     expect(queryNeedsYou()).toBeNull();
     expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy();
-  });
-
-  /**
-   * CI round 2 regression (flow `checklist-fetch-cancel-dialog`): the cancel
-   * banner once grew an attention CTA, offering to fix cards the operator
-   * had just declined to save, and broke the flow's exact-text assertion on
-   * that element. NEO-335 retired the banner CTA altogether; this keeps the
-   * exact text pinned so it cannot come back on any notice.
-   */
-  it("leaves the cancelled-review banner exactly as written", async () => {
-    await cancelEntityReviewPath();
-    // Precondition: there IS something needing attention.
-    expect(needsYou("1 needs you")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Cancel entity review" }));
-
-    // Exact match: `getByText` compares the element's whole text content, so
-    // anything appended inside the banner would fail this outright.
-    expect(screen.getByText("Fetch cancelled — no cards saved.")).toBeTruthy();
-    expect(mockCommitChecklist).not.toHaveBeenCalled();
   });
 });
 
@@ -4148,11 +3714,13 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     // have before, and CardChecklist re-renders under the operator.
     state.cards = [settledCard()];
     rerender(
-      <CardChecklist
-        variantId={VARIANT_ID}
-        sourceChips={{}}
-        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-      />,
+      <MemoryRouter>
+        <CardChecklist
+          variantId={VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        />
+      </MemoryRouter>,
     );
 
     // The form is still open and the chip is still on it.
@@ -4557,7 +4125,7 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
 //
 // The defect: a typed name went to `addCustomCard.players` →
 // `pendingPlayerNames`, so the card was born NAMING a player it did not link
-// to — which `deriveCardAttention` badges as an `unreviewedName`, sending the
+// to — which `deriveLegacyCardAttention` badges as an `unreviewedName`, sending the
 // attention walker to ask the operator about a player they had just typed in.
 // Picked ids make the card born LINKED, and a linked card starts answered.
 //
@@ -4674,11 +4242,13 @@ describe("CardChecklist — NEO-220 quick-add Player picker", () => {
 
     state.cards = [settledCard()];
     rerender(
-      <CardChecklist
-        variantId={VARIANT_ID}
-        sourceChips={{}}
-        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-      />,
+      <MemoryRouter>
+        <CardChecklist
+          variantId={VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        />
+      </MemoryRouter>,
     );
 
     expect(screen.getByRole("heading", { name: "Add Card" })).toBeTruthy();
@@ -5028,22 +4598,6 @@ describe("CardChecklist — NEO-212 skipped-names disclosure", () => {
     expect(screen.queryByText(/Skipped names/)).toBeNull();
   });
 
-  it("shows the disclosure, with its count, when the set has skipped names", () => {
-    state.skippedNames = [
-      {
-        _id: "skip-1",
-        kind: "player",
-        name: "Checklist",
-        skippedAt: Date.parse("2026-09-03T12:00:00Z"),
-      },
-    ];
-    renderChecklist();
-
-    expect(
-      screen.getByLabelText("Skipped names (1) — not players or teams"),
-    ).toBeTruthy();
-    expect(screen.getByLabelText("Unskip Checklist")).toBeTruthy();
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -5106,7 +4660,7 @@ async function pairedEntityReviewPath() {
 
   const rendered = renderChecklist();
   await act(async () => {
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
   });
   expect(await screen.findByText(/Match Cards/)).toBeTruthy();
   return rendered;
@@ -5120,113 +4674,7 @@ async function confirmPairing() {
   await waitFor(() => expect(screen.getByText(/Wizard summary/)).toBeTruthy());
 }
 
-describe("CardChecklist — NEO-221 D6: what the wizard is told it will save", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    state.cards = [];
-    state.variantRow = { value: "Test Set" };
-    state.ancestorChain = twoSidedChain();
-    state.liveCandidates = null;
-    state.teams = [];
-    state.players = [];
-    state.skippedNames = [];
-  });
 
-  /**
-   * The wizard used to be handed `cardCount` alone. Deletions and accepted
-   * field changes are the IRREVERSIBLE half of a commit and they were decided
-   * one dialog earlier, so the final step has to account for them too.
-   */
-  it("derives the summary from the preview, not just its card count", async () => {
-    await pairedEntityReviewPath();
-    await confirmPairing();
-
-    expect(
-      screen.getByText(
-        "Wizard summary: 1 cards, 0 deletions, 0 field decisions",
-      ),
-    ).toBeTruthy();
-  });
-});
-
-describe("CardChecklist — NEO-221 D9: Back to matching", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    state.cards = [];
-    state.variantRow = { value: "Test Set" };
-    state.ancestorChain = twoSidedChain();
-    state.liveCandidates = null;
-    state.teams = [];
-    state.players = [];
-    state.skippedNames = [];
-  });
-
-  it("re-opens the pairing dialog and closes the wizard", async () => {
-    await pairedEntityReviewPath();
-    await confirmPairing();
-    expect(screen.queryByText(/Match Cards/)).toBeNull();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
-    });
-
-    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
-    expect(screen.queryByText(/Wizard summary/)).toBeNull();
-  });
-
-  /**
-   * The whole point of parking rather than unmounting. `CardPairingModal`'s
-   * `if (!isOpen) return null` sits BELOW its hooks, so a modal that is merely
-   * hidden keeps its reducer — every link, keep and rename the operator made.
-   * Read back through the CARDS the second Confirm produces: a kept BSC-only
-   * card is in the confirmed set both times, which it could not be if the
-   * reducer had been re-seeded from `initialData`.
-   */
-  it("keeps the pairing session's own state — the kept card survives the round trip", async () => {
-    await pairedEntityReviewPath();
-
-    fireEvent.click(screen.getByLabelText("Keep all BSC-only cards"));
-    await confirmPairing();
-    expect(mockResolveEntities.mock.calls[0][0].cards).toHaveLength(2);
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
-    });
-    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
-
-    await confirmPairing();
-    expect(mockResolveEntities).toHaveBeenCalledTimes(2);
-    expect(mockResolveEntities.mock.calls[1][0].cards).toHaveLength(2);
-  });
-
-  /**
-   * Back is NOT an abort. It leaves the batch alone (so `startBatch` resumes
-   * the same review with the same decisions) and it leaves the candidates
-   * alone — discarding them would empty the very dialog it goes back to.
-   */
-  it("does not discard the candidates it is going back to", async () => {
-    await pairedEntityReviewPath();
-    await confirmPairing();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
-    });
-
-    expect(mockDiscardCandidates).not.toHaveBeenCalled();
-  });
-
-  /**
-   * The custom-subtree path reaches the wizard with `candidateCount === 0` —
-   * nothing was ever paired, so there is nowhere to go back TO and the footer
-   * must offer only Cancel.
-   */
-  it("is not offered when there was no pairing session", async () => {
-    await cancelEntityReviewPath();
-
-    expect(screen.getByText(/Wizard summary/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Back to matching" })).toBeNull();
-  });
-});
 
 // ---------------------------------------------------------------------------
 // NEO-424 — a batch whose only names are links the server made on its own
@@ -5280,72 +4728,12 @@ describe("CardChecklist — NEO-424: links made for the operator open the wizard
     mockDiscardCandidates.mockResolvedValue(undefined);
     renderChecklist();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     });
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
   }
 
-  it("opens the full wizard on a batch with nothing to answer but links made for you, and does not commit", async () => {
-    mockResolveEntities.mockResolvedValue({
-      unknownPlayers: [],
-      unknownTeams: [],
-      batchId: "batch-424",
-      autoLinkedCount: 2,
-    });
-    await pairTeamedCard();
-    await confirmPairing();
 
-    // The full wizard over the batch, not the teams-only entry: its Save step
-    // is where the Decided list, and each link's Change, live.
-    expect(screen.queryByText("Wizard opened teams-only")).toBeNull();
-    expect(mockCommitChecklist).not.toHaveBeenCalled();
-    // The banner says why the save is held, rather than "0 names need a look".
-    expect(
-      screen.getByText("2 names were linked for you. Give them a look before this saves."),
-    ).toBeTruthy();
-
-    // And the wizard's own Confirm is what commits it, batch and all.
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
-    });
-    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-    expect(mockCommitChecklist.mock.calls[0][0].batchId).toBe("batch-424");
-  });
-
-  /**
-   * NEO-221 — the "Back to matching" return trip, where a re-pair resolved
-   * every name, hands back the OPEN batch's id with no unknowns: a batch of
-   * the operator's own decisions. That must keep committing straight away,
-   * which is why the gate reads the auto-link count and never `batchId`.
-   */
-  it("still commits without the wizard when Back to matching comes back with a batch and nothing linked", async () => {
-    mockResolveEntities.mockResolvedValueOnce({
-      unknownPlayers: ["Unknown Guy"],
-      unknownTeams: [],
-      batchId: "batch-424",
-    });
-    await pairTeamedCard();
-    await confirmPairing();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
-    });
-    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
-
-    mockResolveEntities.mockResolvedValueOnce({
-      unknownPlayers: [],
-      unknownTeams: [],
-      batchId: "batch-424",
-      autoLinkedCount: 0,
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByLabelText("Confirm card matches"));
-    });
-
-    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-    expect(mockCommitChecklist.mock.calls[0][0].batchId).toBe("batch-424");
-    expect(screen.queryByText(/Wizard summary/)).toBeNull();
-  });
 
   it("reads a missing count as none, as an older server sends it", async () => {
     mockResolveEntities.mockResolvedValue({
@@ -5363,112 +4751,6 @@ describe("CardChecklist — NEO-424: links made for the operator open the wizard
   });
 });
 
-describe("CardChecklist — NEO-221 D9/D10: aborting the review", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    state.cards = [];
-    state.variantRow = { value: "Test Set" };
-    state.ancestorChain = twoSidedChain();
-    state.liveCandidates = null;
-    state.teams = [];
-    state.players = [];
-    state.skippedNames = [];
-  });
-
-  /**
-   * `discardCandidates` used to fire when the operator CONFIRMED the pairing.
-   * It cannot any more — a parked session can still be returned to — so it
-   * moved to the two ends of the pipeline. This is the abort end.
-   */
-  it("closes the parked pairing session and discards its candidates", async () => {
-    await pairedEntityReviewPath();
-    await confirmPairing();
-    expect(mockDiscardCandidates).not.toHaveBeenCalled();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Cancel entity review" }));
-    });
-
-    expect(screen.getByText("Fetch cancelled — no cards saved.")).toBeTruthy();
-    expect(screen.queryByText(/Wizard summary/)).toBeNull();
-    // Closed for good: the dialog does not come back, parked or otherwise.
-    expect(screen.queryByText(/Match Cards/)).toBeNull();
-    expect(mockDiscardCandidates).toHaveBeenCalledWith({
-      selectorOptionId: VARIANT_ID,
-    });
-  });
-});
-
-describe("CardChecklist — NEO-221 D10: a commit that fails", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    state.cards = [];
-    state.variantRow = { value: "Test Set" };
-    state.ancestorChain = twoSidedChain();
-    state.liveCandidates = null;
-    state.teams = [];
-    state.players = [];
-    state.skippedNames = [];
-  });
-
-  /**
-   * The review is the expensive thing on screen — potentially hundreds of
-   * create/link decisions. Clearing `pendingPreview` on a rejection threw all
-   * of it away and closed the wizard over a message the operator could no
-   * longer act on.
-   */
-  it("keeps the wizard open and hands it the failure", async () => {
-    await cancelEntityReviewPath();
-    mockCommitChecklist.mockRejectedValue(new Error("chunk 2/3 timed out"));
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
-    });
-
-    expect(screen.getByText(/Wizard summary/)).toBeTruthy();
-    expect(
-      screen.getByText("Wizard commit error: chunk 2/3 timed out"),
-    ).toBeTruthy();
-    expect(screen.getByText(/Commit failed: chunk 2\/3 timed out/)).toBeTruthy();
-  });
-
-  /** Retry is the same commit, re-sent: the batch is untouched server-side. */
-  it("retrying re-sends the commit, and a second attempt can land", async () => {
-    await cancelEntityReviewPath();
-    mockCommitChecklist.mockRejectedValueOnce(new Error("chunk 2/3 timed out"));
-    mockCommitChecklist.mockResolvedValue({ count: 1, unreviewedNameCount: 0 });
-    mockDiscardCandidates.mockResolvedValue(undefined);
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
-    });
-    expect(screen.getByText(/Wizard commit error/)).toBeTruthy();
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
-    });
-
-    expect(mockCommitChecklist).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText(/Wizard summary/)).toBeNull();
-    expect(screen.getByText(/Saved 1 cards\./)).toBeTruthy();
-  });
-
-  it("dismissing the failure clears it without closing the wizard", async () => {
-    await cancelEntityReviewPath();
-    mockCommitChecklist.mockRejectedValue(new Error("chunk 2/3 timed out"));
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
-    });
-    expect(screen.getByText(/Wizard commit error/)).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss commit error" }));
-
-    expect(screen.queryByText(/Wizard commit error/)).toBeNull();
-    expect(screen.getByText(/Wizard summary/)).toBeTruthy();
-  });
-});
-
 describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -5482,21 +4764,17 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
   });
 
   /**
-   * The cards ARE saved, so this is a NOTE on the success banner rather than a
-   * failure — but it is the only announcement that some of them landed with no
-   * player or team link at all.
+   * NEO-645: the old wizard left unreviewed names behind, so the banner said
+   * so. The walk opens next and answers them, so the banner keeps the count
+   * and nothing more.
    */
-  it("appends the unreviewed-names sentence to the commit banner", async () => {
+  it("keeps only the count on the commit banner when names are still unanswered", async () => {
     state.liveCandidates = { ready: 0, total: 0, cards: [] };
     mockResolveEntities.mockResolvedValue({
       unknownPlayers: [],
       unknownTeams: [],
       batchId: undefined,
     });
-    // A COUNT and nothing else: the names themselves stay on the cards
-    // (`pendingPlayerNames`/`pendingTeamNames`), which is where the attention
-    // walker's fixer reads them from. Shipping them back through the commit
-    // return as well would be a second copy that can only go stale.
     mockCommitChecklist.mockResolvedValue({ count: 2, unreviewedNameCount: 3 });
     mockDiscardCandidates.mockResolvedValue(undefined);
     mockFetchChecklist.mockResolvedValue({
@@ -5508,15 +4786,13 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
 
     renderChecklist();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     });
     await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
 
-    expect(
-      screen.getByText(
-        "Saved 2 cards. 3 names were not reviewed; those cards have no player/team link.",
-      ),
-    ).toBeTruthy();
+    expect(screen.getByText("Saved 2 cards.")).toBeTruthy();
+    expect(screen.queryByText(/not reviewed/)).toBeNull();
+    expect(screen.queryByText(/no player\/team link/)).toBeNull();
   });
 
   it("says nothing extra when every name was reviewed", async () => {
@@ -5525,56 +4801,6 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
     expect(screen.getByText("Saved 2 cards.")).toBeTruthy();
   });
 
-  /**
-   * The attention count and the walker's fixer, end to end through the parent.
-   *
-   * DEPENDS ON WP-C: `deriveCardAttention` has to know the `unreviewedName`
-   * kind before a row carrying `pendingPlayerNames` is counted at all, and
-   * `updateCard` has to accept the pending arrays before the fixer's write can
-   * clear them. That is why the plan lands C and D together.
-   */
-  it("counts a card whose names were never reviewed, and links them in the walker", async () => {
-    state.players = [{ _id: "player-1", name: "Yordan Alvarez" }];
-    state.cards = [
-      settledCard({
-        _id: "card-unreviewed" as unknown as Id<"cardChecklist">,
-        cardNumber: "9",
-        cardName: "Yordan Alvrez",
-        pendingPlayerNames: ["Yordan Alvrez"],
-      }),
-    ];
-    mockUpdateCard.mockResolvedValue(null);
-
-    renderChecklist();
-
-    fireEvent.click(screen.getByRole("button", { name: "1 needs you" }));
-
-    // The unreviewed name is shown — an operator cannot link a misspelling
-    // they cannot see. Scoped to the fixer's own list: the grid row behind the
-    // dialog carries the same text.
-    const names = await screen.findByRole("list", {
-      name: "Typed on this card, not linked yet",
-    });
-    expect(names.textContent).toContain("Yordan Alvrez");
-
-    // Link the real player through the walker's picker and save. The
-    // attention walker's `UnreviewedNameFixer` mounts a DEFAULT-labelled
-    // PlayerPicker — only the quick-add form's instance is renamed (NEO-220),
-    // and this is the test that says so.
-    fireEvent.click(screen.getByLabelText("Add player"));
-    fireEvent.click(screen.getByLabelText("Add Yordan Alvarez"));
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /Save & Next/ }));
-    });
-
-    expect(mockUpdateCard).toHaveBeenCalledWith({
-      id: "card-unreviewed",
-      playerIds: ["player-1"],
-      teamOnCardIds: ["team-1"],
-      pendingPlayerNames: [],
-      pendingTeamNames: [],
-    });
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -5620,7 +4846,7 @@ async function resyncAndExpectOnlyTheNewBatch() {
     }),
   );
   await act(async () => {
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
   });
 
   expect(await screen.findByText(/Match Cards/)).toBeTruthy();
@@ -5799,7 +5025,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
 
     renderChecklist();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     });
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
     await act(async () => {
@@ -5870,7 +5096,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
 
     renderChecklist();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     });
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
@@ -5923,7 +5149,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
 
     renderChecklist();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     });
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
@@ -5963,7 +5189,7 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
 
     renderChecklist();
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     });
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
     await act(async () => {
@@ -6018,23 +5244,27 @@ function parallelBuiltResult(overrides: Record<string, unknown> = {}) {
 
 function renderParallelRow() {
   return render(
-    <CardChecklist
-      variantId={VARIANT_ID}
-      sourceChips={{}}
-      sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-      parallelBuild={{ role: "parallel", sourceId: INSERT_ROW_ID, sourceValue: "Anime" }}
-    />,
+    <MemoryRouter>
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelBuild={{ role: "parallel", sourceId: INSERT_ROW_ID, sourceValue: "Anime" }}
+      />
+    </MemoryRouter>,
   );
 }
 
 function renderInsertRow() {
   return render(
-    <CardChecklist
-      variantId={VARIANT_ID}
-      sourceChips={{}}
-      sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-      parallelBuild={{ role: "insert" }}
-    />,
+    <MemoryRouter>
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelBuild={{ role: "insert" }}
+      />
+    </MemoryRouter>,
   );
 }
 
@@ -6052,7 +5282,7 @@ describe("CardChecklist — NEO-312 a parallel row's Sync slot builds instead of
     renderParallelRow();
 
     // No ordinary Sync control exists on a parallel row at all.
-    expect(screen.queryByLabelText("Sync card checklist")).toBeNull();
+    expect(screen.queryByRole("button", { name: SYNC_BUTTON })).toBeNull();
     const button = screen.getByRole("button", { name: "Build from Anime" });
 
     mockBuildParallelChecklist.mockResolvedValue(parallelBuiltResult());
@@ -6107,7 +5337,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     );
 
     renderInsertRow();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await act(async () => {
       resolveFetch({
         success: true,
@@ -6174,6 +5404,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
   }
 
   it("NEO-487: a single build's wait line stays while another insert's run goes elsewhere — one line, never two (NEO-496)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     state.marketplaceWait = { waitingSince: 1, accumulatedMs: 0 };
     // An empty parallel: its button builds at once, no rebuild confirm.
     state.cards = [];
@@ -6193,12 +5424,17 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
         sourceLabelMaps: { bsc: {}, sportlots: {} },
         parallelBuild: { role: "parallel" as const, sourceId: INSERT_ROW_ID, sourceValue: "Anime" },
       };
-      const { rerender } = render(<CardChecklist {...props} parallelRun={idle} />);
+      const { rerender } = render(
+        <MemoryRouter>
+          <CardChecklist {...props} parallelRun={idle} />
+        </MemoryRouter>,
+      );
       // This row's own build, held up on the marketplace: its line shows.
       fireEvent.click(screen.getByRole("button", { name: "Build from Anime" }));
-      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
-        timeout: 3000,
+      await act(async () => {
+        vi.advanceTimersByTime(ANNOUNCE_AFTER_MS);
       });
+      expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
       // A run of another insert's parallels starts while that build is still
       // in flight (the operator saved the insert, then came back here).
       // NEO-496: that run's ledger belongs to its insert, not this row, so it
@@ -6217,10 +5453,12 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
         announcement: "",
         waitKey: "run-key",
       });
-      rerender(<CardChecklist {...props} parallelRun={{ ...running, buildOne: idle.buildOne }} />);
-      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
-        timeout: 3000,
-      });
+      rerender(
+        <MemoryRouter>
+          <CardChecklist {...props} parallelRun={{ ...running, buildOne: idle.buildOne }} />
+        </MemoryRouter>,
+      );
+      expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
       // And it is the build's line: no ledger for the other insert's run.
       const line = screen.getByText("Waiting on BuySportsCards…");
       expect(line.closest("section")?.textContent ?? "").not.toContain("Other Insert");
@@ -6245,12 +5483,14 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
       announcement: "",
     });
     render(
-      <CardChecklist
-        variantId={VARIANT_ID}
-        sourceChips={{}}
-        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-        parallelRun={foreign}
-      />,
+      <MemoryRouter>
+        <CardChecklist
+          variantId={VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+          parallelRun={foreign}
+        />
+      </MemoryRouter>,
     );
     expect(
       screen.getByLabelText("Open add card form").getAttribute("aria-disabled"),
@@ -6270,13 +5510,15 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
       announcement: "",
     };
     render(
-      <CardChecklist
-        variantId={VARIANT_ID}
-        sourceChips={{}}
-        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-        parallelBuild={{ role: "parallel", sourceId: INSERT_ROW_ID, sourceValue: "Anime" }}
-        parallelRun={hostedRunner(run)}
-      />,
+      <MemoryRouter>
+        <CardChecklist
+          variantId={VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+          parallelBuild={{ role: "parallel", sourceId: INSERT_ROW_ID, sourceValue: "Anime" }}
+          parallelRun={hostedRunner(run)}
+        />
+      </MemoryRouter>,
     );
     const addCard = screen.getByLabelText("Open add card form");
     expect(addCard.getAttribute("aria-disabled")).toBe("true");
@@ -6311,12 +5553,14 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
       announcement: "",
     });
     const at = (variantId: Id<"selectorOptions">, phase: "running" | "finished") => (
-      <CardChecklist
-        variantId={variantId}
-        sourceChips={{}}
-        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-        parallelRun={hostedRunner(runOf(phase) as never)}
-      />
+      <MemoryRouter>
+        <CardChecklist
+          variantId={variantId}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+          parallelRun={hostedRunner(runOf(phase) as never)}
+        />
+      </MemoryRouter>
     );
     const ledger = () => document.getElementById(PARALLEL_BUILD_HEADING_ID);
 
@@ -6360,7 +5604,7 @@ describe("CardChecklist — NEO-312 the auto-run after a commit (J1)", () => {
     mockFetchChecklist.mockImplementation(
       () => new Promise((resolve) => (resolveFetch = resolve)),
     );
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await act(async () => {
       resolveFetch({
         success: true,
@@ -6395,19 +5639,21 @@ describe("CardChecklist — NEO-312 the auto-run after a commit (J1)", () => {
 
     const OTHER_ID = "variant-2" as unknown as Id<"selectorOptions">;
     const at = (variantId: Id<"selectorOptions">) => (
-      <CardChecklist
-        variantId={variantId}
-        sourceChips={{}}
-        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-        parallelBuild={{ role: "insert" }}
-      />
+      <MemoryRouter>
+        <CardChecklist
+          variantId={variantId}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+          parallelBuild={{ role: "insert" }}
+        />
+      </MemoryRouter>
     );
     await act(async () => {
       rerender(at(OTHER_ID));
     });
     expect(screen.queryByText(/Saved 2 cards/)).toBeNull();
     // The new row is on screen, with its own Sync.
-    expect(screen.getByLabelText("Sync card checklist")).toBeTruthy();
+    expect(screen.getByRole("button", { name: SYNC_BUTTON })).toBeTruthy();
 
     await act(async () => {
       rerender(at(VARIANT_ID));
@@ -6427,12 +5673,14 @@ describe("CardChecklist — NEO-312 the auto-run after a commit (J1)", () => {
     const OTHER_ID = "variant-2" as unknown as Id<"selectorOptions">;
     await act(async () => {
       rerender(
-        <CardChecklist
-          variantId={OTHER_ID}
-          sourceChips={{}}
-          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-          parallelBuild={{ role: "insert" }}
-        />,
+        <MemoryRouter>
+          <CardChecklist
+            variantId={OTHER_ID}
+            sourceChips={{}}
+            sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+            parallelBuild={{ role: "insert" }}
+          />
+        </MemoryRouter>,
       );
     });
     await act(async () => {
@@ -6466,12 +5714,14 @@ describe("CardChecklist — NEO-321 a base-parallel row builds from Base (D3)", 
     // An explicit `undefined` means "Base's name has not loaded", not "default".
     const sourceValue = args.length ? args[0] : "Base";
     return render(
-      <CardChecklist
-        variantId={VARIANT_ID}
-        sourceChips={{}}
-        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-        parallelBuild={{ role: "parallel", sourceId: BASE_ID, sourceValue }}
-      />,
+      <MemoryRouter>
+        <CardChecklist
+          variantId={VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+          parallelBuild={{ role: "parallel", sourceId: BASE_ID, sourceValue }}
+        />
+      </MemoryRouter>,
     );
   }
 
@@ -6479,7 +5729,7 @@ describe("CardChecklist — NEO-321 a base-parallel row builds from Base (D3)", 
     renderBaseParallel();
     expect(screen.getByRole("button", { name: "Build from Base" })).toBeTruthy();
     expect(screen.queryByText("Fetch from Marketplaces")).toBeNull();
-    expect(screen.queryByLabelText("Sync card checklist")).toBeNull();
+    expect(screen.queryByRole("button", { name: SYNC_BUTTON })).toBeNull();
     expect(screen.queryByText(/Match Cards/)).toBeNull();
   });
 
@@ -6488,7 +5738,7 @@ describe("CardChecklist — NEO-321 a base-parallel row builds from Base (D3)", 
     renderBaseParallel();
     expect(screen.getByRole("button", { name: "Rebuild from Base" })).toBeTruthy();
     expect(screen.queryByText("Refresh")).toBeNull();
-    expect(screen.queryByLabelText("Sync card checklist")).toBeNull();
+    expect(screen.queryByRole("button", { name: SYNC_BUTTON })).toBeNull();
   });
 
   it("the button's label follows the source's name, never a literal", () => {
@@ -6517,17 +5767,19 @@ describe("CardChecklist — NEO-321 a base-parallel row builds from Base (D3)", 
     expect(mockBuildParallelChecklist).not.toHaveBeenCalled();
     expect(mockFetchChecklist).not.toHaveBeenCalled();
     expect(screen.queryByText("Fetch from Marketplaces")).toBeNull();
-    expect(screen.queryByLabelText("Sync card checklist")).toBeNull();
+    expect(screen.queryByRole("button", { name: SYNC_BUTTON })).toBeNull();
   });
 
   it("with no single Base the stand-in says Can't build yet, is described by the reason, and is never actionable", () => {
     render(
-      <CardChecklist
-        variantId={VARIANT_ID}
-        sourceChips={{}}
-        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-        parallelBuild={{ role: "parallel", unavailableReasonId: "why-not" }}
-      />,
+      <MemoryRouter>
+        <CardChecklist
+          variantId={VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+          parallelBuild={{ role: "parallel", unavailableReasonId: "why-not" }}
+        />
+      </MemoryRouter>,
     );
     const standIn = screen.getByRole("button", { name: "Can't build yet" });
     expect(standIn.getAttribute("aria-disabled")).toBe("true");
@@ -6579,13 +5831,15 @@ describe("CardChecklist — NEO-321 the Base checklist is held while a base run 
 
   function renderBase(runner: ParallelBuildRunner, panelElsewhere = false) {
     return render(
-      <CardChecklist
-        variantId={VARIANT_ID}
-        sourceChips={{}}
-        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-        parallelRun={runner}
-        parallelPanelElsewhere={panelElsewhere}
-      />,
+      <MemoryRouter>
+        <CardChecklist
+          variantId={VARIANT_ID}
+          sourceChips={{}}
+          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+          parallelRun={runner}
+          parallelPanelElsewhere={panelElsewhere}
+        />
+      </MemoryRouter>,
     );
   }
 
@@ -6605,7 +5859,7 @@ describe("CardChecklist — NEO-321 the Base checklist is held while a base run 
 
   it("holds Sync too: a new Base save mid-copy would change what the run is copying", () => {
     renderBase(baseRun("running", [{ id: OTHER_PARALLEL, line: { kind: "building" } }]));
-    const sync = screen.getByLabelText("Sync card checklist") as HTMLButtonElement;
+    const sync = screen.getByRole("button", { name: SYNC_BUTTON }) as HTMLButtonElement;
     expect(sync.disabled).toBe(true);
   });
 
@@ -6730,7 +5984,7 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
   it("one marketplace: waits for the teams, not just the rows, before it hands the cards on", async () => {
     state.ancestorChain = soloBscChain();
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
 
     // The rows arrived long ago; the action resolves before the team writes
     // reach the subscription.
@@ -6777,7 +6031,7 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
     // checklistCandidates.test.ts).
     state.ancestorChain = soloBscChain();
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, {
       ...rowsWithTeams,
       ready: 1,
@@ -6810,7 +6064,7 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
     // Same count, teams and all — but not the batch this run wrote.
     state.ancestorChain = soloBscChain();
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, { ...rowsWithTeams, batchId: "batch-old" });
     await act(async () => {
       resolveFetch({ ...fencedResult, attachedSides: ["bsc"] });
@@ -6824,7 +6078,7 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
   it("two marketplaces: Confirm stays locked until the teams have reached the dialog", async () => {
     state.ancestorChain = twoSidedChain();
     const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
     await streamCandidates(rerender, rowsWithoutTeams);
     expect(await screen.findByText(/Match Cards/)).toBeTruthy();
 
@@ -6843,7 +6097,12 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
         "Confirm",
       ),
     );
-    expect(screen.getByText("0 matched, 2 BSC-only, 0 SL-only")).toBeTruthy();
+    // NEO-640: the fetch's line is set when the run's own wait for the settled
+    // batch ends (it used to be set the moment the fetch resolved), which is a
+    // poll turn after the dialog's reactive unlock.
+    await waitFor(() =>
+      expect(screen.getByText("0 matched, 2 BSC-only, 0 SL-only")).toBeTruthy(),
+    );
   });
 
   it("two marketplaces: a stream that never settles unlocks Confirm after the budget instead of hanging", async () => {
@@ -6854,7 +6113,7 @@ describe("CardChecklist — the team fence (NEO-333)", () => {
     try {
       state.ancestorChain = twoSidedChain();
       const { rerender } = renderChecklist();
-      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
       await streamCandidates(rerender, rowsWithoutTeams);
       expect(screen.getByText(/Match Cards/)).toBeTruthy();
       await act(async () => {
@@ -6959,11 +6218,13 @@ describe("CardChecklist — the autograph format prompt (NEO-345)", () => {
     state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
     await act(async () => {
       rerender(
-        <CardChecklist
-          variantId={VARIANT_ID}
-          sourceChips={{}}
-          sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-        />,
+        <MemoryRouter>
+          <CardChecklist
+            variantId={VARIANT_ID}
+            sourceChips={{}}
+            sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+          />
+        </MemoryRouter>,
       );
     });
     expect(screen.queryByText(PROMPT)).toBeNull();
@@ -6974,7 +6235,9 @@ describe("CardChecklist — the autograph format prompt (NEO-345)", () => {
   it("the saved line is for this sitting only: another leaf drops it, and coming back does not bring it back", async () => {
     state.cards = [auto()];
     const view = (variantId: typeof VARIANT_ID) => (
-      <CardChecklist variantId={variantId} sourceChips={{}} sourceLabelMaps={{ bsc: {}, sportlots: {} }} />
+      <MemoryRouter>
+        <CardChecklist variantId={variantId} sourceChips={{}} sourceLabelMaps={{ bsc: {}, sportlots: {} }} />
+      </MemoryRouter>
     );
     const { rerender } = render(view(VARIANT_ID));
     await act(async () => {
@@ -7162,4 +6425,696 @@ describe("CardChecklist — NEO-556 quick-add No Team", () => {
     });
     expect(mockAddCustomCard.mock.calls[0][0]).not.toHaveProperty("teamNone");
   });
+});
+
+/**
+ * NEO-487 / NEO-628 — the Set Builder's own "Waiting on BuySportsCards…" line
+ * during a Sync. It reads the run's `marketplaceWaits` row (mocked here as a
+ * wait that began long ago, so the 1.5 s client gate is the only delay).
+ *
+ *   - A one-marketplace Sync mounts no Match Cards dialog, so the PAGE shows
+ *     the line.
+ *   - A two-marketplace Sync opens Match Cards at once (`pairingPhase` is
+ *     "review"), and the page's line stands down: the dialog carries its own,
+ *     so the sentence is on screen exactly once, inside the dialog.
+ *   - NEO-624: "review" starts BEFORE the BuySportsCards call goes out, but
+ *     the dialog mounts only once the first rows stream in. Until it does the
+ *     page's line is the only thing saying what the fetch waits on, so it
+ *     stays up; the hand-over to the dialog's line leaves exactly one.
+ */
+describe("CardChecklist — the Sync wait line (NEO-487)", () => {
+  const WAIT = "Waiting on BuySportsCards…";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.skippedNames = [];
+    state.marketplaceWait = { waitingSince: 1, accumulatedMs: 0 };
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    mockFetchChecklist.mockImplementation(() => new Promise(() => {}));
+  });
+
+  afterEach(() => {
+    state.marketplaceWait = undefined;
+    vi.useRealTimers();
+  });
+
+  /**
+   * The line speaks after a 1.5 s client gate (setTimeout), so the clock is
+   * faked and stepped past it rather than slept through (NEO-638). Only the
+   * timers and Date the gate reads are faked; promises and microtasks are real.
+   */
+  const fakeGate = () =>
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  const passGate = () =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ANNOUNCE_AFTER_MS + 100);
+    });
+
+  it("a one-marketplace Sync shows the wait line on the page, with no dialog around it", async () => {
+    state.ancestorChain = soloSlChain();
+    state.liveCandidates = null;
+    fakeGate();
+    renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    // One millisecond short of the gate the line is not yet on screen.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ANNOUNCE_AFTER_MS - 1);
+    });
+    expect(screen.queryByText(WAIT)).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    const line = screen.getByText(WAIT);
+    expect(screen.getAllByText(WAIT)).toHaveLength(1);
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(line.closest('[role="dialog"]')).toBeNull();
+    // The sentence is the status region's, with the running time after it.
+    expect(line.closest('[role="status"]')?.textContent).toMatch(/^Waiting on BuySportsCards…\s*\d+/);
+  });
+
+  it("a two-marketplace Sync shows the line once, inside Match Cards, and not on the page behind it", async () => {
+    state.ancestorChain = twoSidedChain();
+    state.liveCandidates = { ready: 1, total: 1, cards: [streamedCandidate] };
+    fakeGate();
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamNeedingOperator(rerender);
+    await passGate();
+
+    expect(screen.getByText(/Match Cards/)).toBeTruthy();
+    const line = screen.getByText(WAIT);
+    expect(screen.getAllByText(WAIT)).toHaveLength(1);
+    expect(line.closest('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("a two-marketplace Sync keeps the page's line up until Match Cards mounts, then hands it to the dialog (NEO-624)", async () => {
+    state.ancestorChain = twoSidedChain();
+    // No rows have streamed in yet: the review phase is set, the dialog is not
+    // mounted, and the BuySportsCards call is the thing being waited on.
+    state.liveCandidates = null;
+    fakeGate();
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await passGate();
+
+    const pageLine = screen.getByText(WAIT);
+    expect(screen.getAllByText(WAIT)).toHaveLength(1);
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(pageLine.closest('[role="dialog"]')).toBeNull();
+
+    // The first rows arrive and Match Cards mounts: the page's line stands down
+    // in the same render, the dialog's own takes over after its 1.5 s gate.
+    await streamNeedingOperator(rerender, { ready: 1, total: 1, cards: [streamedCandidate] });
+    expect(screen.getByText(/Match Cards/)).toBeTruthy();
+    expect(screen.queryByText(WAIT)).toBeNull();
+
+    await passGate();
+    const dialogLine = screen.getByText(WAIT);
+    expect(screen.getAllByText(WAIT)).toHaveLength(1);
+    expect(dialogLine.closest('[role="dialog"]')).not.toBeNull();
+  });
+});
+
+/**
+ * NEO-640 — Match Cards opens only when a card needs the operator.
+ *
+ * Every multi-source run starts on the inline progress line. The dialog opens
+ * as soon as a streamed row of THIS run's batch needs the operator, or when
+ * the settled batch does; a batch where every card is Matched at 100% is
+ * committed without it, through the same `handlePairingConfirm` Confirm calls
+ * (NEO-645: it saves, then the Tidy Up walk opens for any card that needs a
+ * person; there is no review to come back from). `match-cards-needed.test.tsx` pins the predicate;
+ * this block pins how the component acts on it.
+ */
+describe("CardChecklist — Match Cards opens only when a card needs the operator (NEO-640)", () => {
+  let resolveFetch: (value: unknown) => void;
+
+  /** A BSC + SportLots pair paired by name (same roster, numbers agree), teamed: nothing for the operator. */
+  const cleanPair = (n: string, player: string) => ({
+    cardNumber: n,
+    cardName: player,
+    players: [player],
+    teams: ["Cincinnati Reds"],
+    bucket: "matched" as const,
+    confidence: 1,
+    pairedBy: "name" as const,
+    platformData: { bsc: { ref: `bsc-${n}` }, sportlots: { ref: `sl-${n}` } },
+  });
+  /** The same pair paired by name with differing numbers: needs the operator. */
+  const guessedPair = (n: string, player: string) => ({
+    ...cleanPair(n, player),
+    confidence: 0.9,
+    pairedBy: "name" as const,
+    sourceNumbers: { bsc: n, sportlots: "250" },
+  });
+
+  const BATCH = "batch-640";
+  const batch = (cards: unknown[], over: Record<string, unknown> = {}) => ({
+    batchId: BATCH,
+    ready: cards.length,
+    total: cards.length,
+    cards,
+    ...over,
+  });
+  const cleanBatch = batch([cleanPair("1", "Elly De La Cruz"), cleanPair("2", "Hunter Greene")]);
+  const mixedBatch = batch([cleanPair("1", "Elly De La Cruz"), guessedPair("2", "Hunter Greene")]);
+
+  const fetchDone = (count: number, over: Record<string, unknown> = {}) => ({
+    success: true,
+    message: `${count} matched, 0 BSC-only, 0 SL-only`,
+    candidateCount: count,
+    attachedSides: ["bsc", "sportlots"],
+    ...over,
+  });
+
+  /** Hold the commit open so the kept line is read while it stands. */
+  function holdCommit() {
+    let finish: (value: unknown) => void = () => {};
+    mockCommitChecklist.mockImplementation(
+      () => new Promise((resolve) => (finish = resolve)),
+    );
+    return (value: unknown) => finish(value);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = twoSidedChain();
+    state.paused = [];
+    state.skippedNames = [];
+    state.teams = [];
+    state.players = [];
+    state.marketplaceWait = undefined;
+    // Nothing on the wire at the press: the batch has to be seen arriving.
+    state.liveCandidates = null;
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    mockCommitChecklist.mockResolvedValue({ count: 2 });
+    mockFetchChecklist.mockImplementation(
+      () => new Promise((resolve) => (resolveFetch = resolve)),
+    );
+  });
+
+  it("a clean multi-source run never mounts Match Cards and commits with the kept line", async () => {
+    const finishCommit = holdCommit();
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+
+    // The press starts on the progress line, naming both sources, with Cancel.
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(screen.getByText(/Fetching from BSC and SportLots/)).toBeTruthy();
+    expect(screen.getByLabelText("Cancel card fetch")).toBeTruthy();
+
+    await streamCandidates(rerender, cleanBatch);
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    await act(async () => {
+      resolveFetch(fetchDone(2));
+    });
+
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("heading", { name: /^Match Cards/ })).toBeNull();
+    expect(screen.queryByLabelText("Confirm card matches")).toBeNull();
+    expect(liveRegionText()).toContain(
+      "All 2 cards matched across BSC and SportLots. No Match Cards needed, totally clean.",
+    );
+    const committed = mockCommitChecklist.mock.calls[0][0].cards;
+    expect(committed.map((c: { cardNumber: string }) => c.cardNumber)).toEqual(["1", "2"]);
+    await act(async () => finishCommit({ count: 2 }));
+  });
+
+  it("the saved line carries the kept sentence and then the teams line when nothing is left for the wizard to ask", async () => {
+    // The skip commits within a frame of saying why no Match Cards came up, and
+    // "Saved N cards." replaces that line: it has to carry the sentence on, the
+    // way it carries the teams line, or the operator never learns why.
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, cleanBatch);
+    await act(async () => {
+      resolveFetch(fetchDone(2, { checklistTeams: { matched: 2, total: 2 } }));
+    });
+
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(liveRegionText()).toContain("Saved 2 cards."));
+    expect(screen.queryByRole("heading", { name: /^Match Cards/ })).toBeNull();
+    const saved = screen.getByText(/^Saved 2 cards\./).textContent;
+    expect(saved).toBe(
+      "Saved 2 cards. BSC and SportLots agreed on every one, so Match Cards sat this one out. " +
+        "Teams from your checklist: 2 of 2 cards.",
+    );
+    expect(saved?.match(/Teams from your checklist/g)).toHaveLength(1);
+  });
+
+  it("the saved line carries the kept sentence alone when the checklist gave no teams", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, cleanBatch);
+    await act(async () => {
+      resolveFetch(fetchDone(2));
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(liveRegionText()).toContain("Saved 2 cards."));
+    expect(screen.getByText(/^Saved 2 cards\./).textContent).toBe(
+      "Saved 2 cards. BSC and SportLots agreed on every one, so Match Cards sat this one out.",
+    );
+  });
+
+  it("a run the operator settled in Match Cards saves without the kept sentence", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, mixedBatch);
+    await act(async () => {
+      resolveFetch(fetchDone(2));
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Confirm card matches").textContent).toBe("Confirm"),
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(liveRegionText()).toContain("Saved 2 cards."));
+    expect(liveRegionText()).not.toContain("All 2 cards matched");
+    expect(liveRegionText()).not.toContain("sat this one out");
+  });
+
+  it("a single clean pair says 'The 1 card matched across BSC and SportLots. No Match Cards needed, totally clean.'", async () => {
+    const finishCommit = holdCommit();
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, batch([cleanPair("1", "Elly De La Cruz")]));
+    await act(async () => {
+      resolveFetch(fetchDone(1));
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    expect(liveRegionText()).toContain("The 1 card matched across BSC and SportLots. No Match Cards needed, totally clean.");
+    await act(async () => finishCommit({ count: 1 }));
+  });
+
+  it("a row that needs the operator opens Match Cards mid-fetch and commits nothing on its own", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+
+    // The fetch is still running: the guessed pair alone opens the dialog.
+    await streamCandidates(rerender, mixedBatch);
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    expect(screen.queryByLabelText("Cancel card fetch")).toBeNull();
+    expect(screen.queryByText(/Fetching from BSC and SportLots/)).toBeNull();
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe("Loading…");
+
+    await act(async () => {
+      resolveFetch(fetchDone(2));
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Confirm card matches").textContent).toBe("Confirm"),
+    );
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+
+  it("rows of the batch already on screen at the press do not open it", async () => {
+    // A previous run's abandoned rows (same batch id as at the press) are not
+    // this run's, however much they would need the operator.
+    state.liveCandidates = { ...mixedBatch, batchId: "batch-old" };
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, { ...mixedBatch, batchId: "batch-old" });
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(screen.getByText(/Fetching from BSC and SportLots/)).toBeTruthy();
+  });
+
+  it("a needing row that lands only on the last page opens the dialog at settle", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+
+    // First page: clean, and the batch is not whole yet.
+    await streamCandidates(
+      rerender,
+      batch([cleanPair("1", "Elly De La Cruz")], { total: 2, ready: 1 }),
+    );
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    await act(async () => {
+      resolveFetch(fetchDone(2));
+    });
+    // The fetch is over and the rows are still short: still no dialog, no commit.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+
+    // The last page brings the row that needs the operator.
+    await streamCandidates(rerender, mixedBatch);
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByLabelText("Confirm card matches").textContent).toBe("Confirm"),
+    );
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+
+  it("rows that never all arrive time out with the honest message, a discard and no dialog", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(
+      rerender,
+      batch([cleanPair("1", "Elly De La Cruz")], { total: 2, ready: 1 }),
+    );
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        resolveFetch(fetchDone(2));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(31_000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() =>
+      expect(screen.getByText(SOLO_STREAM_TIMEOUT_MESSAGE)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(screen.queryByText(/Fetching from BSC and SportLots/)).toBeNull();
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    expect(mockDiscardCandidates).toHaveBeenCalledWith({ selectorOptionId: VARIANT_ID });
+  });
+
+  it("the inline Cancel stops the run, bins the batch, and a late result changes nothing", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, cleanBatch);
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Cancel card fetch"));
+    });
+    expect(screen.getByText("Sync cancelled — no cards saved.")).toBeTruthy();
+    expect(screen.queryByText(/Fetching from BSC and SportLots/)).toBeNull();
+    expect(mockDiscardCandidates).toHaveBeenCalledWith({ selectorOptionId: VARIANT_ID });
+
+    await act(async () => {
+      resolveFetch(fetchDone(2));
+    });
+    expect(screen.getByText("Sync cancelled — no cards saved.")).toBeTruthy();
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+
+  it("when the server's sides disagree with the client's guess, a clean batch still goes to the dialog", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, cleanBatch);
+    await act(async () => {
+      // The client expected BSC + SportLots; the server fetched BSC alone.
+      resolveFetch(fetchDone(2, { attachedSides: ["bsc"] }));
+    });
+
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+
+  it("a stored checklist the client could not see, with every card linked cleanly, is skipped", async () => {
+    // One marketplace attached and nothing pasted: the client predicted one
+    // source and the fetch says two. Same decision as a predicted pair.
+    state.ancestorChain = soloSlChain();
+    const finishCommit = holdCommit();
+    const linked = (n: string, player: string) => ({
+      cardNumber: n,
+      cardName: player,
+      players: [player],
+      teams: ["Solo Team"],
+      bucket: "slOnly" as const,
+      teamLookup: "checklist" as const,
+      checklistLink: { via: "number" as const },
+      platformData: { sportlots: { ref: `sl-${n}` } },
+    });
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    expect(screen.getByText(/Fetching from SportLots/)).toBeTruthy();
+    await streamCandidates(rerender, batch([linked("1", "Solo One"), linked("2", "Solo Two")]));
+    await act(async () => {
+      resolveFetch(
+        fetchDone(2, { attachedSides: ["sportlots"], sources: ["sportlots", "checklist"] }),
+      );
+    });
+
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("heading", { name: /^Match Cards/ })).toBeNull();
+    expect(liveRegionText()).toContain(
+      "All 2 cards matched across SportLots and your checklist. No Match Cards needed, totally clean.",
+    );
+    await act(async () => finishCommit({ count: 2 }));
+  });
+
+  it("when the teams are late on the dialog fallback, Confirm unlocks and the notice is said", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    // One row still waiting on its team (ready 1 of 2), and one that needs the operator.
+    await streamCandidates(rerender, { ...mixedBatch, ready: 1 });
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        resolveFetch(fetchDone(2));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(31_000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Confirm card matches").textContent).toBe("Confirm"),
+    );
+    expect(liveRegionText()).toContain(TEAMS_LATE_NOTICE);
+    expect(liveRegionText()).not.toContain(SOLO_STREAM_TIMEOUT_MESSAGE);
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+
+  it("Match Cards opened mid-fetch takes focus on the dialog, and Shift+Tab stays inside it", async () => {
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, mixedBatch);
+    const dialog = await screen.findByRole("dialog", { name: /^Match Cards/ });
+    await waitFor(() => expect(document.activeElement).toBe(dialog));
+
+    // From the container, Shift+Tab wraps to the last control rather than
+    // walking out to the page behind the modal.
+    await act(async () => {
+      fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+    });
+    expect(document.activeElement).not.toBe(dialog);
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
+  it("a commit that fails on a skipped run hands focus back to Sync", async () => {
+    // A skipped run has no dialog and (NEO-645) no review to go back to, so a
+    // failure leaves the session closed and the focus restore, which waits for
+    // "closed", returns to Sync.
+    mockCommitChecklist.mockRejectedValue(new Error("chunk 2/3 timed out"));
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, cleanBatch);
+    await act(async () => {
+      resolveFetch(fetchDone(2));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toContain(
+        "Commit failed: chunk 2/3 timed out",
+      ),
+    );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: SYNC_BUTTON })),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+  });
+
+  /**
+   * The run is waiting for rows (the fetch is over, the batch is one short);
+   * then the rest arrive at the component and the page is left BEFORE the next
+   * poll. Fake timers make "before the next poll" exact: the poll is a timer
+   * this test fires by hand.
+   */
+  async function leaveWhileWaitingForRows(
+    renderUi: () => ReturnType<typeof renderChecklist>,
+    partial: unknown,
+    whole: unknown,
+    fetched: unknown,
+  ) {
+    const { rerender, unmount } = renderUi();
+    fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+    await streamCandidates(rerender, partial);
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        resolveFetch(fetched);
+      });
+      await streamCandidates(rerender, whole);
+      unmount();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it("leaving the page while the run waits for its rows commits nothing", async () => {
+    // The rows land AFTER the operator walked away: the clean run must not
+    // save cards they can no longer see.
+    await leaveWhileWaitingForRows(
+      renderChecklist,
+      batch([cleanPair("1", "Elly De La Cruz")], { total: 2, ready: 1 }),
+      cleanBatch,
+      fetchDone(2),
+    );
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+  });
+
+  it("leaving the page also stops a one-source auto-keep", async () => {
+    state.ancestorChain = soloSlChain();
+    const linked = (n: string, player: string) => ({
+      cardNumber: n,
+      cardName: player,
+      players: [player],
+      teams: ["Solo Team"],
+      bucket: "slOnly" as const,
+      platformData: { sportlots: { ref: `sl-${n}` } },
+    });
+    await leaveWhileWaitingForRows(
+      renderChecklist,
+      batch([linked("1", "Solo One")], { total: 2, ready: 1 }),
+      batch([linked("1", "Solo One"), linked("2", "Solo Two")]),
+      fetchDone(2, { attachedSides: ["sportlots"] }),
+    );
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+  });
+
+  describe("the saved line says why Match Cards sat out, with no count of its own", () => {
+    const savedText = () => screen.getByText(/^Saved \d+ cards?\./).textContent;
+
+    it("a single card: 'Saved 1 card. BSC and SportLots agreed on it, so Match Cards sat this one out.'", async () => {
+      mockCommitChecklist.mockResolvedValue({ count: 1 });
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+      await streamCandidates(rerender, batch([cleanPair("1", "Elly De La Cruz")]));
+      await act(async () => {
+        resolveFetch(fetchDone(1));
+      });
+      await waitFor(() => expect(liveRegionText()).toContain("Saved 1 card."));
+      expect(savedText()).toBe(
+        "Saved 1 card. BSC and SportLots agreed on it, so Match Cards sat this one out.",
+      );
+    });
+
+    it("the wording is one pure function: sources named with a comma and an 'and', 'it' for one card", () => {
+      expect(savedReasonMessage(["bsc", "sportlots", "checklist"], 330)).toBe(
+        "BSC, SportLots and your checklist agreed on every one, so Match Cards sat this one out.",
+      );
+      expect(savedReasonMessage(["bsc", "checklist"], 1)).toBe(
+        "BSC and your checklist agreed on it, so Match Cards sat this one out.",
+      );
+      expect(savedReasonMessage(["sportlots"], 12)).toBe(
+        "Only SportLots was in play, so there was nothing to match.",
+      );
+      expect(savedReasonMessage(["checklist"], 12)).toBe(
+        "Only your checklist was in play, so there was nothing to match.",
+      );
+      // No digit anywhere: the saved count is the line's only number.
+      expect(savedReasonMessage(["bsc", "checklist"], 330)).not.toMatch(/\d/);
+      expect(matchedKeptMessage(["bsc", "sportlots", "checklist"], 330)).toBe(
+        "All 330 cards matched across BSC, SportLots and your checklist. No Match Cards needed, totally clean.",
+      );
+    });
+
+    it("sits right after the count, before every caveat, and the teams line comes last", async () => {
+      mockCommitChecklist.mockResolvedValue({
+        count: 2,
+        conflicts: [{}],
+        unmatchedExistingCount: 3,
+      });
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+      await streamCandidates(rerender, cleanBatch);
+      await act(async () => {
+        resolveFetch(fetchDone(2, { checklistTeams: { matched: 2, total: 2 } }));
+      });
+      await waitFor(() => expect(liveRegionText()).toContain("Saved 2 cards."));
+      expect(savedText()).toBe(
+        "Saved 2 cards. BSC and SportLots agreed on every one, so Match Cards sat this one out. " +
+          "1 linked to two cards — not saved. 3 no longer listed upstream (kept). " +
+          "Teams from your checklist: 2 of 2 cards.",
+      );
+      // The reason never repeats a count that a refusal could contradict.
+      expect(savedText()).not.toMatch(/All \d+ cards/);
+    });
+  });
+
+  describe("the progress line", () => {
+    it("announces its start once and the count only at the quarter marks", async () => {
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+
+      const group = await screen.findByRole("group", { name: /^Fetching from BSC and SportLots/ });
+      const statuses = () => within(group).getAllByRole("status");
+      // The polite region carrying the start never holds the ticking count.
+      expect(statuses()[0].textContent).toBe("Fetching from BSC and SportLots…");
+      expect(statuses()[1].textContent).toBe("");
+
+      // 1 of 8: still under a quarter; the eye gets the count, the ear nothing.
+      await streamCandidates(rerender, batch([cleanPair("1", "A")], { total: 8, ready: 1 }));
+      expect(group.textContent).toContain("1 of 8 cards ready.");
+      expect(statuses()[0].textContent).toBe("Fetching from BSC and SportLots…");
+      expect(statuses()[1].textContent).toBe("");
+      const visible = group.querySelector('[aria-hidden="true"]');
+      expect(visible?.textContent?.trim()).toBe("1 of 8 cards ready.");
+      expect(statuses().some((el) => el.textContent?.includes("1 of 8"))).toBe(false);
+
+      // 2 of 8 is a quarter; 3 of 8 is still the same quarter and says nothing new.
+      await streamCandidates(rerender, batch([cleanPair("1", "A")], { total: 8, ready: 2 }));
+      expect(statuses()[1].textContent).toBe("25% of cards ready.");
+      await streamCandidates(rerender, batch([cleanPair("1", "A")], { total: 8, ready: 3 }));
+      expect(statuses()[1].textContent).toBe("25% of cards ready.");
+      expect(group.textContent).toContain("3 of 8 cards ready.");
+      await streamCandidates(rerender, batch([cleanPair("1", "A")], { total: 8, ready: 4 }));
+      expect(statuses()[1].textContent).toBe("50% of cards ready.");
+      await streamCandidates(rerender, batch([cleanPair("1", "A")], { total: 8, ready: 6 }));
+      expect(statuses()[1].textContent).toBe("75% of cards ready.");
+    });
+
+    it("is a named group whose Cancel names the card fetch, for any pair of sources", async () => {
+      renderChecklist();
+      fireEvent.click(screen.getByRole("button", { name: SYNC_BUTTON }));
+      const group = await screen.findByRole("group", { name: /^Fetching from BSC and SportLots/ });
+      expect(group.getAttribute("aria-labelledby")).toBe("solo-fetch-status");
+      const cancel = within(group).getByRole("button", { name: "Cancel card fetch" });
+      expect(cancel.textContent).toBe("Cancel");
+      expect(screen.queryByLabelText("Cancel checklist fetch")).toBeNull();
+    });
+  });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

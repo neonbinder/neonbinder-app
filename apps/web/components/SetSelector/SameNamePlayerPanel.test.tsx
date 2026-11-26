@@ -154,7 +154,7 @@ describe("SameNamePlayerPanel", () => {
     );
     expect(
       screen.getByText(
-        "More than 2 answer to that name — here are the first 2. Can't see them? Link to Existing searches them all.",
+        "More than 2 answer to that name. Here are the first 2. Can't see them? Link to Existing searches them all.",
       ),
     ).toBeTruthy();
   });
@@ -302,7 +302,7 @@ describe("pickStepIntro", () => {
       "We've got 3 on file under that name. Pick the one on this card.",
     );
     expect(pickStepIntro(8, true)).toBe(
-      "More than 8 answer to that name — here are the first 8. Can't see them? Link to Existing searches them all.",
+      "More than 8 answer to that name. Here are the first 8. Can't see them? Link to Existing searches them all.",
     );
   });
 });

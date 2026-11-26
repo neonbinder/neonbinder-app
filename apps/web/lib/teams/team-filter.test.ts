@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 import { normalizeEntityName } from "../entities/normalize-name";
-import { teamFilterReadings, teamMatchesFilter } from "./team-filter";
+import { teamFilterReadings, teamMatchesFilter, teamSearchReadings } from "./team-filter";
 
 const team = (fullName: string, aliases?: string[]) => ({
   nameNormalized: normalizeEntityName(fullName),
@@ -15,7 +15,7 @@ const team = (fullName: string, aliases?: string[]) => ({
 });
 
 const matches = (fullName: string, typed: string, aliases?: string[]) =>
-  teamMatchesFilter(team(fullName, aliases), teamFilterReadings(typed));
+  teamMatchesFilter(team(fullName, aliases), teamFilterReadings(typed), teamSearchReadings(typed));
 
 describe("teamMatchesFilter", () => {
   it("needs every typed word to start a word of the full name", () => {
@@ -49,6 +49,42 @@ describe("teamMatchesFilter", () => {
     expect(matches("Loc0 TMTw0a112345", "TMTw0a112345")).toBe(true);
     expect(matches("Loc0 TMTw0a112345", "TMTw0a11234")).toBe(true);
     expect(matches("Loc0 TMTw0a112345", "TMTw0a1123456")).toBe(false);
+  });
+
+  it("NEO-643: a hyphen is a space, in what was typed and in the stored key", () => {
+    // The stored key keeps "wilkes-barre" as one token.
+    expect(normalizeEntityName("Wilkes-Barre Barons")).toBe("barons wilkes-barre");
+    expect(matches("Wilkes-Barre Barons", "wilkes barre")).toBe(true);
+    expect(matches("Wilkes-Barre Barons", "wilkes-barre")).toBe(true);
+    expect(matches("Wilkes-Barre Barons", "wilkes-ba")).toBe(true);
+    expect(matches("Wilkes-Barre Barons", "barre bar")).toBe(true);
+    expect(matches("Wilkes-Barre Barons", "wilkes-scranton")).toBe(false);
+    expect(matches("Scranton Yankees", "wilkes barre", ["Wilkes-Barre Red Barons"])).toBe(true);
+    expect(teamFilterReadings("wilkes-barre")).toEqual([["wilkes", "barre"]]);
+  });
+
+  it("NEO-643: a stored hyphenated-initials name is found by every way of typing it (superset of main)", () => {
+    expect(normalizeEntityName("K-C Royals")).toBe("k-c royals");
+    for (const typed of ["K-C Royals", "K-C Royal", "KC Royals", "K C Royals", "k-c", "Royals K-C"]) {
+      expect(matches("K-C Royals", typed), typed).toBe(true);
+    }
+    expect(matches("K-C Royals", "K-C Royalty")).toBe(false);
+    expect(matches("K-C Royals", "K-D Royals")).toBe(false);
+    // An alias stored with the hyphen, typed in full.
+    expect(matches("Kansas City Royals", "K-C Royals", ["K-C Royals"])).toBe(true);
+    expect(matches("Kansas City Royals", "KC Royals", ["K-C Royals"])).toBe(true);
+  });
+
+  it("NEO-643: every typing main matched still matches (readings of main alone)", () => {
+    // A team main's reading finds is never dropped by the comparison reading.
+    const t = team("J-P Arencibia Club");
+    expect(teamMatchesFilter(t, [], teamSearchReadings("J-P Arencibia"))).toBe(true);
+    expect(teamMatchesFilter(t, teamFilterReadings("J-P Arencibia"), [])).toBe(true);
+    expect(teamMatchesFilter(t, [], [])).toBe(true);
+  });
+
+  it("asks the search index with the stored reading, hyphen and all", () => {
+    expect(teamSearchReadings("wilkes-barre")).toEqual([["wilkes-barre"]]);
   });
 
   it("matches every team when nothing matchable was typed", () => {

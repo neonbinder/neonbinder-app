@@ -229,3 +229,18 @@ describe("checklistSections", () => {
     expect(out).toEqual({ format: "lines", sections: [], skipped: [], skippedSections: [], rowCount: 0, tooBig: true });
   });
 });
+
+describe("checklistSections — a no-player row's card name (NEO-645)", () => {
+  it("rides each row into its section, without the subset", () => {
+    const parse = parsePublishedChecklist(
+      ["Set,No.,Player", "Base,1,Mike Trout", "Base,2,Team Card"].join("\n"),
+      { mode: "set" },
+    );
+    const sections = checklistSections(parse);
+    if (!("sections" in sections)) throw new Error("expected sections");
+    expect(sections.sections[0].rows).toEqual([
+      { number: "1", players: ["Mike Trout"], teams: [] },
+      { number: "2", players: [], teams: [], cardName: "Team Card" },
+    ]);
+  });
+});

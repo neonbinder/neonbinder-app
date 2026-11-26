@@ -71,9 +71,6 @@
  *   teamAliases        aliasNormalized   normalizeEntityName(alias)
  *   leagues            nameNormalized    normalizeOrderedEntityName(name)
  *   franchises         nameNormalized    normalizeEntityName(name)
- *   entityReviewSkips  nameNormalized    normalizeEntityName(name)
- *   entityReviewQueue  nameNormalized    by kind, mirroring `keyFor` in
- *                                        entityReviewQueue.startBatch
  *
  * (`leagues.aliases` and `players.aliases`/`teams.aliases` store RAW spellings
  * and are matched normalised at read time; nothing stored there to re-key.)
@@ -289,8 +286,6 @@ export const REKEY_TABLES = [
   "teamAliases",
   "leagues",
   "franchises",
-  "entityReviewSkips",
-  "entityReviewQueue",
 ] as const;
 
 export type RekeyTable = (typeof REKEY_TABLES)[number];
@@ -303,8 +298,6 @@ export const rekeyTableValidator = v.union(
   v.literal("teamAliases"),
   v.literal("leagues"),
   v.literal("franchises"),
-  v.literal("entityReviewSkips"),
-  v.literal("entityReviewQueue"),
 );
 
 type CollisionPolicy = "written" | "skipped" | "informational";
@@ -318,8 +311,6 @@ const COLLISION_POLICY: Record<RekeyTable, CollisionPolicy> = {
   playerSports: "written",
   playerAliases: "informational",
   teamAliases: "informational",
-  entityReviewSkips: "informational",
-  entityReviewQueue: "informational",
 };
 
 const HEAVY_TABLES: ReadonlySet<RekeyTable> = new Set([
@@ -512,26 +503,6 @@ function decideLeague(row: Doc<"leagues">): Decision {
 
 function decideFranchise(row: Doc<"franchises">): Decision {
   return decide(row.nameNormalized, normalizeEntityName(row.name));
-}
-
-function decideSkip(row: Doc<"entityReviewSkips">): Decision {
-  return decide(row.nameNormalized, normalizeEntityName(row.name));
-}
-
-/**
- * Mirrors `keyFor` in `entityReviewQueue.startBatch`: players and teams take
- * the token-sorted key, leagues the ordered one. A row written before the
- * field existed has no key and is not this run's to invent.
- */
-function queueKeyOf(row: Doc<"entityReviewQueue">): string {
-  return row.kind === "league"
-    ? normalizeOrderedEntityName(row.name)
-    : normalizeEntityName(row.name);
-}
-
-function decideQueue(row: Doc<"entityReviewQueue">): Decision {
-  if (row.nameNormalized === undefined) return { status: "unchanged" };
-  return decide(row.nameNormalized, queueKeyOf(row));
 }
 
 /** A per-transaction memo, so a page with many rows per parent reads each parent once. */
@@ -741,13 +712,6 @@ function sportLabeller(ctx: QueryCtx): (id: Id<"selectorOptions">) => Promise<st
   });
 }
 
-function setLabeller(ctx: QueryCtx): (id: Id<"selectorOptions">) => Promise<string> {
-  return memo(async (id: Id<"selectorOptions">) => {
-    const row = await ctx.db.get(id);
-    return `${row?.value ?? "(missing set)"} (set ${id})`;
-  });
-}
-
 /**
  * One page of one table, classified. Read-only and unarmed: a dry run must
  * work on any deployment. The holder lookups (rows that already carry a
@@ -766,7 +730,6 @@ export const scanPage = internalQuery({
     const numItems = clampPageSize(args.pageSize, planPageSizeFor(table));
     const cursor = args.cursor;
     const sportLabel = sportLabeller(ctx);
-    const setLabel = setLabeller(ctx);
 
     const changed: ChangedRow[] = [];
     const refused: RefusedRow[] = [];
@@ -893,82 +856,6 @@ export const scanPage = internalQuery({
                 name: h.name,
                 oldKey: h.nameNormalized,
                 changed: decideFranchise(h).status !== "unchanged",
-              })),
-          });
-        }
-        return { scanned, unchanged, changed, refused, isDone: page.isDone, continueCursor: page.continueCursor };
-      }
-
-      case "entityReviewSkips": {
-        const page = await ctx.db.query("entityReviewSkips").paginate({ cursor, numItems });
-        for (const row of page.page) {
-          scanned += 1;
-          const decision = decideSkip(row);
-          if (decision.status === "unchanged") { unchanged += 1; continue; }
-          if (decision.status === "refused") { refuse(row._id, row._id, row.name, decision.reason); continue; }
-          const holders = await ctx.db
-            .query("entityReviewSkips")
-            .withIndex("by_selector_option_and_kind_and_name", (q) =>
-              q
-                .eq("selectorOptionId", row.selectorOptionId)
-                .eq("kind", row.kind)
-                .eq("nameNormalized", decision.newKey),
-            )
-            .take(HOLDER_SCAN_LIMIT);
-          changed.push({
-            rowId: row._id,
-            entityId: row._id,
-            name: row.name,
-            oldKey: row.nameNormalized,
-            newKey: decision.newKey,
-            scopeKey: `${row.selectorOptionId}|${row.kind}`,
-            scopeLabel: `${await setLabel(row.selectorOptionId)}, ${row.kind}`,
-            holders: holders
-              .filter((h) => h._id !== row._id)
-              .map((h) => ({
-                id: h._id,
-                name: h.name,
-                oldKey: h.nameNormalized,
-                changed: decideSkip(h).status !== "unchanged",
-              })),
-          });
-        }
-        return { scanned, unchanged, changed, refused, isDone: page.isDone, continueCursor: page.continueCursor };
-      }
-
-      case "entityReviewQueue": {
-        const page = await ctx.db.query("entityReviewQueue").paginate({ cursor, numItems });
-        for (const row of page.page) {
-          scanned += 1;
-          const decision = decideQueue(row);
-          if (decision.status === "unchanged") { unchanged += 1; continue; }
-          if (decision.status === "refused") { refuse(row._id, row._id, row.name, decision.reason); continue; }
-          const holders = await ctx.db
-            .query("entityReviewQueue")
-            .withIndex("by_batch_and_kind_and_name", (q) =>
-              q
-                .eq("selectorOptionId", row.selectorOptionId)
-                .eq("batchId", row.batchId)
-                .eq("kind", row.kind)
-                .eq("nameNormalized", decision.newKey),
-            )
-            .take(HOLDER_SCAN_LIMIT);
-          changed.push({
-            rowId: row._id,
-            entityId: row._id,
-            name: row.name,
-            // `decideQueue` returns "unchanged" for a row without a key.
-            oldKey: row.nameNormalized ?? "",
-            newKey: decision.newKey,
-            scopeKey: `${row.selectorOptionId}|${row.batchId}|${row.kind}`,
-            scopeLabel: `${await setLabel(row.selectorOptionId)}, batch ${row.batchId}, ${row.kind}`,
-            holders: holders
-              .filter((h) => h._id !== row._id)
-              .map((h) => ({
-                id: h._id,
-                name: h.name,
-                oldKey: h.nameNormalized ?? "",
-                changed: decideQueue(h).status !== "unchanged",
               })),
           });
         }
@@ -1242,32 +1129,6 @@ export const applyPage = internalMutation({
             skippedCollision += 1;
             continue;
           }
-          await ctx.db.patch(row._id, { nameNormalized: decision.newKey });
-          applied += 1;
-        }
-        return { scanned, applied, skippedCollision, refused, isDone: page.isDone, continueCursor: page.continueCursor };
-      }
-
-      case "entityReviewSkips": {
-        const page = await ctx.db.query("entityReviewSkips").paginate({ cursor, numItems });
-        for (const row of page.page) {
-          scanned += 1;
-          const decision = decideSkip(row);
-          if (decision.status === "unchanged") continue;
-          if (decision.status === "refused") { refuse(row._id, row._id, row.name, decision.reason); continue; }
-          await ctx.db.patch(row._id, { nameNormalized: decision.newKey });
-          applied += 1;
-        }
-        return { scanned, applied, skippedCollision, refused, isDone: page.isDone, continueCursor: page.continueCursor };
-      }
-
-      case "entityReviewQueue": {
-        const page = await ctx.db.query("entityReviewQueue").paginate({ cursor, numItems });
-        for (const row of page.page) {
-          scanned += 1;
-          const decision = decideQueue(row);
-          if (decision.status === "unchanged") continue;
-          if (decision.status === "refused") { refuse(row._id, row._id, row.name, decision.reason); continue; }
           await ctx.db.patch(row._id, { nameNormalized: decision.newKey });
           applied += 1;
         }

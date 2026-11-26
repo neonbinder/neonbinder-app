@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { Theme } from "@radix-ui/themes";
 import PublicCollectionDemo from "./PublicCollectionDemo";
 import { demoCard, demoVariantId } from "./data/demoStore";
-import { initialCollectionState, MAIN_BINDER_ID, SHOW_BOX_ID } from "./store";
+import { initialCollectionState, MAIN_BINDER_ID, PUBLIC_STORAGE_KEY, SHOW_BOX_ID } from "./store";
 
 /**
  * NEO-358 — a checklist's numbers agree (Jason, 2026-10-23): "Have 2 of 300 ·
@@ -47,6 +47,16 @@ function countLine(section: HTMLElement): string {
   return line!.textContent ?? "";
 }
 
+/**
+ * How many card rows the section lists: its "Details for …" buttons. A plain scan of
+ * their labels, since a role query over a few hundred rows costs more than the render.
+ */
+function detailRows(section: HTMLElement): number {
+  return Array.from(section.querySelectorAll("button[aria-label]")).filter((b) =>
+    (b.getAttribute("aria-label") ?? "").startsWith("Details for "),
+  ).length;
+}
+
 function haveLine(section: HTMLElement): { owned: number; total: number } {
   const text =
     Array.from(section.querySelectorAll("p"))
@@ -56,6 +66,11 @@ function haveLine(section: HTMLElement): { owned: number; total: number } {
   return { owned: Number(owned), total: Number(total) };
 }
 
+// The first render of the screen loads its code and warms the engine; take that out of the first test.
+beforeAll(() => {
+  renderDemo(`${DEMO}&tab=checklists&set=${CHROME}&type=Base`);
+  cleanup();
+});
 beforeEach(() => {
   window.sessionStorage.clear();
 });
@@ -68,7 +83,7 @@ describe("a checklist's counts agree", () => {
     renderDemo(`${DEMO}&tab=checklists&set=${CHROME}&type=Base`);
     const section = checklist("2024 Topps Chrome Base");
     const { total } = haveLine(section);
-    const rows = within(section).getAllByRole("button", { name: /^Details for / }).length;
+    const rows = detailRows(section);
     expect(rows, "the fixture's Base lists an image variation").toBeGreaterThan(total);
     expect(countLine(section)).toBe(`${total} cards, ${rows} with variations`);
     // Two lines on screen.
@@ -80,17 +95,17 @@ describe("a checklist's counts agree", () => {
     renderDemo(`${DEMO}&tab=checklists&set=${CHROME}&type=Base`);
     const section = checklist("2024 Topps Chrome Base");
     const { owned, total } = haveLine(section);
-    const all = within(section).getAllByRole("button", { name: /^Details for / }).length;
+    const all = detailRows(section);
     const show = within(section).getByRole("radiogroup", { name: "Show" });
 
     fireEvent.click(within(show).getByRole("radio", { name: "Haves" }));
-    const haves = within(section).queryAllByRole("button", { name: /^Details for / }).length;
+    const haves = detailRows(section);
     const havesLine = countLine(section);
     expect(havesLine.startsWith(`${owned} of ${total} cards`)).toBe(true);
     if (haves !== all) expect(havesLine).toMatch(new RegExp(`, ${haves} of ${all} with variations$`));
 
     fireEvent.click(within(show).getByRole("radio", { name: "Needs" }));
-    const needs = within(section).queryAllByRole("button", { name: /^Details for / }).length;
+    const needs = detailRows(section);
     const needsLine = countLine(section);
     expect(needsLine.startsWith(`${total - owned} of ${total} cards`)).toBe(true);
     if (needs !== all) expect(needsLine).toMatch(new RegExp(`, ${needs} of ${all} with variations$`));
@@ -100,7 +115,7 @@ describe("a checklist's counts agree", () => {
     renderDemo(`${DEMO}&tab=checklists&set=${CHROME}&type=Parallels&variant=Gold+Refractor`);
     const section = checklist("2024 Topps Chrome Gold Refractor");
     const { total } = haveLine(section);
-    expect(within(section).getAllByRole("button", { name: /^Details for / })).toHaveLength(total);
+    expect(detailRows(section)).toBe(total);
     expect(countLine(section)).toBe(`${total} ${total === 1 ? "card" : "cards"}`);
     expect(within(section).queryByText(/with variations/)).toBeNull();
   });
@@ -128,23 +143,29 @@ describe("a checklist's counts agree", () => {
     const parallels = optionsOf("Parallels");
     for (const option of parallels) expect(option.textContent ?? "").not.toMatch(COUNT);
     const gold = parallels.find((o) => (o.textContent ?? "").startsWith("Gold Refractor"));
-    expect(gold?.textContent).toBe("Gold Refractor/50");
+    // Seen as "/50" (hidden from a screen reader), heard as "numbered to 50"
+    // after the name (NEO-616).
+    expect(within(gold!).getByText("/50").getAttribute("aria-hidden")).toBe("true");
+    expect(within(screen.getByRole("listbox", { name: "Parallels" })).getByRole("option", { name: /^Gold Refractor ?, numbered to 50$/ })).toBe(gold);
   });
 
   it("a board's bulbs are spoken base first, variations after", () => {
-    // Put the Chrome set (whose Base lists a variation) on the board first.
-    renderDemo(`${DEMO}&tab=checklists&set=${CHROME}&type=Base`);
-    const building = screen.getByRole("button", { name: "Building this set" });
-    if (building.getAttribute("aria-pressed") !== "true") fireEvent.click(building);
-    fireEvent.click(
-      within(screen.getByRole("navigation", { name: "Collection sections" })).getByRole("link", { name: "My Cards" }),
+    // The board lists sets the collector is building: start the demo with Chrome among them,
+    // rather than clicking through the checklist and My Cards to get it there.
+    const seeded = initialCollectionState();
+    window.sessionStorage.setItem(
+      PUBLIC_STORAGE_KEY,
+      JSON.stringify({ ...seeded, buildingSetIds: [...seeded.buildingSetIds, CHROME] }),
     );
+    renderDemo(`${DEMO}&tab=cards`);
     const hide = screen.getByRole("button", { name: "Hide the cards, Base of 2024 Topps Chrome" });
     const strip = hide.closest("li")!;
     const spoken = within(strip).getByText(/ lit up/).textContent ?? "";
     const [, base, all] = /^\d+ of (\d+) lit up, \d+ of (\d+) with variations/.exec(spoken) ?? [];
     expect(Number(all), spoken).toBeGreaterThan(Number(base));
-  });
+    // Three full demo-page renders and a navigation in one synchronous test: about 1 s
+    // alone, over the 5 s default on a loaded runner. Heavy by nature, so a scoped 30 s.
+  }, 30_000);
 });
 
 describe("a card for sale is out of the checklist (NEO-359)", () => {

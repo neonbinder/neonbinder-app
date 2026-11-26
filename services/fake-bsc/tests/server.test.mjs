@@ -24,6 +24,7 @@ const require = createRequire(import.meta.url);
 const { requestKey } = require("../dist/src/requestKey.js");
 const { sanitiseCatalogue, SANITISE_ALLOWLIST_VERSION } = require("../dist/src/sanitise.js");
 const { checkCapture, synthesisedWrite } = require("../dist/src/captures.js");
+const { EBAY_REQUIRED_CAPTURES } = require("../dist/src/ebay/captures.js");
 const { shapeOf } = require("../dist/src/shape.js");
 const { readHeaderScope } = require("../dist/src/namespace.js");
 
@@ -871,7 +872,7 @@ describe("cold start: listening before the recordings are in", () => {
     const afterLoad = (await cold.call("GET", "/__fake/health")).body;
     assert.equal(afterLoad.loading, false);
     assert.deepEqual(afterLoad.writeCaptures, {
-      missing: ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"],
+      missing: ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment", ...EBAY_REQUIRED_CAPTURES],
     });
   });
 
@@ -967,21 +968,22 @@ describe("write captures", () => {
     try {
       const both = ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"];
       const before = (await fresh.call("GET", "/__fake/health")).body;
-      assert.deepEqual(before.writeCaptures, { missing: both });
+      assert.deepEqual(before.writeCaptures, { missing: [...both, ...EBAY_REQUIRED_CAPTURES] });
 
       await fresh.call("POST", "/__fake/write-captures", {
         email: LOADER,
         admin: true,
         body: { endpoint: "PUT seller/bulk-upload", status: 200, shape: shapeOf([{ productId: "p" }]) },
       });
-      assert.deepEqual((await fresh.call("GET", "/__fake/health")).body.writeCaptures, { missing: [both[1]] });
+      assert.deepEqual((await fresh.call("GET", "/__fake/health")).body.writeCaptures, { missing: [both[1], ...EBAY_REQUIRED_CAPTURES] });
 
       await fresh.call("POST", "/__fake/write-captures", {
         email: LOADER,
         admin: true,
         body: { endpoint: both[1], status: 200, shape: shapeOf({ objectKey: "x" }) },
       });
-      assert.deepEqual((await fresh.call("GET", "/__fake/health")).body.writeCaptures, { missing: [] });
+      // The BSC two are in; the eBay writes still read as missing.
+      assert.deepEqual((await fresh.call("GET", "/__fake/health")).body.writeCaptures, { missing: [...EBAY_REQUIRED_CAPTURES] });
     } finally {
       await fresh.close();
     }
@@ -990,7 +992,8 @@ describe("write captures", () => {
   it("holds a stored capture for BOTH write endpoints the specs drive (a missing one is not a pass)", async () => {
     // The test below judges only the captures that exist, so with none stored
     // it passes without judging anything. This is the explicit check.
-    assert.deepEqual(fake.captures.missing(), [], `no stored capture for: ${fake.captures.missing().join(", ")}; run \`recorder capture-write\``);
+    const bscMissing = fake.captures.missing().filter((e) => !EBAY_REQUIRED_CAPTURES.includes(e));
+    assert.deepEqual(bscMissing, [], `no stored capture for: ${bscMissing.join(", ")}; run \`recorder capture-write\``);
   });
 
   it("synthesis matches the latest stored capture for every write endpoint that has one", async () => {

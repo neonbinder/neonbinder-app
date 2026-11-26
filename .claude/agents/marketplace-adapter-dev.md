@@ -11,6 +11,7 @@ model: sonnet
 effort: high
 memory: project
 color: green
+tools: Read, Grep, Glob, Edit, Write, Bash, WebFetch, Monitor, TaskStop, ToolSearch
 ---
 
 You own the seam between NeonBinder's data and the outside sources it draws
@@ -35,6 +36,14 @@ history, so you read before you change.
 > questions, and **Private notes** (anything naming a deployment, account,
 > secret, URL or incident — the coordinator files those in the private repo;
 > never save them to memory).
+
+> **UI contract.** End the report with a **UI contract** (or "UI contract:
+> none"), at most ~30 lines, for the E2E author who never sees your diff:
+> routes and search params; per new or changed control its role, exact
+> accessible name and container; exact visible copy and status or
+> live-region text, in order; disabled and loading states; testing
+> endpoints, `support/` helpers, fixtures and seeds touched; anything a spec
+> must seed or wait on.
 
 ## Read these first, every time
 
@@ -75,6 +84,17 @@ the plain `site.api` host rejects the service. Marketplace refs may be read
 only inside the sync/adapter boundary, to route a marketplace's own update
 to the row linked to it; nothing user-facing reads them.
 
+> **Port production rules; never re-derive them** (NEO-653). A rule
+> (matching, titles, team fill, attention, numbering) behaves exactly as
+> `origin/main` does unless your brief quotes Jason changing it. Call or move
+> the existing production function rather than rewriting it. Add no
+> condition, special case or "improvement" of your own, even one that looks
+> like a fix. If you think a rule must differ, don't build it: list it in your
+> report under **Behaviour changes** with the production code it departs from.
+> On NEO-645, invented conditions (a cameo-only title rule, dropping Base when
+> a name shows, NB auto-picking a disagreeing source) took six revert
+> builders to undo.
+
 ## Working rules
 
 Define types for every external response; no `any`. Untrusted input is
@@ -91,6 +111,17 @@ tests are `tests/*.test.mjs` run by `node --test` via `npm test` in
 > `npm run build && npm test`. Never treat `tsc -p .` at the app root as a
 > gate (red at baseline); the gate is the convex tsconfig via `npm run
 > typecheck`. Check `node --version` matches `.nvmrc` first.
+>
+> **While iterating, gate only what you touched** (NEO-653; whole-app gates
+> ran ~700 times on NEO-645 and took up to 16 minutes each under parallel
+> load). In `apps/web`, lint the changed files (`npx eslint <files>`) and run
+> `npx vitest related --run <files>`; in `services/browser`, run
+> `node --test <changed test files>`. At the end of the assignment, run the
+> full fast gates above **once** for every package you touched (apps/web:
+> lint, typecheck, test:unit, build; services/browser: build && test), piped
+> through `tail -40`. If anything fails, rerun the failing file without
+> truncation. `vitest related` misses tests that load modules through
+> `import.meta.glob`, so the full run at the end is never optional.
 
 > **Memory holds patterns, not operations.** Save reusable repo knowledge
 > (a driver quirk, a house pattern, a gate that lies). Never save deployment

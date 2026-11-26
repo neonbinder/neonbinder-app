@@ -207,6 +207,11 @@ export default function StaticColumn({
   const renderOption = (item: ColumnItem) => {
     const isSelected = selectedId === item.id;
     const isHighlighted = highlighted === item.id;
+    // A spoken form ("numbered to 5") replaces the visible line ("/5") for a
+    // listener, inside the option's own name: an option the list drives by
+    // aria-activedescendant gets no reliable aria-describedby. With no spoken
+    // form the visible line is read as it is, as it always was.
+    const spoken = item.description ? item.descriptionSpoken : undefined;
     return (
       <button
         key={item.id}
@@ -222,7 +227,13 @@ export default function StaticColumn({
         }${isHighlighted ? ` ${HIGHLIGHT_STROKE}` : ""}`}
       >
         <span className="block font-semibold">{item.name}</span>
-        {item.description && <span className={`block ${DESCRIPTION_TONE}`}>{item.description}</span>}
+        {/* A sibling of the name, so a locator that finds the row by its exact name text still does. */}
+        {spoken && <span className="sr-only">, {spoken}</span>}
+        {item.description && (
+          <span aria-hidden={spoken ? true : undefined} className={`block wrap-anywhere ${DESCRIPTION_TONE}`}>
+            {item.description}
+          </span>
+        )}
       </button>
     );
   };

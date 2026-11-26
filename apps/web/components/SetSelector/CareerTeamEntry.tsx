@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -7,11 +7,13 @@ import {
   rankTeamCandidates,
 } from "../../convex/lib/entityNearMatch";
 import { teamFullName } from "../../lib/teams/team-name";
+import { eraLabel } from "../../lib/teams/team-era";
 import { Input } from "../primitives/Input";
 import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
 import {
   nameHasQueryPrefix,
   nameMatchesQuery,
+  nameSearchKey,
 } from "../../lib/entities/name-search";
 import NeonButton from "@/components/modules/NeonButton";
 
@@ -87,6 +89,10 @@ export { MIN_CAREER_YEAR } from "../../lib/players/career-years";
 /** See `PlayerAutocomplete`'s SEARCH_DEBOUNCE_MS — same value, same reasoning. */
 const SEARCH_DEBOUNCE_MS = 200;
 
+/** NEO-591 — `knownTeamsOnly`: what the form says when the typed team does not exist. */
+export const UNKNOWN_TEAM_TEXT = "No team by that name. Pick one from the list.";
+export const UNKNOWN_TEAM_AMBIGUOUS = "More than one team has that name. Pick one from the list.";
+
 /** How many suggestions the dropdown shows, staged and searched combined. */
 const MAX_SUGGESTIONS = 8;
 
@@ -101,9 +107,17 @@ export type CareerTeamDraft = {
   toYear?: number;
 };
 
+/**
+ * What `onAdd` reports in `knownTeamsOnly` mode: the stint, plus the NB team it
+ * names when that is a saved team (a team the batch is still creating has no id
+ * yet, and is found by its name).
+ */
+export type CareerTeamAdded = CareerTeamDraft & { teamId?: Id<"teams"> };
+
 /** One dropdown row. `staged` drives the ordering and the dedupe — never a
- *  visible difference; see the option's `aria-label`. */
-type Suggestion = { key: string; name: string; staged: boolean };
+ *  visible difference; see the option's `aria-label`. `teamId` is the saved
+ *  team a row is (absent on a staged name). */
+type Suggestion = { key: string; name: string; staged: boolean; teamId?: Id<"teams"> };
 
 export default function CareerTeamEntry({
   sportId,
@@ -111,6 +125,16 @@ export default function CareerTeamEntry({
   stagedNames,
   onAdd,
   onDirtyChange,
+  initialTeam,
+  initialFromYear,
+  load,
+  resetToken = 0,
+  quickPicks,
+  label,
+  disabled = false,
+  knownTeamsOnly = false,
+  onDone,
+  onDraftChange,
 }: {
   /** NEO-96: the sport-level selectorOptions row id, not its display name. */
   sportId: Id<"selectorOptions">;
@@ -126,7 +150,7 @@ export default function CareerTeamEntry({
    * return them — suggesting them is the whole point.
    */
   stagedNames: string[];
-  onAdd: (entry: CareerTeamDraft) => void;
+  onAdd: (entry: CareerTeamAdded) => void;
   /**
    * NEO-236 — "the operator has started filling this in".
    *
@@ -137,28 +161,180 @@ export default function CareerTeamEntry({
    * per keystroke.
    */
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * NEO-574 — a team and From year the form opens with: the card's team and
+   * the set's year (`career-prefill.ts`). A PREFILL, not work: it does not
+   * make the form dirty, and nothing is added until the operator presses
+   * + Add. When these change (the next team after an add, a lookup landing)
+   * a form the operator has not touched follows them; a form they have is
+   * left alone.
+   */
+  initialTeam?: string;
+  initialFromYear?: number;
+  /**
+   * NEO-591 — "edit this stint": load a team, From year and To year into the
+   * form and move focus to From year. Unlike the prefill above it REPLACES
+   * whatever the form holds (the operator asked for it by pressing edit on a
+   * chip), and it fires once per `token`, so asking for the same stint twice
+   * loads twice. `teamId` is the saved team the stint names, so + Add reports
+   * the same team without a search having to find it again; a team the batch
+   * creates has none and is matched by name, as when typed.
+   */
+  load?: {
+    token: number;
+    name: string;
+    teamId?: Id<"teams">;
+    fromYear: number;
+    toYear?: number;
+  };
+  /**
+   * NEO-591 — empty the form (name and both years) when this changes, as
+   * removing the stint that was being edited does. Nothing happens on mount.
+   */
+  resetToken?: number;
+  /**
+   * NEO-574 — other teams the cards print for this player, as one-press
+   * fills for the team and From year. Parent-filtered: a team already
+   * added is not offered again.
+   */
+  quickPicks?: ReadonlyArray<{ team: string; fromYear: number }>;
+  /**
+   * NEO-591 — whose stint this is, when more than one of these forms can be on
+   * screen (the Career check step has one per "Add to career" line). It
+   * rides on each control's name ("From year for Luis Rodriguez") so no two
+   * read alike. Absent, the names are the New Player step's, unchanged.
+   */
+  label?: string;
+  disabled?: boolean;
+  /**
+   * NEO-591 — the team must be one that exists: a saved team (offered in the
+   * list, or typed exactly) or a team in `stagedNames`. A name that matches
+   * neither cannot be added, and says so, because the form is used after the
+   * wizard's New Team steps, where nothing can create it any more. `onAdd`
+   * then carries the saved team's id. Off (the New Player step), typing a new
+   * name IS creating it.
+   */
+  knownTeamsOnly?: boolean;
+  /**
+   * NEO-591 — Enter on an EMPTY form means "nothing more to add": the host
+   * moves on (the Career check step goes to its next line).
+   */
+  onDone?: () => void;
+  /**
+   * NEO-657 — the entry the form would add RIGHT NOW (the same one + Add
+   * reports), or null while the team, the years or the pair is not addable. A
+   * host that wants to add what is on screen when the operator moves on reads
+   * it from here. Fires on a change only, and with null when the form goes
+   * away; held in a ref, so an inline handler is safe.
+   */
+  onDraftChange?: (draft: CareerTeamAdded | null) => void;
 }) {
-  const [name, setName] = useState("");
-  const [debouncedName, setDebouncedName] = useState("");
-  const [fromYear, setFromYear] = useState("");
+  const suffix = label ? ` for ${label}` : "";
+  const initialName = initialTeam ?? "";
+  const initialYear = initialFromYear === undefined ? "" : String(initialFromYear);
+  const [name, setName] = useState(initialName);
+  const [debouncedName, setDebouncedName] = useState(initialName);
+  const [fromYear, setFromYear] = useState(initialYear);
   const [toYear, setToYear] = useState("");
+  /** The saved team a suggestion was taken from (`knownTeamsOnly`); typing clears it. */
+  const [pickedTeamId, setPickedTeamId] = useState<Id<"teams"> | null>(null);
+  /*
+   * The prefill the fields last followed (render-phase "previous props"
+   * pattern). A form still sitting on that prefill — or empty, which is what
+   * + Add leaves — takes the new one; anything the operator changed stays.
+   */
+  const [followed, setFollowed] = useState({ name: initialName, year: initialYear });
+  if (followed.name !== initialName || followed.year !== initialYear) {
+    setFollowed({ name: initialName, year: initialYear });
+    const untouched =
+      toYear === "" &&
+      ((name === followed.name && fromYear === followed.year) ||
+        (name === "" && fromYear === ""));
+    if (untouched) {
+      setName(initialName);
+      setDebouncedName(initialName);
+      setFromYear(initialYear);
+      setPickedTeamId(null);
+    }
+  }
+  /** + Add just fired: the next prefill, if one arrives, is where Enter goes. */
+  const justAddedRef = useRef(false);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(0);
+  /** ArrowDown was pressed since the last keystroke: show the list even when
+   *  the box already holds a known team (see `exactMatch`). */
+  const [browsing, setBrowsing] = useState(false);
+  /* NEO-591 — an edit request (render-phase, after the prefill, so it wins). */
+  const [appliedLoad, setAppliedLoad] = useState<number | undefined>(undefined);
+  /**
+   * What the last `load` put in the form. A form still holding exactly that is
+   * the stint being looked at, not work the operator has started: it is not
+   * dirty, because the stint it came from is still staged.
+   */
+  const [loadedBaseline, setLoadedBaseline] = useState<{
+    name: string;
+    from: string;
+    to: string;
+  } | null>(null);
+  if (load && load.token !== appliedLoad) {
+    setAppliedLoad(load.token);
+    setName(load.name);
+    setDebouncedName(load.name);
+    setFromYear(String(load.fromYear));
+    setToYear(load.toYear === undefined ? "" : String(load.toYear));
+    setLoadedBaseline({
+      name: load.name.trim(),
+      from: String(load.fromYear),
+      to: load.toYear === undefined ? "" : String(load.toYear),
+    });
+    setPickedTeamId(load.teamId ?? null);
+    setSuggestionsOpen(false);
+    setBrowsing(false);
+  }
+  /* NEO-591 — a reset request: the form goes back to empty. */
+  const [appliedReset, setAppliedReset] = useState(resetToken);
+  if (resetToken !== appliedReset) {
+    setAppliedReset(resetToken);
+    setName("");
+    setDebouncedName("");
+    setFromYear("");
+    setToYear("");
+    setLoadedBaseline(null);
+    setPickedTeamId(null);
+    setSuggestionsOpen(false);
+    setBrowsing(false);
+  }
   const nameInputRef = useRef<HTMLInputElement>(null);
   /** Where focus goes after a suggestion is taken — the next thing to fill in. */
   const fromYearRef = useRef<HTMLInputElement>(null);
   /** The input + its listbox. Blur out of THIS closes the list; blur between
    *  its two halves does not. */
   const comboRef = useRef<HTMLDivElement>(null);
+  /** The whole entry: scrolled into view when the list opens, so the list and
+   *  the years row under it are both on screen. */
+  const rootRef = useRef<HTMLDivElement>(null);
+  const baseId = useId();
+  const listboxId = `${baseId}-listbox`;
+  const optionId = (idx: number) => `${baseId}-option-${idx}`;
 
   const maxYear = maxCareerYear();
 
   /**
    * Anything typed into any of the three fields counts. A name alone is enough:
    * it is the half the operator cannot get back by re-picking a suggestion.
+   * NEO-574: a prefill left as it came is not typing (`followed`), and an
+   * emptied form never is.
    */
-  const dirty =
-    name.trim() !== "" || fromYear.trim() !== "" || toYear.trim() !== "";
+  const blank = name.trim() === "" && fromYear.trim() === "";
+  /** Nothing in any of the three boxes. */
+  const isEmpty = blank && toYear.trim() === "";
+  const dirty = loadedBaseline
+    ? !isEmpty &&
+      (name.trim() !== loadedBaseline.name ||
+        fromYear.trim() !== loadedBaseline.from ||
+        toYear.trim() !== loadedBaseline.to)
+    : toYear.trim() !== "" ||
+      (!blank && (name.trim() !== followed.name.trim() || fromYear.trim() !== followed.year));
 
   /*
    * Emitted on the TRANSITIONS only, and through a ref rather than a dep.
@@ -205,8 +381,42 @@ export default function CareerTeamEntry({
       ? { query: debouncedTrimmed, sportId, contextOptionId }
       : "skip",
   );
-  /** The saved teams, in the server's final (tiered) order. */
-  const searched = useMemo(() => ranked?.map((r) => r.team), [ranked]);
+  /*
+   * The last answer the query gave. Convex hands back `undefined` while a query
+   * with new arguments loads, so without this the list blinks once each time
+   * typing pauses. Held as state, adjusted during render (the same "previous
+   * value" pattern as `followed` above) rather than in a ref: the lint rule
+   * rightly refuses a ref read while rendering.
+   */
+  const [lastRanked, setLastRanked] = useState(ranked);
+  if (ranked !== undefined && ranked !== lastRanked) setLastRanked(ranked);
+  /** The saved teams, in the server's final (tiered) order — or, while the
+   *  query reloads, the last order it gave. */
+  const searched = useMemo(
+    () => (ranked ?? lastRanked)?.map((r) => r.team),
+    [ranked, lastRanked],
+  );
+  /**
+   * The saved teams to offer for the text CURRENTLY in the box.
+   *
+   * While the debounce or the query catches up, what we hold is the answer for
+   * earlier text. Hiding it outright made the in-flow list vanish and come
+   * back on every keystroke (`aria-expanded` flipping, the status re-announced,
+   * + Add jumping). So stale rows stay, narrowed by the same folded-substring
+   * test the staged names use: a row that still matches what is typed remains,
+   * one that no longer does goes, and the list closes only when nothing is
+   * left. Once the answer for this text is in, it is the server's, untouched
+   * (its search can be softer than a substring). The very first query has no
+   * earlier answer, so until it lands there are no saved rows at all. Staged
+   * names are matched here, not searched, so they are always instant.
+   */
+  const savedStale = ranked === undefined || debouncedTrimmed !== name.trim();
+  const freshSearched = useMemo(() => {
+    if (searched === undefined) return undefined;
+    if (!savedStale) return searched;
+    return searched.filter((t) => nameMatchesQuery(teamFullName(t), name.trim()));
+  }, [searched, savedStale, name]);
+
 
   /**
    * Staged first, then saved teams the staged list does not already cover.
@@ -239,19 +449,79 @@ export default function CareerTeamEntry({
     const staged = stagedNames
       .filter((n) => nameMatchesQuery(n, q))
       .sort(rank)
-      .map((n) => ({ key: `staged:${n}`, name: n, staged: true }));
+      .map((n) => ({
+        key: `staged:${n}`,
+        name: n,
+        staged: true,
+        teamId: undefined,
+        yearsActive: undefined,
+      }));
 
-    const saved = (searched ?? [])
+    const saved = (freshSearched ?? [])
       // NEO-236: the FULL name. A suggestion is something the operator can
       // pick to LINK to, and "Padres" does not identify the row it belongs to.
-      .map((t) => ({ _id: t._id, name: teamFullName(t) }))
+      .map((t) => ({ _id: t._id, name: teamFullName(t), yearsActive: t.yearsActive }))
       // Dropping a saved team already offered as staged: the same name twice,
       // once tagged and once not, reads as two different teams.
       .filter((t) => !stagedKeys.has(normalizeEntityName(t.name)))
-      .map((t) => ({ key: `team:${t._id}`, name: t.name, staged: false }));
+      .map((t) => ({
+        key: `team:${t._id}`,
+        name: t.name,
+        staged: false,
+        teamId: t._id,
+        yearsActive: t.yearsActive,
+      }));
 
     return [...staged, ...saved].slice(0, MAX_SUGGESTIONS);
-  }, [stagedNames, searched, trimmedName]);
+  }, [stagedNames, freshSearched, trimmedName]);
+
+  /**
+   * NEO-574 — the typed text IS one of the suggestions (case and accents
+   * aside). There is nothing left to pick, so the list steps out of the way.
+   *
+   * It is an overlay, so while open it sits over the From/To years and + Add
+   * directly under the field. Typing a team's whole name ("Memphis
+   * RiverKings") and then clicking + Add used to land on the suggestion under
+   * the pointer: the click picked a team (maybe a different one, ranked
+   * first by the set) instead of adding. A list that offers back exactly what
+   * is already in the box has no job, so it is not shown. A partial name still
+   * shows its list, which is what the list is for, and ArrowDown asks for it
+   * on purpose (`browsing`): a keyboard operator who does that is not about to
+   * click + Add.
+   */
+  const exactIdx = useMemo(() => {
+    if (!trimmedName) return -1;
+    const key = nameSearchKey(trimmedName);
+    return suggestions.findIndex((s) => nameSearchKey(s.name) === key);
+  }, [suggestions, trimmedName]);
+  const exactMatch = exactIdx >= 0;
+  /*
+   * NEO-591 — which team the typed name IS, in `knownTeamsOnly` mode: a team
+   * the batch is creating (found by name), else the saved team taken from the
+   * list, else the one saved team the whole name matches. Two saved teams
+   * with one name are not guessed between: the list stays open to pick one.
+   */
+  const typedKey = nameSearchKey(trimmedName);
+  const stagedMatch =
+    knownTeamsOnly && typedKey !== "" && stagedNames.some((n) => nameSearchKey(n) === typedKey);
+  const savedMatchIds = useMemo<Array<Id<"teams">>>(() => {
+    if (!knownTeamsOnly || typedKey === "" || savedStale) return [];
+    return (freshSearched ?? [])
+      .filter((t) => nameSearchKey(teamFullName(t)) === typedKey)
+      .map((t) => t._id);
+  }, [knownTeamsOnly, typedKey, savedStale, freshSearched]);
+  const resolvedTeamId: Id<"teams"> | undefined =
+    knownTeamsOnly && !stagedMatch
+      ? (pickedTeamId ?? (savedMatchIds.length === 1 ? savedMatchIds[0] : undefined))
+      : undefined;
+  const teamKnown = !knownTeamsOnly || stagedMatch || resolvedTeamId !== undefined;
+  const ambiguousName = knownTeamsOnly && !stagedMatch && !pickedTeamId && savedMatchIds.length > 1;
+  /** What the combobox actually shows: open, with rows, and not an echo. */
+  const listOpen =
+    suggestionsOpen && suggestions.length > 0 && (!exactMatch || browsing || ambiguousName);
+  /** Typed, the search has answered, no list is offering a pick, and nothing by that name exists. */
+  const showUnknownTeam =
+    knownTeamsOnly && trimmedName !== "" && !savedStale && !teamKnown && !ambiguousName && !listOpen;
 
   /**
    * The "did you mean?" prompt: a name that is CLOSE to something already in
@@ -268,7 +538,7 @@ export default function CareerTeamEntry({
       // composed here rather than read off `name` — a split row's `name` is
       // just "Padres" and ranking "San Diego Padres" against it would report a
       // near match where there is an exact one.
-      ...(searched ?? []).map((t) => teamFullName(t)),
+      ...(freshSearched ?? []).map((t) => teamFullName(t)),
     ];
     if (pool.length === 0) return null;
     const ranked = rankTeamCandidates(
@@ -278,7 +548,21 @@ export default function CareerTeamEntry({
     if (ranked.length === 0) return null;
     if (ranked[0].confidence === "exact") return null;
     return pool[ranked[0].index] ?? null;
-  }, [composedName, stagedNames, searched]);
+  }, [composedName, stagedNames, freshSearched]);
+
+  /**
+   * The prompt that shows. While the list is open and already offers the very
+   * team the prompt would name, the prompt is a second way to say the same
+   * thing, so it waits until the list is closed (or offers something else).
+   */
+  const didYouMeanShown =
+    didYouMean !== null &&
+    !(
+      listOpen &&
+      suggestions.some((s) => nameSearchKey(s.name) === nameSearchKey(didYouMean))
+    )
+      ? didYouMean
+      : null;
 
   const fromNum = Number(fromYear);
   const toNum = toYear.trim() === "" ? undefined : Number(toYear);
@@ -291,7 +575,32 @@ export default function CareerTeamEntry({
   const toValid =
     toNum === undefined ||
     (Number.isInteger(toNum) && toNum <= maxYear && toNum >= fromNum);
-  const canAdd = trimmedName !== "" && fromValid && toValid;
+  const canAdd = trimmedName !== "" && fromValid && toValid && teamKnown && !disabled;
+
+  /* NEO-657 — what + Add would report, whether or not the host is `disabled`. */
+  const draftReady = trimmedName !== "" && fromValid && toValid && teamKnown;
+  const draftKey = draftReady
+    ? `${resolvedTeamId ?? ""}|${trimmedName}|${fromNum}|${toNum ?? ""}`
+    : "";
+  const onDraftChangeRef = useRef(onDraftChange);
+  useEffect(() => {
+    onDraftChangeRef.current = onDraftChange;
+  }, [onDraftChange]);
+  useEffect(() => {
+    onDraftChangeRef.current?.(
+      draftKey === ""
+        ? null
+        : {
+            name: trimmedName,
+            fromYear: fromNum,
+            ...(toNum !== undefined ? { toYear: toNum } : {}),
+            ...(resolvedTeamId ? { teamId: resolvedTeamId } : {}),
+          },
+    );
+    // The key stands for the entry; the values it is made of are not deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey]);
+  useEffect(() => () => onDraftChangeRef.current?.(null), []);
 
   const commit = () => {
     if (!canAdd) return;
@@ -299,16 +608,53 @@ export default function CareerTeamEntry({
       name: trimmedName,
       fromYear: fromNum,
       ...(toNum !== undefined ? { toYear: toNum } : {}),
+      ...(resolvedTeamId ? { teamId: resolvedTeamId } : {}),
     });
+    setPickedTeamId(null);
+    setLoadedBaseline(null);
     setName("");
     setDebouncedName("");
     setFromYear("");
     setToYear("");
     setSuggestionsOpen(false);
+    setBrowsing(false);
+    justAddedRef.current = true;
     // Safe to refocus now: the list opens on TYPING, not on focus. See the
     // note on `pickSuggestion`.
     nameInputRef.current?.focus();
   };
+
+  /* NEO-591 — the chip that was pressed is gone, so focus goes to the years. */
+  useEffect(() => {
+    if (appliedLoad !== undefined) fromYearRef.current?.focus();
+  }, [appliedLoad]);
+
+  /*
+   * NEO-574 — if the parent answered the add with the NEXT prefill (the next
+   * team the cards print), the form is ready to add again: park focus on
+   * From year, where Enter adds, instead of on the name. Runs once, on the
+   * first render after an add; a prefill that arrives later never moves
+   * focus.
+   */
+  useEffect(() => {
+    if (!justAddedRef.current) return;
+    justAddedRef.current = false;
+    if (followed.name !== "" && followed.year !== "") fromYearRef.current?.focus();
+  });
+
+  /** A quick pick fills the team and From year, and leaves the add to the operator. */
+  const takeQuickPick = (team: string, year: number) => {
+    setPickedTeamId(null);
+    setName(team);
+    setDebouncedName(team);
+    setFromYear(String(year));
+    setSuggestionsOpen(false);
+    setBrowsing(false);
+    fromYearRef.current?.focus();
+  };
+  const shownQuickPicks = (quickPicks ?? []).filter(
+    (q) => !(q.team === trimmedName && String(q.fromYear) === fromYear.trim()),
+  );
 
   /**
    * Enter in either year field is "+ Add" (Jason, 2026-10-04): the years are
@@ -324,6 +670,12 @@ export default function CareerTeamEntry({
   const handleYearKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== "Enter") return;
     e.preventDefault();
+    // NEO-591 — an empty form has nothing to add: Enter is "done here".
+    if (onDone && isEmpty) {
+      e.stopPropagation();
+      if (!e.repeat) onDone();
+      return;
+    }
     commit();
   };
 
@@ -351,10 +703,12 @@ export default function CareerTeamEntry({
    * Focus lands on FROM YEAR, not back on the name: the team is chosen, and
    * the stint is not finished until it has a year.
    */
-  const pickSuggestion = (teamName: string) => {
+  const pickSuggestion = (teamName: string, teamId?: Id<"teams">) => {
+    setPickedTeamId(teamId ?? null);
     setName(teamName);
     setDebouncedName(teamName);
     setSuggestionsOpen(false);
+    setBrowsing(false);
     fromYearRef.current?.focus();
   };
 
@@ -373,12 +727,63 @@ export default function CareerTeamEntry({
   const handleComboBlur = () => {
     setTimeout(() => {
       if (comboRef.current?.contains(document.activeElement)) return;
+      // A press on the controls under the list is still in flight: closing now
+      // would pull the row up from under the pointer and the click would never
+      // land. `holdListWhilePressed` closes it once the press is over.
+      if (pressingRef.current) {
+        closeAfterPressRef.current = true;
+        return;
+      }
       setSuggestionsOpen(false);
+      setBrowsing(false);
     }, 0);
   };
 
+  /*
+   * The list is in the flow, so closing it moves everything under it up. A
+   * mouse press on + Add (or a year box) first blurs the name box, which
+   * closes the list, which moves the button before the button is released:
+   * mousedown and mouseup then land on different elements and no click fires.
+   * So a press on those controls keeps the list as it is until the pointer is
+   * released and the click has run; a blur that happened meanwhile is honoured
+   * then. + Add closes the list itself when it commits.
+   */
+  const pressingRef = useRef(false);
+  const closeAfterPressRef = useRef(false);
+  const releasePressRef = useRef<(() => void) | null>(null);
+  const holdListWhilePressed = () => {
+    pressingRef.current = true;
+    releasePressRef.current?.();
+    const onUp = () => {
+      window.removeEventListener("mouseup", onUp);
+      releasePressRef.current = null;
+      // After the click event that follows this mouseup.
+      setTimeout(() => {
+        pressingRef.current = false;
+        if (!closeAfterPressRef.current) return;
+        closeAfterPressRef.current = false;
+        if (comboRef.current?.contains(document.activeElement)) return;
+        setSuggestionsOpen(false);
+        setBrowsing(false);
+      }, 0);
+    };
+    releasePressRef.current = () => window.removeEventListener("mouseup", onUp);
+    window.addEventListener("mouseup", onUp);
+  };
+  useEffect(() => () => releasePressRef.current?.(), []);
+
+  /* The list opening grows the entry downward; keep the list and the years row
+     under it in view (the review dialog scrolls). `nearest` moves nothing
+     when they already are. */
+  useEffect(() => {
+    if (listOpen) rootRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [listOpen]);
+
   return (
-    <div className="border border-rule-strong rounded-md bg-raised-deep/60 p-2 space-y-1.5">
+    <div
+      ref={rootRef}
+      className="border border-rule-strong rounded-md bg-raised-deep/60 p-2 space-y-1.5"
+    >
       {/* NEO-236: one box. The team's Location is asked on its own New Team
           step, which is also the only place its League can be asked. */}
       <div className="relative" ref={comboRef} onBlur={handleComboBlur}>
@@ -388,31 +793,56 @@ export default function CareerTeamEntry({
           type="text"
           value={name}
           placeholder="Team name (search or type new)…"
-          aria-label="Career team name"
+          aria-label={`Career team name${suffix}`}
+          disabled={disabled}
           role="combobox"
-          aria-expanded={suggestionsOpen && suggestions.length > 0}
+          aria-expanded={listOpen}
+          aria-controls={listboxId}
+          aria-activedescendant={
+            listOpen && suggestions[highlightIdx] ? optionId(highlightIdx) : undefined
+          }
           aria-autocomplete="list"
           onChange={(e) => {
+            setPickedTeamId(null);
             setName(e.target.value);
             setSuggestionsOpen(true);
+            setBrowsing(false);
           }}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
               e.preventDefault();
-              setSuggestionsOpen(true);
-              setHighlightIdx((i) => Math.min(i + 1, suggestions.length - 1));
+              if (listOpen) {
+                setHighlightIdx((i) => Math.min(i + 1, suggestions.length - 1));
+              } else {
+                // Opening the list is the first press: land on the row the box
+                // already holds (a whole name), else the top, instead of
+                // skipping past it.
+                setSuggestionsOpen(true);
+                setBrowsing(true);
+                setHighlightIdx(exactIdx >= 0 ? exactIdx : 0);
+              }
             } else if (e.key === "ArrowUp") {
               e.preventDefault();
               setHighlightIdx((i) => Math.max(i - 1, 0));
             } else if (e.key === "Enter") {
               // Never let Enter here bubble to the wizard's confirm shortcut
               // or add a half-filled entry. If a suggestion is highlighted,
-              // fill the name from it; otherwise just close the dropdown.
+              // fill the name from it; if the box already holds a known
+              // team's name (NEO-574), move on to From year as a pick would;
+              // otherwise just close the dropdown.
               e.preventDefault();
-              if (suggestionsOpen && suggestions[highlightIdx]) {
-                pickSuggestion(suggestions[highlightIdx].name);
+              if (listOpen && suggestions[highlightIdx]) {
+                pickSuggestion(suggestions[highlightIdx].name, suggestions[highlightIdx].teamId);
+              } else if (exactMatch && !browsing) {
+                setSuggestionsOpen(false);
+                fromYearRef.current?.focus();
               } else {
                 setSuggestionsOpen(false);
+                // NEO-591 — and an empty form is "done here".
+                if (onDone && isEmpty) {
+                  e.stopPropagation();
+                  if (!e.repeat) onDone();
+                }
               }
             } else if (e.key === "Escape") {
               /*
@@ -434,7 +864,8 @@ export default function CareerTeamEntry({
                */
               e.preventDefault();
               e.stopPropagation();
-              if (suggestionsOpen && suggestions.length > 0) {
+              setBrowsing(false);
+              if (listOpen) {
                 setSuggestionsOpen(false);
               } else if (name !== "") {
                 setName("");
@@ -445,17 +876,20 @@ export default function CareerTeamEntry({
           }}
           className="w-full p-1.5 text-sm"
         />
-        {suggestionsOpen && suggestions.length > 0 && (
+        {listOpen && (
           <ul
+            id={listboxId}
             role="listbox"
             aria-label="Existing team suggestions"
-            className="absolute z-10 left-0 right-0 mt-1 max-h-40 overflow-y-auto rounded-md border border-rule-strong bg-raised-deep shadow-lg shadow-offset"
+            className="mt-1 max-h-32 max-sm:max-h-[30vh] overflow-y-auto rounded-md border border-rule-strong bg-raised-deep"
           >
             {suggestions.map((s, idx) => (
               <li key={s.key} role="none">
                 <button
                   type="button"
+                  id={optionId(idx)}
                   role="option"
+                  tabIndex={-1}
                   aria-selected={idx === highlightIdx}
                   /*
                    * NEO-236 — ONE name for every suggestion, saved or staged.
@@ -474,47 +908,89 @@ export default function CareerTeamEntry({
                    * it dedupes them against the saved half. It just no longer
                    * says anything.
                    */
-                  aria-label={`Use ${s.name}`}
+                  /*
+                   * NEO-657 — a saved team's era is part of its name here:
+                   * two rows can share one full name ("Monterrey Sultanes"),
+                   * and the era is what tells them apart, on screen and to a
+                   * screen reader. A staged name has no era, so it reads as
+                   * before.
+                   */
+                  aria-label={
+                    s.yearsActive
+                      ? `Use ${s.name} ${eraLabel(s.yearsActive)}`
+                      : `Use ${s.name}`
+                  }
                   onMouseEnter={() => setHighlightIdx(idx)}
-                  onClick={() => pickSuggestion(s.name)}
+                  onClick={() => pickSuggestion(s.name, s.teamId)}
                   className={`flex w-full items-center gap-2 px-2 py-1 text-left text-sm ${
                     idx === highlightIdx
                       ? "bg-neon-green/20 text-neon-green-text"
                       : "hover:bg-hover text-ink-2"
                   }`}
                 >
-                  <span className="flex-1 truncate">{s.name}</span>
+                  <span className="min-w-0 flex-1 wrap-anywhere">
+                    {s.name}
+                    {s.yearsActive && (
+                      <span
+                        className={`ml-2 font-mono text-[10px] tabular-nums ${
+                          idx === highlightIdx ? "text-ink-2" : "text-ink-3"
+                        }`}
+                      >
+                        {eraLabel(s.yearsActive)}
+                      </span>
+                    )}
+                  </span>
                 </button>
               </li>
             ))}
           </ul>
         )}
+        {/* Always mounted: a live region has to exist before its text changes. */}
+        <p className="sr-only" role="status">
+          {listOpen
+            ? `${suggestions.length} ${suggestions.length === 1 ? "suggestion" : "suggestions"}`
+            : ""}
+        </p>
       </div>
 
-      {didYouMean && (
-        <p className="text-xs text-ink-3">
+      {knownTeamsOnly && (
+        /* Always mounted, text swapped in: a live region that exists before it
+           speaks. Only when the search has answered and nothing matches. */
+        <p role="status" className="text-xs text-neon-pink-text">
+          {ambiguousName
+            ? UNKNOWN_TEAM_AMBIGUOUS
+            : showUnknownTeam
+              ? UNKNOWN_TEAM_TEXT
+              : ""}
+        </p>
+      )}
+
+      {didYouMeanShown && (
+        <p className="text-xs text-ink-3" onMouseDown={holdListWhilePressed}>
           {/* NEO-212 (a11y): no aria-label. The visible text IS the name, so
               an "Use {name}" override replaced a readable label with one that
               shares none of its words — a voice-control user saying "Did you
               mean New York Yankees" matched nothing (WCAG 2.2 SC 2.5.3). */}
           <button
             type="button"
-            onClick={() => pickSuggestion(didYouMean)}
+            onClick={() => pickSuggestion(didYouMeanShown)}
             className="text-neon-blue-text underline decoration-dotted hover:text-neon-green-text focus:text-neon-green-text focus-outline"
           >
-            Did you mean {didYouMean}?
+            Did you mean {didYouMeanShown}?
           </button>
         </p>
       )}
 
-      <div className="flex items-center gap-2">
+      {/* flex-wrap: at 320px the two year boxes and + Add do not fit one row. */}
+      <div className="flex flex-wrap items-center gap-2" onMouseDown={holdListWhilePressed}>
         <Input
           bare
           ref={fromYearRef}
           type="number"
           value={fromYear}
           placeholder="From year"
-          aria-label="From year"
+          aria-label={`From year${suffix}`}
+          disabled={disabled}
           min={MIN_CAREER_YEAR}
           max={maxYear}
           onChange={(e) => setFromYear(e.target.value)}
@@ -525,8 +1001,9 @@ export default function CareerTeamEntry({
           bare
           type="number"
           value={toYear}
-          placeholder="To year (opt)"
-          aria-label="To year (optional)"
+          placeholder="To year"
+          aria-label={`To year (optional)${suffix}`}
+          disabled={disabled}
           min={MIN_CAREER_YEAR}
           max={maxYear}
           onChange={(e) => setToYear(e.target.value)}
@@ -539,11 +1016,35 @@ export default function CareerTeamEntry({
           outline
           onClick={commit}
           disabled={!canAdd}
-          aria-label="Add career team"
+          aria-label={`Add career team${suffix}`}
         >
           + Add
         </NeonButton>
       </div>
+
+      {shownQuickPicks.length > 0 && (
+        <div
+          role="group"
+          aria-label="Also on the cards"
+          className="flex flex-wrap items-center gap-1.5"
+          onMouseDown={holdListWhilePressed}
+        >
+          <span aria-hidden="true" className="text-xs text-ink-3">
+            Also on the cards:
+          </span>
+          {shownQuickPicks.map((q) => (
+            <button
+              key={`${q.team}:${q.fromYear}`}
+              type="button"
+              aria-label={`Fill in ${q.team}`}
+              onClick={() => takeQuickPick(q.team, q.fromYear)}
+              className="rounded-full border border-rule-strong bg-raised min-h-6 px-2 py-1 text-xs text-ink-2 hover:border-ink-2 hover:text-ink focus-outline max-sm:min-h-11"
+            >
+              {q.team}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

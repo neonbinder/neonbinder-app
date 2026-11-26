@@ -1,0 +1,31 @@
+{
+  "file": "1995-hockey-san-antonio-iguanas-chl-base.csv",
+  "mode": "leaf",
+  "options": {"setYear":"1995","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"1","players":["Chris Albert"],"teams":["San Antonio Iguanas"]},
+      {"number":"2","players":["Jamie Bird"],"teams":["San Antonio Iguanas"]},
+      {"number":"3","players":["Matt Bowden"],"teams":["San Antonio Iguanas"]},
+      {"number":"4","players":["Trevor Buchanan"],"teams":["San Antonio Iguanas"]},
+      {"number":"5","players":["Gord Christian"],"teams":["San Antonio Iguanas"]},
+      {"number":"6","players":["Liam Garvey"],"teams":["San Antonio Iguanas"]},
+      {"number":"7","players":["Dale Henry"],"teams":["San Antonio Iguanas"]},
+      {"number":"8","players":["Paul Jackson"],"teams":["San Antonio Iguanas"]},
+      {"number":"9","players":["Sebastien LaPlante"],"teams":["San Antonio Iguanas"]},
+      {"number":"10","players":["Ken Plaquin"],"teams":["San Antonio Iguanas"]},
+      {"number":"11","players":["Brandy Semchuk"],"teams":["San Antonio Iguanas"]},
+      {"number":"12","players":["Brian Shantz"],"teams":["San Antonio Iguanas"]},
+      {"number":"13","players":["David Shute"],"teams":["San Antonio Iguanas"]},
+      {"number":"14","players":["Jim Sprott"],"teams":["San Antonio Iguanas"]},
+      {"number":"15","players":["Mike Williams"],"teams":["San Antonio Iguanas"]},
+      {"number":"16","players":["Mark Yannetti"],"teams":["San Antonio Iguanas"]},
+      {"number":"17","players":["Dean Zayonce"],"teams":["San Antonio Iguanas"]},
+      {"number":"18","players":["John Torchetti"],"teams":["San Antonio Iguanas"]}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

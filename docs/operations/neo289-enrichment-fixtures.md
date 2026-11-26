@@ -117,16 +117,13 @@ Only the names a run on that deployment actually looked up, not every row
 the deployment holds. Since NEO-330 every CI preview carries the reference
 catalogue, and almost none of those rows is ever looked up, so "every row"
 would bury the real gaps under catalogue names. The names come from three
-places a lookup leaves a trace (the header of
+place a lookup leaves a trace (the header of
 `apps/web/convex/enrichmentFixtures.ts` has the detail):
 
 - `players`, `teams` and `leagues` rows of the sport **created since the
-  run's boundary**: a row the review wizard creates was looked up when it
-  was staged, and a player or league created on an admin page is looked up
-  at creation;
-- `entityReviewQueue` rows still open (the commit deletes its own batch);
-- `entityReviewSkips` rows whose set is in the sport: a skipped name was
-  looked up but never becomes a row.
+  run's boundary**: a player or league created on an admin page is looked up
+  at creation. (A name the Tidy Up walk looks up on demand leaves no stored
+  trace, so it is listed only once it becomes a row.)
 
 The **boundary** is the `_creationTime` of the oldest `year` row, because a
 name reaches the wizard only through a set, and the seed's catalogue load
@@ -206,12 +203,18 @@ Capture **refuses** when the name list is truncated (more than 2,000 rows in
 one source since the boundary). The error names the source and the boundary.
 Past that size the list is no longer one run's names. Pass `"since"` set to
 the start of the run you mean to capture. `offset`/`limit` page a long list,
-and `since` is accepted alongside them.
+and `since` is accepted alongside them; each page's `fixture.entries` is an
+array, so concatenate the pages' arrays (keys are unique across pages) or run
+the `jq` rebuild below on each.
 
 Then:
 
 1. **Merge, never overwrite.** `capture.json`'s `fixture.entries` hold one
-   run's names, and the committed
+   run's names (an array of `{ "key", "entry" }`, because Convex refuses an
+   accented key as a return-value field name; the committed file's `entries`
+   is still an object keyed by the same `key`). Rebuild that object with
+   `jq '.fixture.entries | map({(.key): .entry}) | add // {}' capture.json > entries.json`.
+   The committed
    `apps/web/convex/adapters/__fixtures__/enrichment-lookups.json` holds every
    recorded batch. Merge as §4a step 5 does, except that a re-capture
    **replaces** the keys it captured (that is the point of re-capturing) and
@@ -240,17 +243,13 @@ a catalogue-loaded preview too. Use this method when you would rather not
 arm a deployment, or when the batch's linked names matter: §4 cannot see
 those (§3).
 
-1. **Get the exact names the batch stages.** Run the spec that commits the
-   set once on the PR's preview (an ordinary E2E run), then read the set's
-   `entityReviewSkips` rows read-only (index
-   `by_selector_option_and_kind_and_name`). They hold the raw `name` of every
-   row the operator SKIPPED: the per-player strings the wizard staged, not
-   the card's name (an "A / B" card stages two names). Rows the spec LINKED
-   are not there; add those names by hand from the spec. Staged career teams
-   and leagues carry a `knownQid` (their `source.wikidataId`); keep it with
-   the name, because the lookup is keyed on the name but a hit is honoured
-   only when the recorded `wikidataId` equals it (§1), and a recorded `null`
-   is a miss for a caller with a known QID.
+1. **Get the exact names the batch looks up.** Take them from the set's
+   checklist (the printed player and team names on its cards, as the Tidy Up
+   walk shows them) and from the spec that commits it. Add the names of any
+   rows the spec LINKED by hand. A career team or league carries a `knownQid`
+   (its Wikidata id); keep it with the name, because the lookup is keyed on
+   the name but a hit is honoured only when the recorded `wikidataId` equals
+   it (§1), and a recorded `null` is a miss for a caller with a known QID.
 2. **Get the sport context**: the sport row's `sportConfig` (its `espn` and
    `wikidata` blocks), read-only.
 3. **Look every name up with the live bodies.** In an `.mts` script under
@@ -270,8 +269,10 @@ those (§3).
    `process.env`, then call `readFixture(kind, sportQid, name, knownQid)` for
    every lookup the batch makes, with the merged file in place. The count of
    misses must be zero.
-5. **Merge without disturbing the file.** Add only keys that are absent,
-   never change an existing entry, and re-sort the keys. Python's
+5. **Merge without disturbing the file.** This script builds its entries as
+   an object already, so there is no `jq` step (a `captureFromCli` array
+   becomes that object with the one-liner in §4 step 1). Add only keys that
+   are absent, never change an existing entry, and re-sort the keys. Python's
    `json.dumps(data, indent=2, ensure_ascii=True) + "\n"` reproduces the
    committed file byte for byte, so the diff shows only the new entries.
    `apps/web/convex/enrichmentFixtureFile.test.ts` pins the key format, the
@@ -361,6 +362,21 @@ already recorded) with no miss.
   was recorded the same way. His first two live searches timed out at 30 s and
   were dropped. The third answered. `Kota Nishidate`, `Kosuke Kawachi` and
   `Shuya Yamada` were already recorded.
+
+**NEO-426 entry (2026-11-19): 2026 ONIT Athlete Arizona State Sun Devils Base.**
+The spec `sport-no-teams-listing-team-holds-back-the-default` commits this set and
+stages 27 of its 29 checklist names as new Baseball players (`Cole Carlon` and
+`Josh Butler` resolve to catalogue players and are never looked up). The staged
+list was read off a run's skip records (26 skips, since retired) plus `Austin Musso`,
+the one name the spec adds; his first lookup is in Baseball, before he is moved
+to the worker's custom sport, which has no Wikidata mapping. All 27 were
+captured with §4b's `runCaptureLookups` (Baseball `sportConfig`, ten names a
+call): every one is a **no-match** after two empty searches
+(`wikidata_search_empty`, then `wikidata_search_empty_confirmed`) and a
+`wikidata_player_no_match` line. `Jaden Alba`'s first lookup timed out at 30 s
+and was dropped (`skippedTransport`); the retry answered. Merged per §4a step 5
+as the file's default sport (no `sportQid`); the step 4 proof read all 27 as
+hits.
 
 ## 4b. Other sports, explicit names, and no Wikidata from your machine (2026-10-30)
 

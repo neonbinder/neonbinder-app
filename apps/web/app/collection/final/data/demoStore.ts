@@ -83,7 +83,7 @@ import {
   type DemoContainer,
   type DemoCopy,
 } from "../store";
-import { compareCards, setLabel } from "./labels";
+import { compareCards, printRunLabel, printRunSpoken, setLabel } from "./labels";
 import {
   bySlot,
   CollectionStoreContext,
@@ -358,6 +358,21 @@ function inScope(state: CollectionState, scope: Scope, side: Side): DemoCopy[] {
   return copies.filter((c) => c.homeId === scope);
 }
 
+let fixtureCardIndex: { size: number; byId: Map<string, (typeof fixtureCards)[number]> } | undefined;
+
+/**
+ * The fixture cards by id: a smart binder tests every copy, and a scan of the
+ * catalog per copy cost ~180 ms a write. The demo's sample sets join the
+ * catalog late (`extendCatalog` pushes into `fixtureCards`), so the index is
+ * rebuilt whenever the catalog's size differs from the one it was built at.
+ */
+function fixtureCardById() {
+  if (!fixtureCardIndex || fixtureCardIndex.size !== fixtureCards.length) {
+    fixtureCardIndex = { size: fixtureCards.length, byId: new Map(fixtureCards.map((f) => [f.id, f])) };
+  }
+  return fixtureCardIndex.byId;
+}
+
 /** The copies a container lists (see `useContainerCopies`), in slot order. */
 function containerCopies(state: CollectionState, id: string): DemoCopy[] {
   const container = state.containers.find((c) => c.id === id);
@@ -368,7 +383,7 @@ function containerCopies(state: CollectionState, id: string): DemoCopy[] {
   if (container.rule) {
     const rule = fixtureRule(container.rule);
     return collectionOf(state).filter((c) => {
-      const card = fixtureCards.find((f) => f.id === c.cardId);
+      const card = fixtureCardById().get(c.cardId);
       return !!card && evaluateRule(rule, card);
     });
   }
@@ -494,11 +509,17 @@ function drillItem(level: DrillLevel, item: ColumnItem, extra: Partial<DrillItem
   return { id: item.id, level, name: item.name, hasChildren: true, ...extra };
 }
 
-/** "/50", "1/1", or nothing: a parallel's print run, the one line the drill keeps. */
-function printRunOf(set: FixtureSet, type: VariantType, name: string): string | undefined {
-  const run = set.variants.find((v) => v.path.type === type && v.path.name === name)?.printRun ?? null;
-  if (run === null) return undefined;
-  return run === 1 ? "1/1" : `/${run}`;
+/** A parallel's print run, the one extra line the drill keeps: the run, its "/50" and how it is said. */
+function printRunOf(
+  set: FixtureSet,
+  type: VariantType,
+  name: string,
+): Pick<DrillItem, "description" | "descriptionSpoken" | "printRun"> {
+  const printRun = set.variants.find((v) => v.path.type === type && v.path.name === name)?.printRun ?? null;
+  const description = printRunLabel({ printRun });
+  const descriptionSpoken = printRunSpoken({ printRun });
+  if (printRun === null || !description || !descriptionSpoken) return {};
+  return { description, descriptionSpoken, printRun };
 }
 
 /** The prototype's set rows want a completion; the drill shows none of it. */
@@ -537,12 +558,11 @@ function drillColumn(level: DrillLevel, parents: DrillParents): DrillItem[] {
       if (!set || (type !== "Inserts" && type !== "Parallels")) return [];
       return variantItems(set, type, NO_COMPLETION).map((i) => {
         const variantId = demoVariantId(set.id, { type, name: i.id });
-        const run = printRunOf(set, type, i.id);
         return drillItem(level, i, {
           variantId,
           hasChildren: false,
           ...countsOf(variantId),
-          ...(run ? { description: run } : {}),
+          ...printRunOf(set, type, i.id),
         });
       });
     }

@@ -1,0 +1,31 @@
+{
+  "file": "1995-hockey-oklahoma-city-blazers-chl-base.csv",
+  "mode": "leaf",
+  "options": {"setYear":"1995","mode":"leaf"},
+  "read": {"kind":"text"},
+  "parse": {
+    "rows": [
+      {"number":"1","players":["Kevin Barrett"],"teams":["Oklahoma City Blazers"]},
+      {"number":"2","players":["Carl Boudreau"],"teams":["Oklahoma City Blazers"]},
+      {"number":"3","players":["Joe Burton"],"teams":["Oklahoma City Blazers"]},
+      {"number":"4","players":["George Dupont"],"teams":["Oklahoma City Blazers"]},
+      {"number":"5","players":["Dominic Fafard"],"teams":["Oklahoma City Blazers"]},
+      {"number":"6","players":["Jean-Ian Filiatrault"],"teams":["Oklahoma City Blazers"]},
+      {"number":"7","players":["Tom Gomes"],"teams":["Oklahoma City Blazers"]},
+      {"number":"8","players":["Todd Harris"],"teams":["Oklahoma City Blazers"]},
+      {"number":"9","players":["Mervin Kopeck"],"teams":["Oklahoma City Blazers"]},
+      {"number":"10","players":["Doug Lawrence"],"teams":["Oklahoma City Blazers"]},
+      {"number":"11","players":["Kevin Lune"],"teams":["Oklahoma City Blazers"]},
+      {"number":"12","players":["Steve Moore"],"teams":["Oklahoma City Blazers"]},
+      {"number":"13","players":["Simon Olivier"],"teams":["Oklahoma City Blazers"]},
+      {"number":"14","players":["Darcy Pengelly"],"teams":["Oklahoma City Blazers"]},
+      {"number":"15","players":["Steve Simoni"],"teams":["Oklahoma City Blazers"]},
+      {"number":"16","players":["Barkley Swenson"],"teams":["Oklahoma City Blazers"]},
+      {"number":"17","players":["Sergei Tkachenko"],"teams":["Oklahoma City Blazers"]},
+      {"number":"18","players":["Doug Sauter"],"teams":["Oklahoma City Blazers"]}
+    ],
+    "skipped": [],
+    "format": "csv"
+  },
+  "sections": {"format":"csv","sections":[],"skipped":[],"skippedSections":[],"rowCount":0}
+}

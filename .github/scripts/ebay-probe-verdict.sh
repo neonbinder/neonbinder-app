@@ -10,7 +10,7 @@
 #
 # Outcomes and exit codes:
 #   ok               0
-#   account_warning  0, with a ::warning:: (the seller's own account leg is not
+#   account_warning  0, with a ::warning:: in real mode; 1 in fake mode (the seller's own account leg is not
 #                    a gate: not connected, refresh refused, eBay having a day)
 #   skipped_paused   0, with a ::warning:: (an operator paused eBay; no call made)
 #   app_failed       1  (the client_credentials grant or the app-token read broke)
@@ -30,7 +30,14 @@ emit() { # outcome, message
   echo "outcome=$1"
   case "$1" in
     ok) exit 0 ;;
-    account_warning|skipped_paused) echo "::warning::eBay probe ($expect): $1 - $2" >&2; exit 0 ;;
+    account_warning)
+      if [ "$expect" = "fake" ]; then
+        # Fake mode: every leg is ours and the mint step fails the job on its own, so a
+        # broken refresh or account leg is a failure, not a warning.
+        echo "::error::eBay probe (fake): account_warning - the fake account leg did not pass; check the fake's token and identity routes" >&2; exit 1
+      fi
+      echo "::warning::eBay probe ($expect): $1 - $2" >&2; exit 0 ;;
+    skipped_paused) echo "::warning::eBay probe ($expect): $1 - $2" >&2; exit 0 ;;
     *) echo "::error::eBay probe ($expect): $1 - $2" >&2; exit 1 ;;
   esac
 }

@@ -5,24 +5,26 @@
  * "N cards need a team" Fill pill, and the "Fix them one at a time" link (plus
  * the post-commit banner's own call-to-action, pinned in CardChecklist.test.tsx).
  * Pinned here: what N counts (every attention kind, live), that it is the one
- * amber pill and the only control in its row, that its visible text is its
+ * pill (pink or blue by the worst level present) and the only control in its row, that its visible text is its
  * accessible name, that it opens the walker only when pressed (click or Enter),
  * that a build holding the checklist holds it too, and that the grid is never
  * filtered any more.
  *
  * The walker itself is stubbed: its queue, order and done line are covered in
- * CardAttentionWalker.test.tsx. Heavy children that play no part here are
+ * tidy/TidyUpWalk.test.tsx. Heavy children that play no part here are
  * stubbed so the mocked Convex surface stays small.
  */
 
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { ParallelBuildRunner } from "./ParallelBuildPanel";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
+    careerCoverage: { careerGaps: "careerCoverage.careerGaps" },
     selectorOptions: {
       getCardChecklist: "getCardChecklist",
       getSelectorOptionById: "getSelectorOptionById",
@@ -63,7 +65,6 @@ vi.mock("./CardChecklistItem", () => ({
   default: ({ card }: { card: { cardName: string } }) => <div>{card.cardName}</div>,
 }));
 vi.mock("./CardDetailPanel", () => ({ default: () => null }));
-vi.mock("./EntityReviewWizard", () => ({ default: () => null }));
 vi.mock("./CardPairingModal", () => ({ default: () => null }));
 vi.mock("./sync-review-modal", () => ({
   default: () => null,
@@ -71,10 +72,9 @@ vi.mock("./sync-review-modal", () => ({
 }));
 vi.mock("./CrossListingImportModal", () => ({ default: () => null }));
 // A visible stand-in, so "the walker opened" is observable without its queue.
-vi.mock("./CardAttentionWalker", () => ({
+vi.mock("./tidy/TidyUpWalk", () => ({
   default: () => <div role="dialog" aria-label="Walker stand-in" />,
 }));
-vi.mock("./SkippedNamesPanel", () => ({ default: () => null }));
 vi.mock("./TeamPicker", () => ({ default: () => null }));
 vi.mock("./PlayerPicker", () => ({ default: () => null }));
 
@@ -95,8 +95,14 @@ vi.mock("convex/react", () => ({
   useConvex: () => ({ query: vi.fn(), action: vi.fn() }),
 }));
 
-import CardChecklist from "./CardChecklist";
+import CardChecklist, { needsYouLabel } from "./CardChecklist";
 import { SET_ROW_ACTION_TONE_CLASSES } from "./SetRowActionButton";
+
+/**
+ * The card checklist's fetch control. It has no aria-label (NEO-645), so its name is its
+ * visible words, which change with the state: Fetch from Marketplaces, Fetching..., Saving..., Refresh.
+ */
+const SYNC_BUTTON = /^(Fetch from Marketplaces|Fetching\.\.\.|Saving\.\.\.|Refresh)$/;
 
 const VARIANT_ID = "variant-1" as unknown as Id<"selectorOptions">;
 
@@ -145,18 +151,20 @@ function awaitingLookup(n: number) {
 
 function ui(parallelRun?: ParallelBuildRunner) {
   return (
-    <CardChecklist
-      variantId={VARIANT_ID}
-      sourceChips={{}}
-      sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-      parallelRun={parallelRun}
-    />
+    <MemoryRouter>
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelRun={parallelRun}
+      />
+    </MemoryRouter>
   );
 }
 
-const pill = (name: string | RegExp = /^\d+ needs? you$/) =>
+const pill = (name: string | RegExp = /^\d+ needs? you(, \d+ to fix)?$/) =>
   screen.getByRole("button", { name });
-const queryPill = () => screen.queryByRole("button", { name: /^\d+ needs? you$/ });
+const queryPill = () => screen.queryByRole("button", { name: /^\d+ needs? you(, \d+ to fix)?$/ });
 /** The header's "N cards need you" live region — mounted even when empty. */
 const attentionStatus = () =>
   document.querySelector<HTMLElement>('[role="status"][data-attention-status]');
@@ -168,22 +176,23 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
     state.cards = [teamless(1), teamless(2), overLongTitle(3), unlinkedName(4), settled(5)];
   });
 
-  it("counts every attention kind, not only missing teams, and wears the amber attention pill", () => {
+  it("counts every attention kind, not only missing teams, and wears the pink pill when any card is to fix", () => {
     render(ui());
-    const control = pill("4 need you");
-    for (const cls of SET_ROW_ACTION_TONE_CLASSES.attention.split(" ")) {
+    const control = pill("4 need you, 4 to fix");
+    for (const cls of SET_ROW_ACTION_TONE_CLASSES.fix.split(" ")) {
       expect(control.classList.contains(cls)).toBe(true);
     }
+    expect(control.classList.contains("bg-notice-warn-bg")).toBe(false);
     // SC 2.5.3: the visible text IS the name — no aria-label to drift from it.
     expect(control.getAttribute("aria-label")).toBeNull();
-    expect(control.textContent).toBe("4 need you");
+    expect(control.textContent).toBe("4 need you, 4 to fix");
     expect(control.getAttribute("aria-haspopup")).toBe("dialog");
   });
 
   it("is singular for one card", () => {
     state.cards = [teamless(1), settled(2)];
     render(ui());
-    expect(pill("1 needs you")).toBeTruthy();
+    expect(pill("1 needs you, 1 to fix")).toBeTruthy();
   });
 
   it("is the only control in its row", () => {
@@ -211,7 +220,108 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
   it("does not count a BSC card whose team lookup has not come back", () => {
     state.cards = [awaitingLookup(1), teamless(2)];
     render(ui());
-    expect(pill("1 needs you")).toBeTruthy();
+    expect(pill("1 needs you, 1 to fix")).toBeTruthy();
+  });
+
+  it("counts a card that only needs a check (blue) as well as one that needs a fix (pink)", () => {
+    state.cards = [
+      teamless(1),
+      // Teamed and linked; its title was cut to fit: blue, "to check".
+      settled(2),
+      {
+        ...settled(3),
+        playerIds: ["player-1"],
+        listingTitle: "2024 Topps Chrome #3 Somebody",
+        listingTitleTruncated: true,
+      },
+    ];
+    render(ui());
+    expect(pill("2 need you, 1 to fix")).toBeTruthy();
+  });
+
+  describe("the pill takes its colour from the worst level present (Jason, NEO-645)", () => {
+    const checkOnly = (n: number) => ({
+      ...settled(n),
+      playerIds: ["player-1"],
+      listingTitle: `2024 Topps Chrome #${n} Somebody`,
+      listingTitleTruncated: true,
+    });
+    const hasTone = (el: HTMLElement, tone: "fix" | "check") =>
+      SET_ROW_ACTION_TONE_CLASSES[tone].split(" ").every((c) => el.classList.contains(c));
+
+    it("is pink when any card is to fix, even beside cards that only need a check", () => {
+      state.cards = [checkOnly(1), checkOnly(2), teamless(3)];
+      render(ui());
+      const control = pill("3 need you, 1 to fix");
+      expect(hasTone(control, "fix")).toBe(true);
+      expect(hasTone(control, "check")).toBe(false);
+    });
+
+    it("is blue when every card that needs a person only needs a check", () => {
+      state.cards = [checkOnly(1), checkOnly(2), settled(3)];
+      render(ui());
+      const control = pill("2 need you");
+      expect(hasTone(control, "check")).toBe(true);
+      expect(hasTone(control, "fix")).toBe(false);
+      // Still not amber, and the words are unchanged.
+      expect(control.classList.contains("bg-notice-warn-bg")).toBe(false);
+      expect(control.textContent).toBe("2 need you");
+    });
+
+    it("is no pill at all when nothing needs a person", () => {
+      state.cards = [settled(1), settled(2)];
+      render(ui());
+      expect(queryPill()).toBeNull();
+    });
+
+    it("goes from blue to pink as soon as a to-fix card lands, without a remount", () => {
+      state.cards = [checkOnly(1)];
+      const { rerender } = render(ui());
+      expect(hasTone(pill("1 needs you"), "check")).toBe(true);
+      state.cards = [checkOnly(1), teamless(2)];
+      rerender(ui());
+      expect(hasTone(pill("2 need you, 1 to fix"), "fix")).toBe(true);
+    });
+  });
+
+  it("says the split in the pill's own text when some cards are to fix, and not when none are", () => {
+    // Pink and blue: the count first, then how many cannot be listed yet. The
+    // text IS the accessible name (no aria-label), so a reader hears it too.
+    state.cards = [
+      teamless(1),
+      teamless(2),
+      {
+        ...settled(3),
+        playerIds: ["player-1"],
+        listingTitle: "2024 Topps Chrome #3 Somebody",
+        listingTitleTruncated: true,
+      },
+    ];
+    const { unmount } = render(ui());
+    const mixed = pill("3 need you, 2 to fix");
+    expect(mixed.textContent).toBe("3 need you, 2 to fix");
+    expect(mixed.getAttribute("aria-label")).toBeNull();
+    // `N need you` still opens the name, so a match on the start finds it.
+    expect(screen.getByRole("button", { name: /^\d+ need you/ })).toBe(mixed);
+    unmount();
+
+    // Blue only: nothing to fix, so nothing is split.
+    state.cards = [
+      {
+        ...settled(1),
+        playerIds: ["player-1"],
+        listingTitle: "2024 Topps Chrome #1 Somebody",
+        listingTitleTruncated: true,
+      },
+      {
+        ...settled(2),
+        playerIds: ["player-1"],
+        listingTitle: "2024 Topps Chrome #2 Somebody",
+        listingTitleTruncated: true,
+      },
+    ];
+    render(ui());
+    expect(pill("2 need you").textContent).toBe("2 need you");
   });
 
   it("renders nothing — not even the row label — when nothing needs a person", () => {
@@ -234,12 +344,12 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
     vi.useFakeTimers();
     try {
       const { rerender } = render(ui());
-      expect(pill("4 need you")).toBeTruthy();
+      expect(pill("4 need you, 4 to fix")).toBeTruthy();
 
       state.cards = [settled(1), teamless(2), settled(3), settled(4), settled(5)];
       rerender(ui());
       // The pill is immediate; the announcement waits for the count to settle.
-      expect(pill("1 needs you")).toBeTruthy();
+      expect(pill("1 needs you, 1 to fix")).toBeTruthy();
       act(() => {
         vi.advanceTimersByTime(1500);
       });
@@ -255,7 +365,7 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
 
   it("parks focus on the Sync button when the pill leaves while focused, instead of dropping it to body", () => {
     const { rerender } = render(ui());
-    const button = pill("4 need you");
+    const button = pill("4 need you, 4 to fix");
     act(() => button.focus());
     expect(document.activeElement).toBe(button);
 
@@ -264,12 +374,12 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
     state.cards = [settled(1), settled(2)];
     rerender(ui());
     expect(queryPill()).toBeNull();
-    expect(document.activeElement).toBe(screen.getByLabelText("Sync card checklist"));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: SYNC_BUTTON }));
   });
 
   it("leaves focus alone when the pill leaves while focus is elsewhere", () => {
     const { rerender } = render(ui());
-    const sync = screen.getByLabelText("Sync card checklist") as HTMLElement;
+    const sync = screen.getByRole("button", { name: SYNC_BUTTON }) as HTMLElement;
     act(() => sync.blur());
     expect(document.activeElement).toBe(document.body);
     state.cards = [settled(1), settled(2)];
@@ -390,13 +500,13 @@ describe("CardChecklist — 'Still looking up teams' while the background lookup
   /** The always-mounted region; `textContent` is "" while idle. */
   const lookupRegion = () =>
     document.querySelector<HTMLElement>('[role="status"][data-team-lookup-status]');
-  const lookupLine = (count: number) =>
+  const lookupLine = (count: number, nothingToDo = true) =>
     screen
       .getAllByRole("status")
       .find(
         (el) =>
           el.textContent ===
-          `Still looking up teams for ${count} ${count === 1 ? "card" : "cards"}. Nothing for you to do yet.`,
+          `Still looking up teams for ${count} ${count === 1 ? "card" : "cards"}.${nothingToDo ? " Nothing for you to do yet." : ""}`,
       );
   /** The lane gave up on it: stamped done, no team, the operator's now. */
   const gaveUp = (n: number) => ({
@@ -435,7 +545,20 @@ describe("CardChecklist — 'Still looking up teams' while the background lookup
   it("sits beside the pill when other cards need the operator too", () => {
     state.cards = [awaitingLookup(1), awaitingLookup(2), teamless(3)];
     render(ui());
-    expect(pill("1 needs you")).toBeTruthy();
+    expect(pill("1 needs you, 1 to fix")).toBeTruthy();
+    // NEO-645: "Nothing for you to do yet." would contradict the pill beside it.
+    expect(lookupLine(2, false)).toBeTruthy();
+    expect(lookupLine(2)).toBeUndefined();
+    expect(lookupRegion()!.textContent).not.toMatch(/Nothing for you to do/);
+  });
+
+  it("brings 'Nothing for you to do yet.' back once the pill is gone", () => {
+    state.cards = [awaitingLookup(1), awaitingLookup(2), teamless(3)];
+    const { rerender } = render(ui());
+    expect(lookupLine(2, false)).toBeTruthy();
+    state.cards = [awaitingLookup(1), awaitingLookup(2), settled(3)];
+    rerender(ui());
+    expect(queryPill()).toBeNull();
     expect(lookupLine(2)).toBeTruthy();
   });
 
@@ -479,7 +602,7 @@ describe("CardChecklist — 'Still looking up teams' while the background lookup
     state.cards = [gaveUp(1)];
     rerender(ui());
     expect(lookupRegion()!.textContent).toBe("");
-    expect(pill("1 needs you")).toBeTruthy();
+    expect(pill("1 needs you, 1 to fix")).toBeTruthy();
   });
 
   it("moves its number at most every 5 s, so a screen reader is not read every answer", () => {
@@ -521,7 +644,7 @@ describe("CardChecklist — 'Still looking up teams' while the background lookup
   it("stands down while the walker is open: its done line says the same sentence", () => {
     state.cards = [awaitingLookup(1), awaitingLookup(2), teamless(3)];
     render(ui());
-    expect(lookupLine(2)).toBeTruthy();
+    expect(lookupLine(2, false)).toBeTruthy();
     fireEvent.click(pill());
     expect(screen.getByRole("dialog", { name: "Walker stand-in" })).toBeTruthy();
     expect(lookupRegion()!.textContent).toBe("");
@@ -538,5 +661,18 @@ describe("CardChecklist — 'Still looking up teams' while the background lookup
     render(ui());
     expect(lookupLine(2)).toBeTruthy();
     expect([...state.refs].sort()).toEqual([...before].sort());
+  });
+});
+
+describe("needsYouLabel", () => {
+  it("is the count alone with nothing to fix", () => {
+    expect(needsYouLabel(1)).toBe("1 needs you");
+    expect(needsYouLabel(4, 0)).toBe("4 need you");
+  });
+
+  it("adds the to-fix count after a middle dot, always leading with the count", () => {
+    expect(needsYouLabel(1, 1)).toBe("1 needs you, 1 to fix");
+    expect(needsYouLabel(12, 3)).toBe("12 need you, 3 to fix");
+    expect(needsYouLabel(12, 3)).toMatch(/^\d+ need you/);
   });
 });

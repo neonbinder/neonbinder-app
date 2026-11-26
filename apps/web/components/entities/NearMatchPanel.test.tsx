@@ -85,7 +85,7 @@ describe("NearMatchPanel", () => {
     // the row that says "this is the duplicate you were about to make" — never
     // reached a screen reader (WCAG 2.2 SC 1.3.1).
     expect(names).toEqual([
-      "Link to Ken Griffey Jr. — same name",
+      "Link to Ken Griffey Jr. · same name",
       "Link to Ken Griffey",
     ]);
 
@@ -123,8 +123,8 @@ describe("NearMatchPanel", () => {
     );
     const buttons = screen.getAllByRole("button");
     expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
-      "Open Tony Gwynn, born 1960 — same name",
-      "Open Tony Gwynn, born 1990 — same name",
+      "Open Tony Gwynn, born 1960 · same name",
+      "Open Tony Gwynn, born 1990 · same name",
       "Open Tony Gwynn Jr.",
       "Open Tony Gwinn",
       "Open Anthony Gwynn",
@@ -162,7 +162,7 @@ describe("NearMatchPanel", () => {
     );
     // The suffix rides on whatever the caller's wording is; a close row is
     // left exactly as the caller named it.
-    expect(screen.getByLabelText("Open Ken Griffey Jr. — same name")).toBeTruthy();
+    expect(screen.getByLabelText("Open Ken Griffey Jr. · same name")).toBeTruthy();
     expect(screen.getByLabelText("Open Ken Griffey")).toBeTruthy();
     expect(screen.queryByLabelText(/^Link to /)).toBeNull();
   });
@@ -224,7 +224,7 @@ describe("NearMatchPanel", () => {
         <NearMatchPanel kind="team" matches={[viaAlias]} onPick={vi.fn()} />,
       );
       expect(screen.queryByText("same name")).toBeNull();
-      // The accessible name carries no "— same name" suffix either.
+      // The accessible name carries no "· same name" suffix either.
       expect(screen.getByLabelText("Link to LSU Tigers")).toBeTruthy();
     });
 
@@ -234,7 +234,7 @@ describe("NearMatchPanel", () => {
       );
       // Exactly one control, addressed by the team's real name.
       expect(screen.getAllByLabelText("Link to LSU Tigers")).toHaveLength(1);
-      expect(screen.queryByLabelText(/LSU Tigers — same name/)).toBeNull();
+      expect(screen.queryByLabelText(/LSU Tigers · same name/)).toBeNull();
       expect(screen.queryByLabelText(/^Link to LSU$/)).toBeNull();
     });
 
@@ -300,12 +300,12 @@ describe("NearMatchPanel — matchedAlias", () => {
       />,
     );
 
-    // Alias match: the accessible name is `Link to {name}` — no "— same name"
+    // Alias match: the accessible name is `Link to {name}` — no "· same name"
     // suffix, because a name that is NOT the same name is not tagged as one.
     expect(screen.getByLabelText("Link to LSU Tigers")).toBeTruthy();
     // Primary-name exact match: same shape, plus the "same name" tag.
     expect(
-      screen.getByLabelText("Link to Duke Blue Devils — same name"),
+      screen.getByLabelText("Link to Duke Blue Devils · same name"),
     ).toBeTruthy();
   });
 
@@ -367,7 +367,7 @@ describe("NEO-462 — a player row's facts", () => {
     );
     expect(
       screen.getByRole("button", {
-        name: "Link to Walker, born 1990, Dodgers 2014 to 2019, Brewers 2020 to 2021, plus 1 more — same name",
+        name: "Link to Walker, born 1990, Dodgers 2014 to 2019, Brewers 2020 to 2021, plus 1 more · same name",
       }),
     ).toBeTruthy();
   });

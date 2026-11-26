@@ -250,7 +250,7 @@ describe("insertParallelCardsPage — the concurrency guard", () => {
 describe("deleteParallelCardsPage — the per-page block guard", () => {
   test("a page with a scanned card refuses to delete anything on it, including its fine siblings", async () => {
     const t = convexTest(schema, modules);
-    const { parallel } = await seedTree(t);
+    const { insert, parallel } = await seedTree(t);
     const fine = await insertCard(t, parallel, { cardNumber: "1", cardName: "Fine" });
     const scanned = await insertCard(t, parallel, {
       cardNumber: "2",
@@ -259,7 +259,7 @@ describe("deleteParallelCardsPage — the per-page block guard", () => {
     });
 
     const page = await t.run((ctx) =>
-      ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, { parallelId: parallel }),
+      ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, { parallelId: parallel, sourceId: insert }),
     );
     expect(page.deleted).toBe(0);
     expect(page.blockedReason).toBe(BLOCKED_SCANS);
@@ -269,11 +269,11 @@ describe("deleteParallelCardsPage — the per-page block guard", () => {
 
   test("a card scanned in between two calls blocks only the page it appears on, after the first page already deleted cleanly", async () => {
     const t = convexTest(schema, modules);
-    const { parallel } = await seedTree(t);
+    const { insert, parallel } = await seedTree(t);
     const untouched = await insertCard(t, parallel, { cardNumber: "1", cardName: "Fine" });
 
     const firstPage = await t.run((ctx) =>
-      ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, { parallelId: parallel }),
+      ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, { parallelId: parallel, sourceId: insert }),
     );
     expect(firstPage.deleted).toBe(1);
     expect(firstPage.blockedReason).toBeUndefined();
@@ -288,7 +288,7 @@ describe("deleteParallelCardsPage — the per-page block guard", () => {
     });
 
     const secondPage = await t.run((ctx) =>
-      ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, { parallelId: parallel }),
+      ctx.runMutation(internal.parallelChecklistBuild.deleteParallelCardsPage, { parallelId: parallel, sourceId: insert }),
     );
     expect(secondPage.deleted).toBe(0);
     expect(secondPage.blockedReason).toBe(BLOCKED_SCANS);
@@ -375,7 +375,7 @@ describe("clearStaleReviewState / clearParallelReviewPage — abandoned vs live 
     expect(remaining).toHaveLength(1);
   });
 
-  test("clearing review state never touches players, teams, cardChecklist rows or entityReviewSkips", async () => {
+  test("clearing review state never touches players, teams or cardChecklist rows", async () => {
     const t = convexTest(schema, modules);
     const { sport, parallel } = await seedTree(t);
     await seedCandidate(t, parallel, 0);
@@ -395,16 +395,6 @@ describe("clearStaleReviewState / clearParallelReviewPage — abandoned vs live 
         lastUpdated: SENTINEL,
       }),
     );
-    const skipId = await t.run((ctx) =>
-      ctx.db.insert("entityReviewSkips", {
-        selectorOptionId: parallel,
-        kind: "player",
-        nameNormalized: "some skipped name",
-        name: "Some Skipped Name",
-        skippedAt: SENTINEL,
-        skippedByUserId: "user-1",
-      }),
-    );
     const cardId = await insertCard(t, parallel, { cardNumber: "1", cardName: "Untouched" });
 
     const cutoff = Date.now() + 1;
@@ -417,62 +407,7 @@ describe("clearStaleReviewState / clearParallelReviewPage — abandoned vs live 
 
     expect(await t.run((ctx) => ctx.db.get(playerId))).not.toBeNull();
     expect(await t.run((ctx) => ctx.db.get(teamId))).not.toBeNull();
-    expect(await t.run((ctx) => ctx.db.get(skipId))).not.toBeNull();
     expect(await t.run((ctx) => ctx.db.get(cardId))).not.toBeNull();
-  });
-
-  test("an entityReviewQueue row older than the window is cleared once the candidates page is empty", async () => {
-    const t = convexTest(schema, modules);
-    const { sport, parallel } = await seedTree(t);
-    const rowId = await t.run((ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: parallel,
-        batchId: "batch-1",
-        createdByUserId: "user-1",
-        kind: "player",
-        name: "Some Unresolved Name",
-        sportId: sport,
-        status: "pending",
-      }),
-    );
-
-    const cutoff = Date.now() + 1;
-    const page = await t.run((ctx) =>
-      ctx.runMutation(internal.parallelChecklistBuild.clearParallelReviewPage, {
-        parallelId: parallel,
-        cutoff,
-      }),
-    );
-    expect(page.live).toBe(false);
-    expect(page.reviewRows).toBe(1);
-    expect(await t.run((ctx) => ctx.db.get(rowId))).toBeNull();
-  });
-
-  test("a live entityReviewQueue row (touched within the window) blocks and deletes nothing", async () => {
-    const t = convexTest(schema, modules);
-    const { sport, parallel } = await seedTree(t);
-    const rowId = await t.run((ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: parallel,
-        batchId: "batch-1",
-        createdByUserId: "user-1",
-        kind: "player",
-        name: "Someone Actively Being Reviewed",
-        sportId: sport,
-        status: "pending",
-        lastTouchedAt: Date.now(),
-      }),
-    );
-
-    const cutoff = Date.now() - REVIEW_ACTIVE_WINDOW_MS;
-    const page = await t.run((ctx) =>
-      ctx.runMutation(internal.parallelChecklistBuild.clearParallelReviewPage, {
-        parallelId: parallel,
-        cutoff,
-      }),
-    );
-    expect(page.live).toBe(true);
-    expect(await t.run((ctx) => ctx.db.get(rowId))).not.toBeNull();
   });
 });
 

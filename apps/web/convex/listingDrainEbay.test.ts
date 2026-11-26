@@ -63,6 +63,15 @@ vi.mock("./credentials", async (importOriginal) => {
   };
 });
 
+// Warm the mocked module once, before any test runs. The adapters import
+// "./credentials" and convex-test's function loader imports it too, and when
+// those two first imports overlap (a BSC and a SportLots side fetched together)
+// vitest builds the async factory twice, and one importer can fall through to
+// the REAL module, so the adapter reads a real token and the sync ends in
+// "error". Vitest's own mocker says this does not work for concurrent imports.
+// Awaiting it here caches the mocked module before anything can race.
+await import("./credentials");
+
 vi.mock("./lib/convexIdCodec", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lib/convexIdCodec")>();
   return { ...actual, tableNumberOf: (id: string) => (/^\d+[A-Za-z]+$/.test(id) ? 1 : null) };
@@ -2294,6 +2303,71 @@ describe("eBay drain: photo uploads eBay will not take", () => {
     // A refused picture is not retried every run: its row clears with the rest.
     expect(await outbox(s)).toHaveLength(0);
   });
+});
+
+describe("eBay drain: a photo NB cannot fetch", () => {
+  /** One card whose copy has a front and a back photo, listed-ready and queued. */
+  async function frontAndBack(s: S) {
+    const v = await seedVariant(s.t, { cards: [{ number: "1" }] });
+    const card = v.cardIds[0];
+    const r = await addWithPhoto(s, card, { homeId: s.box, condition: "Near Mint", minPriceCents: 500 }, "tfront");
+    await s.t.run(async (ctx) => {
+      await ctx.db.insert("collectionCopyPhotos", {
+        ownerId: OWNER,
+        copyId: r.copyId as Id<"collectionCopies">,
+        side: "back",
+        token: "tback",
+        contentType: "image/jpeg",
+        imageBytes: 1000,
+        thumbBytes: 100,
+        status: "live",
+        since: NOW,
+      });
+    });
+    await listOnEbay(s);
+    await queue(s, [{ cardId: card, variantId: v.variantId }]);
+    return { v, card };
+  }
+
+  test.each([
+    ["is not there (null)", async () => null],
+    [
+      "throws",
+      async () => {
+        throw new Error("R2 down");
+      },
+    ],
+  ] as const)(
+    "a second photo that %s uploads nothing for it, lists nothing and keeps the card queued",
+    async (_name, failing) => {
+      const s = await setup();
+      const { v, card } = await frontAndBack(s);
+      const media = mediaAnswers([]);
+      const asked: string[] = [];
+
+      await drainOwnerImpl(
+        stubCtx(s.t),
+        { ownerId: OWNER, platform: "ebay" },
+        {
+          fetchPhoto: async (key) => {
+            asked.push(key);
+            return key.includes("tback") ? await failing() : new ArrayBuffer(8);
+          },
+          pause: (ms) => pause(ms),
+        },
+      );
+
+      // The front went up; the back was asked for once and never uploaded.
+      expect(asked).toEqual(["copy-photos/tfront/image.jpg", "copy-photos/tback/image.jpg"]);
+      expect(media.uploads).toBe(1);
+      expect(ebay.items.has(`NB2-${card}-NM`)).toBe(false);
+      expect(ebay.writes().filter((c) => c.path !== MEDIA_CREATE)).toEqual([]);
+      expect(await linkOf(s, card, "NM")).toBeNull();
+      // Not lost: the card waits for the next run, and no problem is put on it.
+      expect((await outbox(s)).map((r) => r.cardId)).toEqual([card]);
+      expect((await record(s, v.variantId))?.problems).toEqual([]);
+    },
+  );
 });
 
 describe("eBay drain: the sandbox has no picture upload", () => {

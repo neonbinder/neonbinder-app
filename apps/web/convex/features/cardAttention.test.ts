@@ -14,21 +14,21 @@
  */
 
 import { describe, expect, test } from "vitest";
-import { deriveCardAttention, needsAttention } from "./cardAttention";
+import { deriveLegacyCardAttention, needsAttention } from "./cardAttention";
 
 const MISSING_TEAM = [{ kind: "missingTeam" as const }];
 
-describe("deriveCardAttention — missingTeam", () => {
+describe("deriveLegacyCardAttention — missingTeam", () => {
   test("a custom card with no team and no BSC ref is flagged immediately", () => {
     // Nothing will ever answer this automatically: no BSC ref means no
     // per-card lookup, and SportLots deliberately never scrapes team at all.
     // So there is nothing to wait for.
-    expect(deriveCardAttention({ platformData: {} })).toEqual(MISSING_TEAM);
+    expect(deriveLegacyCardAttention({ platformData: {} })).toEqual(MISSING_TEAM);
   });
 
   test("a SportLots-only card with no team is flagged immediately", () => {
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         teamOnCardIds: [],
         platformData: { sportlots: { ref: "some SL description" } },
       }),
@@ -40,7 +40,7 @@ describe("deriveCardAttention — missingTeam", () => {
     // during the drain would flood a 900-card checklist with items that
     // resolve themselves, which is how a badge gets trained out of usefulness.
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         teamOnCardIds: [],
         platformData: { bsc: { ref: "bsc-1" } },
       }),
@@ -52,7 +52,7 @@ describe("deriveCardAttention — missingTeam", () => {
     // team on file is exactly the case a human has to settle — and it is the
     // state every pre-NEO-102 teamless card is already sitting in.
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         teamOnCardIds: [],
         teamCheckDoneAt: 1_700_000_000_000,
         platformData: { bsc: { ref: "bsc-1" } },
@@ -62,7 +62,7 @@ describe("deriveCardAttention — missingTeam", () => {
 
   test("an operator-confirmed 'no team' card is never flagged", () => {
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         teamOnCardIds: [],
         teamCheckDoneAt: 1_700_000_000_000,
         teamNoneConfirmedAt: 1_700_000_001_000,
@@ -73,7 +73,7 @@ describe("deriveCardAttention — missingTeam", () => {
 
   test("a confirmation suppresses the flag even with no lookup ever having run", () => {
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         teamNoneConfirmedAt: 1_700_000_001_000,
         platformData: {},
       }),
@@ -88,14 +88,14 @@ describe("deriveCardAttention — missingTeam", () => {
       { platformData: { bsc: { ref: "bsc-1" } } },
     ]) {
       expect(
-        deriveCardAttention({ teamOnCardIds: ["team_1"], ...extra }),
+        deriveLegacyCardAttention({ teamOnCardIds: ["team_1"], ...extra }),
       ).toEqual([]);
     }
   });
 
   test("absent and empty teamOnCardIds are the same statement", () => {
-    expect(deriveCardAttention({ teamOnCardIds: [] })).toEqual(
-      deriveCardAttention({}),
+    expect(deriveLegacyCardAttention({ teamOnCardIds: [] })).toEqual(
+      deriveLegacyCardAttention({}),
     );
   });
 
@@ -116,7 +116,7 @@ describe("deriveCardAttention — missingTeam", () => {
     // left. Exactly ONE item either way: two badges for one gap would just
     // double the count the operator walks through.
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         teamOnCardIds: [],
         pendingTeamNames: ["Savannah Bananas"],
         platformData: {},
@@ -132,7 +132,7 @@ describe("deriveCardAttention — missingTeam", () => {
     // names as it resolves them and can leave the array behind empty, so this
     // is a real stored shape — and it must read exactly like an absent one.
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         teamOnCardIds: [],
         pendingTeamNames: [],
         platformData: {},
@@ -147,7 +147,7 @@ describe("deriveCardAttention — missingTeam", () => {
     // same convention here: a card cannot be stuck waiting forever on
     // `teamCheckDoneAt` for a ref that was never a real one.
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         teamOnCardIds: [],
         platformData: { bsc: { ref: "" } },
       }),
@@ -164,32 +164,32 @@ describe("deriveCardAttention — missingTeam", () => {
 
 const HAS_TEAM = { teamOnCardIds: ["team_1"] } as const;
 
-describe("deriveCardAttention — titleOverLimit", () => {
+describe("deriveLegacyCardAttention — titleOverLimit", () => {
   test("a title at exactly the cap is fine; one character more is not", () => {
     expect(
-      deriveCardAttention({ ...HAS_TEAM, listingTitle: "x".repeat(80) }),
+      deriveLegacyCardAttention({ ...HAS_TEAM, listingTitle: "x".repeat(80) }),
     ).toEqual([]);
     expect(
-      deriveCardAttention({ ...HAS_TEAM, listingTitle: "x".repeat(81) }),
+      deriveLegacyCardAttention({ ...HAS_TEAM, listingTitle: "x".repeat(81) }),
     ).toEqual([{ kind: "titleOverLimit", length: 81 }]);
   });
 
   test("carries the measured length so the label need not re-measure", () => {
     expect(
-      deriveCardAttention({ ...HAS_TEAM, listingTitle: "x".repeat(94) }),
+      deriveLegacyCardAttention({ ...HAS_TEAM, listingTitle: "x".repeat(94) }),
     ).toEqual([{ kind: "titleOverLimit", length: 94 }]);
   });
 
   test("an absent or empty title is not over the limit", () => {
-    expect(deriveCardAttention({ ...HAS_TEAM })).toEqual([]);
-    expect(deriveCardAttention({ ...HAS_TEAM, listingTitle: "" })).toEqual([]);
+    expect(deriveLegacyCardAttention({ ...HAS_TEAM })).toEqual([]);
+    expect(deriveLegacyCardAttention({ ...HAS_TEAM, listingTitle: "" })).toEqual([]);
   });
 });
 
-describe("deriveCardAttention — titleTruncated", () => {
+describe("deriveLegacyCardAttention — titleTruncated", () => {
   test("fires on the stored flag alone", () => {
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         ...HAS_TEAM,
         listingTitle: "2024 Topps Chrome An Absurdly Long Player Full Name #1",
         listingTitleTruncated: true,
@@ -202,13 +202,13 @@ describe("deriveCardAttention — titleTruncated", () => {
     // write, so this is the after state of a human rewriting the title. The
     // item clears by construction; nothing has to remember to retract it.
     expect(
-      deriveCardAttention({ ...HAS_TEAM, listingTitle: "A hand-written title" }),
+      deriveLegacyCardAttention({ ...HAS_TEAM, listingTitle: "A hand-written title" }),
     ).toEqual([]);
   });
 
   test("`false` is the same as absent", () => {
     expect(
-      deriveCardAttention({ ...HAS_TEAM, listingTitleTruncated: false }),
+      deriveLegacyCardAttention({ ...HAS_TEAM, listingTitleTruncated: false }),
     ).toEqual([]);
   });
 
@@ -218,7 +218,7 @@ describe("deriveCardAttention — titleTruncated", () => {
     // "is 94 characters" and "was cut short" read as a contradiction, and
     // rewriting the title fixes both, so only the blocking one is reported.
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         ...HAS_TEAM,
         listingTitle: "x".repeat(94),
         listingTitleTruncated: true,
@@ -227,20 +227,20 @@ describe("deriveCardAttention — titleTruncated", () => {
   });
 });
 
-describe("deriveCardAttention — aspectValueOverLimit", () => {
+describe("deriveLegacyCardAttention — aspectValueOverLimit", () => {
   test("a cardVariation at exactly 65 is fine; 66 is flagged", () => {
     expect(
-      deriveCardAttention({ ...HAS_TEAM, cardVariation: "v".repeat(65) }),
+      deriveLegacyCardAttention({ ...HAS_TEAM, cardVariation: "v".repeat(65) }),
     ).toEqual([]);
     expect(
-      deriveCardAttention({ ...HAS_TEAM, cardVariation: "v".repeat(66) }),
+      deriveLegacyCardAttention({ ...HAS_TEAM, cardVariation: "v".repeat(66) }),
     ).toEqual([
       { kind: "aspectValueOverLimit", field: "cardVariation", length: 66 },
     ]);
   });
 
   test("names the field, so a future second aspect field does not need a second kind", () => {
-    const [item] = deriveCardAttention({
+    const [item] = deriveLegacyCardAttention({
       ...HAS_TEAM,
       cardVariation: "v".repeat(100),
     });
@@ -255,15 +255,15 @@ describe("deriveCardAttention — aspectValueOverLimit", () => {
     // `updateCard` deliberately does NOT cap cardVariation — see the note
     // there. This item existing at all is the whole enforcement.
     expect(
-      deriveCardAttention({ ...HAS_TEAM, cardVariation: "v".repeat(200) }),
+      deriveLegacyCardAttention({ ...HAS_TEAM, cardVariation: "v".repeat(200) }),
     ).toHaveLength(1);
   });
 });
 
-describe("deriveCardAttention — kinds compose", () => {
+describe("deriveLegacyCardAttention — kinds compose", () => {
   test("one row can owe a human several different things at once", () => {
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         platformData: {},
         listingTitle: "x".repeat(120),
         cardVariation: "v".repeat(90),
@@ -277,7 +277,7 @@ describe("deriveCardAttention — kinds compose", () => {
 
   test("a fully-settled row owes nothing", () => {
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         ...HAS_TEAM,
         listingTitle: "2024 Topps Chrome Elly De La Cruz #50 RC",
         cardVariation: "Image Variation; Wearing sunglasses",
@@ -297,10 +297,10 @@ describe("deriveCardAttention — kinds compose", () => {
 // not link to, and either way the fix is the same.
 // ===========================================================================
 
-describe("deriveCardAttention — unreviewedName", () => {
+describe("deriveLegacyCardAttention — unreviewedName", () => {
   test("an unreviewed PLAYER name with no playerIds is flagged, and carries the names", () => {
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         ...HAS_TEAM,
         pendingPlayerNames: ["Elly De La Cruz", "Junior Caminero"],
       }),
@@ -319,7 +319,7 @@ describe("deriveCardAttention — unreviewedName", () => {
     // card that already has its player is the badge losing the operator's
     // trust.)
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         ...HAS_TEAM,
         playerIds: ["player_1"],
         pendingPlayerNames: ["Elly De La Cruz"],
@@ -330,7 +330,7 @@ describe("deriveCardAttention — unreviewedName", () => {
   test("an unreviewed TEAM name is flagged, and does NOT also raise missingTeam", () => {
     // Exactly one badge for one gap. `hasTeam` counts a pending team name as
     // having a team, so the card gets the specific item rather than both.
-    const items = deriveCardAttention({
+    const items = deriveLegacyCardAttention({
       teamOnCardIds: [],
       teamCheckDoneAt: 1_700_000_000_000,
       pendingTeamNames: ["Reno Aces"],
@@ -342,7 +342,7 @@ describe("deriveCardAttention — unreviewedName", () => {
 
   test("a card with a linked team is not flagged for a leftover team name", () => {
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         teamOnCardIds: ["team_1"],
         pendingTeamNames: ["Reno Aces"],
       }),
@@ -351,7 +351,7 @@ describe("deriveCardAttention — unreviewedName", () => {
 
   test("both sides unresolved report as ONE item listing every name", () => {
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         pendingPlayerNames: ["Elly De La Cruz"],
         pendingTeamNames: ["Reno Aces"],
       }),
@@ -365,12 +365,12 @@ describe("deriveCardAttention — unreviewedName", () => {
     // (the product invariant in the root CLAUDE.md). An earlier draft badged
     // only ref-bearing cards, which is the retired "custom card" concept
     // re-spelled; pinned so it cannot come back.
-    const withRef = deriveCardAttention({
+    const withRef = deriveLegacyCardAttention({
       ...HAS_TEAM,
       pendingPlayerNames: ["Nobody Reviewed Me"],
       platformData: { bsc: { ref: "bsc-1" } },
     });
-    const withoutRef = deriveCardAttention({
+    const withoutRef = deriveLegacyCardAttention({
       ...HAS_TEAM,
       pendingPlayerNames: ["Nobody Reviewed Me"],
       platformData: {},
@@ -388,7 +388,7 @@ describe("deriveCardAttention — unreviewedName", () => {
     // the walker must not stop the operator twice for one card and then ask
     // about something they just answered.
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         teamOnCardIds: [],
         teamCheckDoneAt: 1_700_000_000_000,
         pendingPlayerNames: ["Never Reviewed"],
@@ -399,7 +399,7 @@ describe("deriveCardAttention — unreviewedName", () => {
 
   test("the same card with NO refs and no team is also a single item", () => {
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         pendingPlayerNames: ["Never Reviewed"],
         platformData: {},
       }),
@@ -411,7 +411,7 @@ describe("deriveCardAttention — unreviewedName", () => {
     // still has no team after the name is settled is still missing a team, and
     // the next pass has to say so.
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         teamOnCardIds: [],
         teamCheckDoneAt: 1_700_000_000_000,
         playerIds: ["player_1"],
@@ -425,7 +425,7 @@ describe("deriveCardAttention — unreviewedName", () => {
     // `[]` is the shape a resolve pass leaves behind after stripping the last
     // name, and it must read exactly like an absent field.
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         ...HAS_TEAM,
         pendingPlayerNames: [],
         pendingTeamNames: [],
@@ -435,7 +435,7 @@ describe("deriveCardAttention — unreviewedName", () => {
 
   test("stacks with the NEO-101 title items rather than replacing them", () => {
     expect(
-      deriveCardAttention({
+      deriveLegacyCardAttention({
         ...HAS_TEAM,
         listingTitleTruncated: true,
         pendingPlayerNames: ["Elly De La Cruz"],
@@ -448,7 +448,7 @@ describe("deriveCardAttention — unreviewedName", () => {
 
   test("the returned names are a COPY — a caller cannot mutate the row through the item", () => {
     const names = ["Elly De La Cruz"];
-    const [item] = deriveCardAttention({ ...HAS_TEAM, pendingPlayerNames: names });
+    const [item] = deriveLegacyCardAttention({ ...HAS_TEAM, pendingPlayerNames: names });
     expect(item.kind).toBe("unreviewedName");
     if (item.kind !== "unreviewedName") throw new Error("unreachable");
     item.names.push("Injected");
@@ -457,8 +457,8 @@ describe("deriveCardAttention — unreviewedName", () => {
 });
 
 describe("needsAttention", () => {
-  test("agrees with deriveCardAttention", () => {
-    const rows: Array<Parameters<typeof deriveCardAttention>[0]> = [
+  test("agrees with deriveLegacyCardAttention", () => {
+    const rows: Array<Parameters<typeof deriveLegacyCardAttention>[0]> = [
       {},
       { teamOnCardIds: ["team_1"] },
       { platformData: { bsc: { ref: "b" } } },
@@ -478,7 +478,7 @@ describe("needsAttention", () => {
       { ...HAS_TEAM, listingTitle: "x".repeat(80), cardVariation: "v".repeat(65) },
     ];
     for (const row of rows) {
-      expect(needsAttention(row)).toBe(deriveCardAttention(row).length > 0);
+      expect(needsAttention(row)).toBe(deriveLegacyCardAttention(row).length > 0);
     }
   });
 });

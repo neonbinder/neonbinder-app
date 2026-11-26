@@ -59,7 +59,7 @@ import {
 } from "./features/carriedTitle";
 import { LISTING_TITLE_KEPT_MAX, setDescriptionForTitles } from "./features/listingInputs";
 import { LISTING_TITLE_MAX } from "./features/listingLimits";
-import { normalizeListingShortName } from "./listingShortName";
+import { normalizeListingShortName, titleLevelValidator } from "./listingShortName";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import type { ListingCardInputs } from "./features/generateListing";
 
@@ -83,11 +83,15 @@ const listingInputsValidator = v.object({
   playerNames: v.array(v.string()),
   // NEO-528 + NEO-535 — the people also pictured, named while the title has room.
   cameoNames: v.optional(v.array(v.string())),
+  // NEO-645 — a non-player card's own name, titled ahead of its cameos.
+  subjectName: v.optional(v.string()),
   year: v.optional(v.string()),
   manufacturer: v.optional(v.string()),
   manufacturerBrandUnknown: v.optional(v.boolean()),
   setName: v.optional(v.string()),
   insertName: v.optional(v.string()),
+  // NEO-609 — every level with its variant type's name.
+  titleLevels: v.optional(v.array(titleLevelValidator)),
   setShortName: v.optional(v.string()),
   parallelName: v.optional(v.string()),
   parallelIsRole: v.optional(v.boolean()),
@@ -98,6 +102,8 @@ const listingInputsValidator = v.object({
   printRun: v.optional(v.number()),
   cardVariation: v.optional(v.string()),
   teamNames: v.array(v.string()),
+  // NEO-606 — the teams' Location / Name splits (`ListingCardInputs.teamSplits`).
+  teamSplits: v.optional(v.array(v.object({ location: v.string(), name: v.string() }))),
   sport: v.optional(v.string()),
 });
 
@@ -169,8 +175,8 @@ async function copyTitleNow(
  * The cut-short flag a rewritten copy is stored with: as the build would
  * write it. A carried edit is the operator's own words; a fit with full names
  * (the box's included) is not cut short; a failing title is flagged when it
- * lost a first name or came from the box (an over-cap title is flagged by its
- * length instead).
+ * is in Tidy Up or came from the box (an over-cap title is flagged by its
+ * length as well).
  */
 function truncatedFlagFor(outcome: ParallelCopyTitle): true | undefined {
   return outcome.failing && !outcome.coreFits ? true : undefined;

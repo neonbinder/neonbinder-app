@@ -24,6 +24,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import ReconciliationModal, {
   type PlatformItem,
 } from "./ReconciliationModal";
+import { convexToJson } from "convex/values";
 import type { Id } from "../../convex/_generated/dataModel";
 import { keyboardDrag, stubLayout } from "../../lib/testing/keyboard-drag";
 
@@ -80,8 +81,8 @@ async function itemsFromConfirm(onConfirm: ReturnType<typeof vi.fn>) {
     value: string;
     platformData: { bsc?: string[]; sportlots?: string[] };
     platformLabels?: {
-      bsc?: Record<string, string>;
-      sportlots?: Record<string, string>;
+      bsc?: { id: string; label: string }[];
+      sportlots?: { id: string; label: string }[];
     };
   }>;
 }
@@ -132,10 +133,31 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     expect(items[0].platformData.sportlots).toEqual(["884412"]);
     // Each id carries the marketplace's own name so the slots stay tellable
     // apart once there is more than one on a side.
-    expect(items[0].platformLabels?.bsc).toEqual({
-      "dcap-series-1": BSC_S1.value,
-      "dcap-series-2": BSC_S2.value,
+    expect(items[0].platformLabels?.bsc).toEqual([
+      { id: "dcap-series-1", label: BSC_S1.value },
+      { id: "dcap-series-2", label: BSC_S2.value },
+    ]);
+  });
+
+  test("an accented marketplace id leaves the modal in a payload the Convex client can serialise (NEO-625)", async () => {
+    const BSC_ACCENT: PlatformItem = { value: "Exposé", platformValue: "exposé" };
+    const { onConfirm } = renderModal({
+      autoMatched: [],
+      unmatchedBsc: [BSC_ACCENT],
+      unmatchedSl: [SL_COMBINED],
+      slCandidates: [],
     });
+
+    fireEvent.click(screen.getByText(BSC_ACCENT.value));
+    fireEvent.click(screen.getByText(SL_COMBINED.value));
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+
+    const payload = onConfirm.mock.calls[0][0];
+    // The Convex client refuses a non-ASCII object key; the id must be a value.
+    expect(() => convexToJson(payload.items)).not.toThrow();
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items[0].platformLabels?.bsc).toEqual([{ id: "exposé", label: "Exposé" }]);
   });
 
   test("the set title is OURS — editable, and it is what gets saved", async () => {
@@ -815,7 +837,9 @@ describe("ReconciliationModal — half an auto-match is already restored (NEO-30
     expect(items[0].value).toBe("Blue");
     expect(items[0].platformData.bsc).toEqual(["bsc-blue"]);
     expect(items[0].platformData.sportlots).toEqual(["sl-blue"]);
-    expect(items[0].platformLabels?.bsc).toEqual({ "bsc-blue": BSC_BLUE.value });
+    expect(items[0].platformLabels?.bsc).toEqual([
+      { id: "bsc-blue", label: BSC_BLUE.value },
+    ]);
   });
 
   test("the attached half is one ✕ from Pending, like any attach", () => {

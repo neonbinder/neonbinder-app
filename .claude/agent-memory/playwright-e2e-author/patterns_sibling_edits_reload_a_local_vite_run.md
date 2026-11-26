@@ -9,6 +9,8 @@ In a shared worktree another agent's edits (even `*.test.tsx` under `app/`, or a
 
 Also: never create a scratch spec inside `playwright/tests/` mid-run for the same reason; make it between runs and delete it.
 
-Related: [[patterns_local_vite_serves_one_worktree]], [[feedback_never_diagnose_timing_first]].
+Related: [[patterns_local_run_backend_and_vite]], never diagnose timing first (GUIDE).
 
 Pick List / Sales eBay specs (NEO-520): the toggle of a title-only eBay line is named `Pulled <title>, not in NB, eBay <order>` even though no "Not in NB" chip renders; a no-title line is `Unmatched sale, eBay <order>`. A `has:` filter built from a locator scoped to the same group never matches (GUIDE has/hasNot gotcha); build it with `pickRow`.
+
+NEO-645 additions: Vite's `server.watch.ignored` covers only `playwright/report` and `playwright/results`, so a Playwright `--output` inside the project (e.g. `.e2e-local/...`) and any rsync into a frozen run snapshot's `playwright/` both reload pages under running tests. Put `--output` in the scratchpad. With no Vite log at hand, the trace proves it: unzip `trace.zip` to the scratchpad and list `console` events `[vite] connecting...` against the `before` actions; one not preceded by a `goto` is an unprompted reload (a black failure screenshot is the page mid-reload).

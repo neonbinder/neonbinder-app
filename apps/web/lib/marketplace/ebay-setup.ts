@@ -36,7 +36,8 @@ export interface EbaySettings {
 
 export interface EbayConnectionState {
   configured: boolean;
-  environment: "sandbox" | "production" | null;
+  /** `fake`: a test deployment wired to the stand-in eBay (NEO-555). Links there use the production hosts. */
+  environment: "sandbox" | "production" | "fake" | null;
   status: EbayStatus;
   ebayUsername: string | null;
   since: number | null;

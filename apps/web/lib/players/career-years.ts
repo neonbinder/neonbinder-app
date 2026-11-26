@@ -4,7 +4,7 @@
  * ## Why this had to be consolidated
  *
  * There were three copies of this number and they did not agree. The review
- * wizard's server validation (`entityReviewQueue.recordDecision`) refused
+ * wizard's server validation refused
  * anything under 1869; `CareerTeamEntry` mirrored that by hand in a comment
  * that named the file it was mirroring; and `players.savePlayerFields` — the
  * OTHER route into the same `players.teamYears` field — used 1850.
@@ -74,4 +74,41 @@ export const MIN_BIRTH_YEAR = 1850;
  */
 export function maxBirthYear(now: Date = new Date()): number {
   return now.getFullYear();
+}
+
+/**
+ * The loose bounds a career stint's years have to sit inside, in the one place
+ * both writers can reach.
+ *
+ * NEO-574 moved it here from the review wizard's module so the commit's career-stint
+ * phase checks the same bounds. Every route into `players.teamYears` must be
+ * exactly as well-formed as the others, because the same pair ends up there
+ * either way. Two copies of the rule is how one of them drifts.
+ *
+ * `forName` reproduces `recordDecision`'s existing message verbatim — those
+ * strings are asserted — and is omitted by the staging path, where the caller
+ * is answering for one entry at a time and the name adds nothing.
+ */
+export function assertCareerStintYears(
+  fromYear: number,
+  toYear: number | undefined,
+  maxYear: number,
+  forName?: string,
+): void {
+  const suffix = forName === undefined ? "" : ` for "${forName}"`;
+  if (
+    !Number.isInteger(fromYear) ||
+    fromYear < MIN_CAREER_YEAR ||
+    fromYear > maxYear
+  ) {
+    throw new Error(
+      `Invalid career-team fromYear ${fromYear}${suffix} (expected an integer in ${MIN_CAREER_YEAR}–${maxYear})`,
+    );
+  }
+  if (toYear === undefined) return;
+  if (!Number.isInteger(toYear) || toYear > maxYear || toYear < fromYear) {
+    throw new Error(
+      `Invalid career-team toYear ${toYear}${suffix} (expected an integer between fromYear ${fromYear} and ${maxYear})`,
+    );
+  }
 }

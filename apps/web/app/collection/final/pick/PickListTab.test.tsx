@@ -2,7 +2,7 @@
  * NEO-500 — the Pick List in the public demo: reachable logged out, rows that
  * mark pulled with Undo, sort on the URL by replace, By the Box as Back steps.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { Theme } from "@radix-ui/themes";
@@ -47,6 +47,16 @@ function renderPick(url = PICK_URL) {
   );
 }
 
+// NEO-616: FinalCollectionPage loads the Pick List with React.lazy, so the first
+// test to open the tab paid the cold dynamic import (a ~2000-line module and its
+// graph) inside findByRole's 1 s window, and a loaded full run lost that race.
+// Load the modules once here (a hook has its own 60 s budget, not a test's 1 s
+// wait or 5 s test) and every test finds them already resolved.
+beforeAll(async () => {
+  await import("./PickListTab");
+  await import("./convexPickStore");
+}, 60_000);
+
 const pageUrl = () => new URLSearchParams(screen.getByRole("status", { name: "Page URL" }).textContent!.split("?")[1]);
 const toggle = (name: RegExp) => screen.getByRole("button", { name });
 
@@ -78,18 +88,18 @@ describe("the Pick List demo", () => {
   it("files a sale NB couldn't match with its set when the listing says what it is, marked Not in NB (NEO-509)", async () => {
     renderPick();
     // The toggle reads the title's parts as pauses: "2024 Score #302 · Malik Nabers" visibly.
-    const nabers = await screen.findByRole("button", { name: "Pulled 2024 Score #302, Malik Nabers, not in NB, BSC 88240" });
+    const nabers = await screen.findByRole("button", { name: "Pulled 2024 Score #302, Malik Nabers, not in Neon Binder, BSC 88240" });
     const row = nabers.closest("tr")!;
-    expect(within(row).getAllByText("Not in NB", { exact: true }).length).toBeGreaterThan(0);
+    expect(within(row).getAllByText("Not in Neon Binder", { exact: true }).length).toBeGreaterThan(0);
     // The chip says why, to a pointer and to a screen reader (the demo has no Sales tab to link to).
-    const chip = within(row).getAllByText("Not in NB", { exact: true })[0].parentElement!;
-    expect(chip.getAttribute("title")).toBe("NB doesn't have this copy. Go by the listing.");
-    expect(chip.textContent).toBe("Not in NB. NB doesn't have this copy. Go by the listing.");
+    const chip = within(row).getAllByText("Not in Neon Binder", { exact: true })[0].parentElement!;
+    expect(chip.getAttribute("title")).toBe("No copy here. Go by the listing.");
+    expect(chip.textContent).toBe("Not in Neon Binder. No copy here. Go by the listing.");
     expect(within(row).queryByText("Unmatched")).toBeNull();
     expect(within(row).getAllByText("#302").length).toBeGreaterThan(0);
     // The listing said Base, so the Base tag. NEO-522: no note under it; the chip already says where to look.
     expect(within(row).getAllByText("Base", { exact: true }).length).toBeGreaterThan(0);
-    expect(within(row).queryByText("NB couldn't match this line. Check the order's photo.")).toBeNull();
+    expect(within(row).queryByText("Neon Binder couldn't match this line. Check the sales platform.")).toBeNull();
     // Under the 2024 Score divider, before that set's insert, not in Can't find it.
     const group = row.closest("tbody")!;
     expect(within(group).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
@@ -171,25 +181,25 @@ describe("the Pick List demo", () => {
     fireEvent.click(await screen.findByRole("link", { name: "By the Box" }));
     expect(document.title).toContain("2026 Baseball");
     // Three: the demo's listing NB filed by its words (Not in a box) and its two strays (Can't find it).
-    expect(screen.getByText("Plus 3 sales NB couldn't place. They wait after the boxes.")).toBeTruthy();
+    expect(screen.getByText("Plus 3 sales Neon Binder couldn't place. They wait after the boxes.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Print this box" })).toBeTruthy();
     for (let i = 0; i < 4; i += 1) fireEvent.click(screen.getByRole("button", { name: "Next box" }));
     fireEvent.click(screen.getByRole("button", { name: "Not in a box (1)" }));
     expect(screen.getByRole("heading", { level: 3, name: "Not in a box · 1 to pull" })).toBeTruthy();
-    expect(screen.getByText("NB has no copy of these, so no box to check. Go by each listing, set by set.")).toBeTruthy();
-    const described = screen.getByRole("table", { name: "Sales not in NB, by set" });
+    expect(screen.getByText("Neon Binder has no copy of these, so no box to check. Go by each listing, set by set.")).toBeTruthy();
+    const described = screen.getByRole("table", { name: "Sales not in Neon Binder, by set" });
     // The list's own set divider, its sport's tab beside it.
     expect(within(described).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
-    expect(within(described).getByRole("button", { name: "Pulled 2024 Score #302, Malik Nabers, not in NB, BSC 88240" })).toBeTruthy();
-    expect(within(described).getAllByText("Not in NB", { exact: true }).length).toBeGreaterThan(0);
+    expect(within(described).getByRole("button", { name: "Pulled 2024 Score #302, Malik Nabers, not in Neon Binder, BSC 88240" })).toBeTruthy();
+    expect(within(described).getAllByText("Not in Neon Binder", { exact: true }).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "All found" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Can't find it (2)" }));
     expect(screen.getByRole("heading", { level: 3, name: "Last stop · Can't find it · 2 to pull" })).toBeTruthy();
-    expect(screen.getByText("These sales don't say enough to file. The order's photo is your best clue.")).toBeTruthy();
-    const lost = screen.getByRole("table", { name: "Sales NB couldn't place" });
+    expect(screen.getByText("These sales don't say enough to file. Check the sales platform.")).toBeTruthy();
+    const lost = screen.getByRole("table", { name: "Sales Neon Binder couldn't place" });
     expect(within(lost).getAllByRole("button", { name: /^Pulled / })).toHaveLength(2);
     // The heading already says it: no Not in NB chip here.
-    expect(within(lost).queryByText("Not in NB", { exact: true })).toBeNull();
+    expect(within(lost).queryByText("Not in Neon Binder", { exact: true })).toBeNull();
     // Back steps to Not in a box.
     fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
     expect(screen.getByRole("heading", { level: 3, name: "Not in a box · 1 to pull" })).toBeTruthy();
@@ -197,9 +207,9 @@ describe("the Pick List demo", () => {
 
   it("Only not in NB keeps just the sales NB has no card for, and Back to default clears it", async () => {
     renderPick();
-    fireEvent.click(await screen.findByRole("button", { name: "Only not in NB" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Only not in Neon Binder" }));
     expect(pageUrl().get("pnotnb")).toBe("1");
-    expect(screen.getByRole("button", { name: "Only not in NB" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Only not in Neon Binder" }).getAttribute("aria-pressed")).toBe("true");
     const names = screen.getAllByRole("button", { name: /^Pulled / }).map((b) => b.getAttribute("aria-label"));
     expect(names).toHaveLength(3);
     expect(names.every((n) => !n!.startsWith("Pulled #"))).toBe(true);
@@ -275,8 +285,8 @@ describe("the Pick List demo", () => {
     // The described sale prints like a card, marked Not in NB, its next step kept and free to wrap.
     const nabers = lines.find((r) => r.textContent?.includes("Malik Nabers"))!;
     expect(nabers.textContent).toContain("#302");
-    expect(nabers.textContent).toContain("Not in NB");
-    expect(nabers.textContent).toContain("Base NB couldn't match this line. Check the order's photo.");
+    expect(nabers.textContent).toContain("Not in Neon Binder");
+    expect(nabers.textContent).toContain("Base Neon Binder couldn't match this line. Check the sales platform.");
     expect(nabers.className).toContain("nb-pick-sheet-lost");
     act(() => {
       window.dispatchEvent(new Event("afterprint"));
@@ -403,7 +413,7 @@ describe("NEO-522: a row read from across the room", () => {
   it("files Can't find it's reason under the listing's words, leaving the Set column to the sport", async () => {
     renderPick();
     const witt = await rowOf(/^Pulled 2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./);
-    const why = "NB has no 2026 Topps Heritage checklist yet.";
+    const why = "Neon Binder has no 2026 Topps Heritage checklist yet.";
     const wide = [...witt.querySelectorAll("td")].find((td) => td.getAttribute("colspan") === "3")!;
     expect(within(wide).getByText(why)).toBeTruthy();
     expect(wide.textContent).toContain("Bobby Witt Jr.");
@@ -438,7 +448,7 @@ describe("NEO-522: a row read from across the room", () => {
     expect(thick(box)).toHaveLength(0);
     cleanup();
     renderPick(`${PICK_URL}&pv=box&pbox=cant-find`);
-    expect(thick(await screen.findByRole("table", { name: "Sales NB couldn't place" }))).toHaveLength(0);
+    expect(thick(await screen.findByRole("table", { name: "Sales Neon Binder couldn't place" }))).toHaveLength(0);
   });
 
   it("names the card's team on its picture, where the row no longer prints it", async () => {
@@ -476,9 +486,9 @@ describe("NEO-522: a row read from across the room", () => {
   it("drops the couldn't-match note from a sale filed with its set, and keeps Can't find it's reason", async () => {
     renderPick();
     await screen.findByRole("table", { name: "Cards to pull" });
-    expect(screen.queryByText("NB couldn't match this line. Check the order's photo.")).toBeNull();
+    expect(screen.queryByText("Neon Binder couldn't match this line. Check the sales platform.")).toBeNull();
     const witt = await rowOf(/^Pulled 2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./);
-    expect(within(witt).getAllByText("NB has no 2026 Topps Heritage checklist yet.").length).toBeGreaterThan(0);
+    expect(within(witt).getAllByText("Neon Binder has no 2026 Topps Heritage checklist yet.").length).toBeGreaterThan(0);
   });
 });
 
@@ -493,7 +503,7 @@ describe("NEO-522: Spacious or Condensed rows", () => {
       .map((td) => td.textContent)
       .join(" ");
 
-  it("opens Spacious; Condensed brings back the old rows: the team line, the kind chip and variant name in the Set column, the couldn't-match note", async () => {
+  it("opens Spacious; Condensed brings back the old rows: the team line, the kind chip and variant name in the Set column, the Not in Neon Binder chip under the variant", async () => {
     renderPick();
     const table = await screen.findByRole("table", { name: "Cards to pull" });
     expect(option("Spacious").getAttribute("aria-checked")).toBe("true");
@@ -521,12 +531,15 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     expect(within(ohtani).getAllByText("8 Bit Ballers", { exact: true }).length).toBeGreaterThan(0);
     const schlittler = await rowOf(/^Pulled #111 Cam Schlittler/);
     expect(within(schlittler).getAllByText("Parallel", { exact: true }).length).toBeGreaterThan(0);
-    // A sale filed with its set keeps the old note under its variant.
+    // A sale filed with its set wears the chip under its variant, and no note repeats it.
     const nabers = await rowOf(/^Pulled 2024 Score #302, Malik Nabers/);
-    expect(within(nabers).getAllByText("NB couldn't match this line. Check the order's photo.").length).toBeGreaterThan(0);
-    // The old 40px checkbox: the bordered button is the box.
+    expect(within(nabers).getAllByText("Not in Neon Binder", { exact: true }).length).toBeGreaterThan(0);
+    expect(within(nabers).queryByText("Neon Binder couldn't match this line. Check the sales platform.")).toBeNull();
+    // The bordered button is the box, 24px on every screen (NEO-598), with a larger invisible hit area.
     const tick = within(trout).getByRole("button", { name: /^Pulled #27 Mike Trout/ });
-    expect(tick.className).toContain("size-11");
+    expect(tick.className).toContain("size-6");
+    expect(tick.className).not.toMatch(/size-(8|11)/);
+    expect(tick.className).toContain("after:absolute");
     expect(tick.className).toContain("border-2");
     // The old thin dividers: no heavier variant rule inside a set.
     expect(table.querySelector("td[class*='border-b-[3px]']")).toBeNull();
@@ -568,15 +581,97 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     expect([...pageUrl().keys()].some((k) => /dens|rows/i.test(k))).toBe(false);
   });
 
-  it("keeps the demo's page at the 6xl column when Condensed, and widens it on Spacious", async () => {
+  it("keeps the demo's page at the wide column in both row sizes (NEO-598)", async () => {
     renderPick();
     const table = await screen.findByRole("table", { name: "Cards to pull" });
     const frame = () => table.closest<HTMLElement>("[class*='max-w-[1600px]'], [class*='max-w-6xl']")!;
     expect(frame().className).toContain("max-w-[1600px]");
     fireEvent.click(option("Condensed"));
-    expect(frame().className).toContain("max-w-6xl");
+    expect(frame().className).toContain("max-w-[1600px]");
     fireEvent.click(option("Spacious"));
     expect(frame().className).toContain("max-w-[1600px]");
+  });
+
+  it("draws a wide Condensed row for one line, sized to its content and never clipped: dense cells, the team after the name, atomic pieces nowrap (NEO-598)", async () => {
+    renderPick();
+    const table = await screen.findByRole("table", { name: "Cards to pull" });
+    fireEvent.click(option("Condensed"));
+    // Columns size to their content (auto layout), and nothing clips: no ellipsis, no hidden overflow.
+    expect(table.className).not.toContain("table-fixed");
+    // (The picture's cell is the card art's own markup, which clips its tiny type by design.)
+    const words = [...table.querySelectorAll("td:not(.nb-pick-pic)")].map((td) => td.innerHTML).join("");
+    expect(words).not.toMatch(/truncate|text-ellipsis|overflow-hidden|line-clamp/);
+    const trout = await rowOf(/^Pulled #27 Mike Trout/);
+    const cells = [...trout.querySelectorAll("td")];
+    // Dense cells: the 24px controls set the row's height, and the cells add only py-0.5.
+    expect(cells[0].className).toContain("md:py-0.5");
+    expect(cells[2].className).toContain("md:py-0.5");
+    // The picture: one text line tall, 5:7, on a phone too, with a larger invisible hit area.
+    const thumb = within(trout).getByRole("button", { name: /^Bigger picture of #27 Mike Trout/ });
+    expect(thumb.className).toContain("w-[1.07rem]");
+    expect(thumb.className).not.toContain("w-8");
+    expect(thumb.className).toContain("after:absolute");
+    // The team sits right after the name, in the same flex-wrap line, and never breaks inside.
+    const team = within(trout).getAllByText("Angels").find((el) => el.className.includes("whitespace-nowrap") && el.className.includes("text-xs"))!;
+    expect(team.previousElementSibling?.textContent).toBe("Mike Trout");
+    expect(team.parentElement?.className).toContain("flex-wrap");
+    // The card number never breaks.
+    expect(cells.some((td) => td.className.includes("whitespace-nowrap") && td.textContent === "#27")).toBe(true);
+    // The wide columns that hold a number, a condition and an order shrink to their content.
+    const heads = [...table.querySelectorAll("thead th")].filter((th) => th.className.includes("md:w-1"));
+    expect(heads.map((th) => th.textContent?.replace(/\s+/g, " ").trim()).sort()).toEqual(expect.arrayContaining(["Condition", "No.", "Order"]));
+  });
+
+  it("puts the Not in Neon Binder chip under the variant chip in the Set cell on a Condensed row, not in the Player cell, with no note (NEO-590)", async () => {
+    renderPick();
+    await screen.findByRole("table", { name: "Cards to pull" });
+    fireEvent.click(option("Condensed"));
+    const nabers = await rowOf(/^Pulled 2024 Score #302, Malik Nabers/);
+    const chips = [...nabers.querySelectorAll(".nb-pick-chip")].filter((el) => el.textContent?.startsWith("Not in Neon Binder"));
+    // One in the wide Set cell and one in the phone's single cell (the other is hidden by CSS).
+    expect(chips).toHaveLength(2);
+    const [wide, phone] = chips;
+    // Wide: the Set cell, which also holds the variant chip; the Player cell does not.
+    const setCell = wide.closest("td")!;
+    expect(within(setCell).getByText("Base", { exact: true })).toBeTruthy();
+    const playerCell = within(nabers).getAllByText("Malik Nabers")[0].closest("td")!;
+    expect(playerCell).not.toBe(setCell);
+    expect(playerCell.textContent).not.toContain("Not in Neon Binder");
+    // The chip follows the variant chip's line (it sits under it), and the variant chip stays first.
+    expect(wide.previousElementSibling?.textContent).toContain("Base");
+    expect(phone.previousElementSibling?.textContent).toContain("Base");
+    // The phone's stack keeps the chip its own width (items-start), as the wide cell does.
+    expect(phone.parentElement?.className).toContain("items-start");
+    expect(wide.parentElement?.className).toContain("items-start");
+    // Not one of the nowrap marker chips: it carries no whitespace override of its own.
+    expect(wide.parentElement?.className).not.toContain("whitespace-nowrap");
+    expect(wide.className).not.toContain("whitespace-normal");
+    // The chip is the whole message: no note, and the explanation stays on the chip.
+    expect(within(nabers).queryByText("Neon Binder couldn't match this line. Check the sales platform.")).toBeNull();
+    expect(wide.getAttribute("title")).toBe("No copy here. Go by the listing.");
+    expect(wide.textContent).toBe("Not in Neon Binder. No copy here. Go by the listing.");
+    // The other marker chips stay in the Player cell under the nowrap wrapper.
+    const others = [...document.querySelectorAll(".nb-pick-chip")].filter(
+      (el) => !el.textContent?.startsWith("Not in Neon Binder") && el.parentElement?.className.includes("flex-wrap") && el.parentElement.className.includes("whitespace-nowrap"),
+    );
+    expect(others.length).toBeGreaterThan(0);
+  });
+
+  it("keeps a slab's grade and cert together, and joins up to two orders with a comma on a wide Condensed row (NEO-598)", async () => {
+    renderPick();
+    await screen.findByRole("table", { name: "Cards to pull" });
+    fireEvent.click(option("Condensed"));
+    const slab = [...document.querySelectorAll("tr")].find((tr) => /Cert /.test(tr.textContent ?? ""))!;
+    const grade = [...slab.querySelectorAll("span")].find((el) => /^Cert /.test(el.textContent ?? ""))!;
+    // Inline beside the grade on a wide screen, stacked under it on a phone, never apart.
+    expect(grade.className).toContain("md:ml-1.5");
+    expect(grade.parentElement?.className).toContain("md:whitespace-nowrap");
+    expect(grade.parentElement?.className).toContain("max-md:flex-col");
+    // Two orders (Skenes: BSC and eBay) read "BSC 88213, eBay 12-3456" on one nowrap line.
+    const skenes = await rowOf(/^Pulled #150 Paul Skenes/);
+    const orderCell = [...skenes.querySelectorAll("td")].find((td) => td.textContent?.includes("eBay 12-3456") && !td.className.split(/\s+/).includes("md:hidden"))!;
+    expect(orderCell.textContent).toMatch(/BSC 88213,\s*eBay 12-3456/);
+    expect(orderCell.firstElementChild?.className).toContain("md:whitespace-nowrap");
   });
 
   it("is one Tab stop: the checked option; the arrow keys, Home and End move and pick", async () => {
@@ -808,7 +903,7 @@ describe("the signed-in Pick List's ways out", () => {
   it("a listed row keeps every variant word, its sport on Can't find it, and a twin divider reads apart", async () => {
     const { DEMO_PICK_DATA } = await import("./demoPickStore");
     const order = { id: "ox", venue: "BSC", number: "99001" };
-    const base = { quantity: 1, condition: "NM", order, card: null, sportCode: null, problem: "NB couldn't match this line. Check the order's photo." };
+    const base = { quantity: 1, condition: "NM", order, card: null, sportCode: null, problem: "Neon Binder couldn't match this line. Check the sales platform." };
     const extra = [
       {
         ...base,
@@ -832,23 +927,23 @@ describe("the signed-in Pick List's ways out", () => {
       },
     ];
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, ...extra] }, true);
-    const variation = within(region).getByRole("button", { name: "Pulled 2024 Score Variation #302, Malik Nabers, not in NB, BSC 99001" }).closest("tr")!;
+    const variation = within(region).getByRole("button", { name: "Pulled 2024 Score Variation #302, Malik Nabers, not in Neon Binder, BSC 99001" }).closest("tr")!;
     // The listing's own word, never a Base chip it did not say.
     expect(within(variation).getAllByText("Variation", { exact: true }).length).toBeGreaterThan(0);
     expect(within(variation).queryByText("Base", { exact: true })).toBeNull();
     // With a Sales tab, the chip points at the order link.
-    const chip = within(variation).getAllByText("Not in NB", { exact: true })[0].parentElement!;
-    expect(chip.getAttribute("title")).toBe("NB doesn't have this copy. Go by the listing; the order link has the photo.");
+    const chip = within(variation).getAllByText("Not in Neon Binder", { exact: true })[0].parentElement!;
+    expect(chip.getAttribute("title")).toBe("No copy here. Go by the listing; the order link has the photo.");
     // NB's 2024 Score heading stays plain; the listing's own reads apart.
     expect(within(region).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
     expect(within(region).getByRole("heading", { level: 3, name: "2024 Score, not matched to a set" })).toBeTruthy();
     // Can't find it shows the listing's sport.
-    const thin = within(region).getByRole("button", { name: "Pulled Hockey only, Somebody, not in NB, BSC 99001" }).closest("tr")!;
+    const thin = within(region).getByRole("button", { name: "Pulled Hockey only, Somebody, not in Neon Binder, BSC 99001" }).closest("tr")!;
     expect(thin.closest("tbody")!.textContent).toContain("Can't find it");
     expect(within(thin).getAllByText("Hockey", { exact: true }).length).toBeGreaterThan(0);
   });
 
-  it("NEO-520: an eBay line known only by its title sits under Can't find it, named by the title and its order, with no Not in NB chip", async () => {
+  it("NEO-520: an eBay line known only by its title files under Other as a sale NB didn't list, named by the title and its order, with no Not in NB chip", async () => {
     const { DEMO_PICK_DATA } = await import("./demoPickStore");
     const title = "Vintage binder lot";
     const extra = {
@@ -860,23 +955,71 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: title,
       listed: { title },
-      problem: "NB didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
-    const toggle = within(region).getByRole("button", { name: `Pulled ${title}, not in NB, eBay 27-11111-22222` });
+    const toggle = within(region).getByRole("button", { name: `Pulled ${title}, not in Neon Binder, eBay 27-11111-22222` });
     const row = toggle.closest("tr")!;
-    expect(row.closest("tbody")!.textContent).toContain("Can't find it");
-    expect(row.closest("tbody")!.textContent).toContain("NB couldn't place these sales. Each listing's photo shows what sold.");
+    expect(row.closest("tbody")!.textContent).toContain("Other");
+    expect(row.closest("tbody")!.textContent).toContain("Sales Neon Binder didn't list");
     // The seller sees the title; the Not in NB chip belongs to rows the listing describes as a card.
     // Both row sizes name it by its title and keep its problem line (Spacious hides the note only
     // on a line the listing describes, where the Not in NB chip says it).
     for (const size of ["Spacious", "Condensed"] as const) {
       fireEvent.click(within(region).getByRole("radio", { name: size }));
-      const line = within(region).getByRole("button", { name: `Pulled ${title}, not in NB, eBay 27-11111-22222` }).closest("tr")!;
+      const line = within(region).getByRole("button", { name: `Pulled ${title}, not in Neon Binder, eBay 27-11111-22222` }).closest("tr")!;
       expect(within(line).getAllByText(title).length).toBeGreaterThan(0);
-      expect(within(line).getAllByText("NB didn't list this one. Check the order's photo.").length).toBeGreaterThan(0);
-      expect(within(line).queryByText("Not in NB", { exact: true })).toBeNull();
+      expect(within(line).getAllByText("Neon Binder didn't list this one. Check the sales platform.").length).toBeGreaterThan(0);
+      expect(within(line).queryByText("Not in Neon Binder", { exact: true })).toBeNull();
     }
+  });
+
+  it("NEO-590: a title row shows no card number, no Not in NB chip, keeps its problem line, and its sport and year file it", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const title = "2019 Zork Chrome #RC-77 Some Player";
+    const problem = "Neon Binder didn't list this one. Check the sales platform.";
+    const extra = {
+      id: "x-590",
+      quantity: 1,
+      condition: "",
+      order: { id: "oe", venue: "eBay", number: "27-11111-22222" },
+      card: null,
+      sportCode: null,
+      listingTitle: title,
+      listed: { title, titleSport: { id: "sp-zz", name: "Zorbball", code: "ZB" } },
+      problem,
+    };
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
+    for (const size of ["Spacious", "Condensed"] as const) {
+      fireEvent.click(within(region).getByRole("radio", { name: size }));
+      const row = within(region).getByRole("button", { name: `Pulled ${title}, not in Neon Binder, eBay 27-11111-22222` }).closest("tr")!;
+      expect(row.closest("tbody")!.textContent).toContain("Sales Neon Binder didn't list");
+      expect(within(row).queryByText("Not in Neon Binder", { exact: true })).toBeNull();
+      // The title is the only place the number's "#" shows; no cell of its own carries it.
+      expect([...row.querySelectorAll("td, th")].some((c) => c.textContent === "#RC-77")).toBe(false);
+      expect(within(row).getAllByText(problem).length).toBeGreaterThan(0);
+      expect(within(row).getAllByText("Zorbball", { exact: false }).length).toBeGreaterThan(0);
+    }
+    expect(within(region).getByRole("option", { name: "2019" })).toBeTruthy();
+  });
+
+  it("NEO-590: a title row with no year adds no Year option", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const noYear = (id: string, title: string) => ({
+      id,
+      quantity: 1,
+      condition: "",
+      order: { id: "oe", venue: "eBay", number: "27-1" },
+      card: null,
+      sportCode: null,
+      listingTitle: title,
+      listed: { title },
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
+    });
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, noYear("y1", "Binder lot A")] }, true);
+    const year = within(region).getByRole("combobox", { name: "Year" });
+    const values = [...year.querySelectorAll("option")].map((o) => o.textContent);
+    expect(values.every((v) => v === "Every year" || /^\d{4}$/.test(v ?? ""))).toBe(true);
   });
 
   it("NEO-520: a 200-character title with no spaces wraps in the wide cell and the phone's cell (WCAG 1.4.10)", async () => {
@@ -891,15 +1034,18 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: title,
       listed: { title },
-      problem: "NB didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
-    for (const size of ["Spacious", "Condensed"] as const) {
-      fireEvent.click(within(region).getByRole("radio", { name: size }));
-      const cells = within(region).getAllByText(title);
-      expect(cells).toHaveLength(2);
-      for (const cell of cells) expect(cell.className).toContain("wrap-anywhere");
-    }
+    fireEvent.click(within(region).getByRole("radio", { name: "Spacious" }));
+    const cells = within(region).getAllByText(title);
+    expect(cells).toHaveLength(2);
+    for (const cell of cells) expect(cell.className).toContain("wrap-anywhere");
+    // NEO-598: Condensed wraps it too (nothing is clipped), on a wide screen and a phone.
+    fireEvent.click(within(region).getByRole("radio", { name: "Condensed" }));
+    const condensed = within(region).getAllByText(title);
+    expect(condensed).toHaveLength(2);
+    for (const cell of condensed) expect(cell.className).toContain("wrap-anywhere");
   });
 
   it("NEO-520: grouped by order, an order holding a line NB didn't list counts items, and an all-card order counts cards", async () => {
@@ -914,7 +1060,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: `Lot ${id}`,
       listed: { title: `Lot ${id}` },
-      problem: "NB didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
     });
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, lost("a"), lost("b")] }, true, "/inventory?tab=pick&pgroup=order");
     const countOf = (name: string) => within(region).getByRole("heading", { level: 3, name }).parentElement!.textContent!.slice(name.length);
@@ -925,6 +1071,124 @@ describe("the signed-in Pick List's ways out", () => {
       expect(countOf("eBay 12-3502")).toMatch(/^\d+ items?$/);
       // Every line a card: cards, as before.
       expect(countOf("eBay 12-3456")).toMatch(/^\d+ cards?$/);
+    }
+  });
+
+  it("NEO-590: a sport's Sales NB didn't list band counts items, never cards, while an NB set's band still counts cards", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const order = { id: "oe", venue: "eBay", number: "27-11111-22222" };
+    const titled = (id: string, sport: { id: string; name: string; code: string | null } | null) => ({
+      id,
+      quantity: 1,
+      condition: "",
+      order,
+      card: null,
+      sportCode: null,
+      listingTitle: `2021 Lot ${id}`,
+      listed: { title: `2021 Lot ${id}`, titleSport: sport },
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
+    });
+    const zz = { id: "sp-zz", name: "Zorbball", code: "ZB" };
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, titled("a", zz), titled("b", zz), titled("c", null)] }, true);
+    for (const size of ["Spacious", "Condensed"] as const) {
+      fireEvent.click(within(region).getByRole("radio", { name: size }));
+      const heads = within(region).getAllByRole("heading", { level: 3 });
+      const band = (sport: string) => {
+        const head = heads.find((h) => h.closest("tr")?.textContent?.includes("Sales Neon Binder didn't list") && h.closest("tr")?.textContent?.includes(sport));
+        return head!.closest("tr")!.textContent!;
+      };
+      expect(band("Zorbball")).toMatch(/list2 items$/);
+      expect(band("Other")).toMatch(/list1 item$/);
+      expect(band("Zorbball")).not.toMatch(/card/i);
+      expect(band("Other")).not.toMatch(/card/i);
+      // A band of NB's own set still counts cards.
+      const nbBand = heads.map((h) => h.closest("tr")!.textContent!).find((t) => /\d+ cards?$/.test(t) && !t.includes("Sales Neon Binder didn't list"));
+      expect(nbBand).toBeTruthy();
+    }
+  });
+
+  it("NEO-590: each sport's Sales NB didn't list heading names its sport, its group header keeps the whole reading, and the row's sport chip is skipped by a screen reader", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const order = { id: "oe", venue: "eBay", number: "27-11111-22222" };
+    const titled = (id: string, sport: { id: string; name: string; code: string | null } | null) => ({
+      id,
+      quantity: 1,
+      condition: "",
+      order,
+      card: null,
+      sportCode: null,
+      listingTitle: `2021 Lot ${id}`,
+      listed: { title: `2021 Lot ${id}`, titleSport: sport },
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
+    });
+    const zz = { id: "sp-zz", name: "Zorbball", code: "ZB" };
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, titled("a", zz), titled("c", null)] }, true);
+    for (const size of ["Spacious", "Condensed"] as const) {
+      fireEvent.click(within(region).getByRole("radio", { name: size }));
+      // Two bands share the words; the headings tell them apart without an aria-label.
+      expect(within(region).getByRole("heading", { level: 3, name: "Zorbball Sales Neon Binder didn't list" })).toBeTruthy();
+      expect(within(region).getByRole("heading", { level: 3, name: "Other Sales Neon Binder didn't list" })).toBeTruthy();
+      expect(within(region).queryByRole("heading", { level: 3, name: "Sales Neon Binder didn't list" })).toBeNull();
+      expect(within(region).getByRole("rowheader", { name: /^Zorbball Sales Neon Binder didn't list 1 item$/ })).toBeTruthy();
+      expect(within(region).getByRole("rowheader", { name: /^Other Sales Neon Binder didn't list 1 item$/ })).toBeTruthy();
+      // The row's own sport chip repeats the band: visible, but not read out again.
+      const row = within(region).getByRole("button", { name: /Lot a/ }).closest("tr")!;
+      // (The wide cell and the phone's one cell each carry it; CSS shows one.)
+      const chips = within(row as HTMLElement).getAllByText("Zorbball", { exact: true });
+      expect(chips.length).toBeGreaterThan(0);
+      for (const chip of chips) expect(chip.getAttribute("aria-hidden")).toBe("true");
+      expect(within(row as HTMLElement).queryByRole("heading")).toBeNull();
+    }
+  });
+
+  it("NEO-590: a sport's Sales NB didn't list heading says it is not matched to a set when an NB set on the list carries the same title", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const order = { id: "oe", venue: "eBay", number: "27-11111-22222" };
+    const hockey = DEMO_PICK_DATA.lines.find((l) => l.card?.set.sport.name === "Hockey")!;
+    // An NB set whose label ("<season> <name>") reads exactly like the title band's.
+    const twinSet = { ...hockey.card!.set, id: "twin-set", season: "Sales", name: "Neon Binder didn't list" };
+    const nbTwin = { ...hockey, id: "nb-twin", card: { ...hockey.card!, id: "nb-twin-card", set: twinSet } };
+    const titled = {
+      id: "t1",
+      quantity: 1,
+      condition: "",
+      order,
+      card: null,
+      sportCode: null,
+      listingTitle: "Lot t1",
+      listed: { title: "Lot t1", titleSport: null },
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
+    };
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, nbTwin, titled] }, true);
+    for (const size of ["Spacious", "Condensed"] as const) {
+      fireEvent.click(within(region).getByRole("radio", { name: size }));
+      expect(within(region).getByRole("heading", { level: 3, name: "Other Sales Neon Binder didn't list, not matched to a set" })).toBeTruthy();
+      // NB's own set of that name stays plain.
+      expect(within(region).getByRole("heading", { level: 3, name: "Sales Neon Binder didn't list" })).toBeTruthy();
+    }
+  });
+
+  it("NEO-590: grouped by order, a title row's sport chip is read out, since no band above it names the sport", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const extra = {
+      id: "x-590-order",
+      quantity: 1,
+      condition: "",
+      order: { id: "oe", venue: "eBay", number: "27-11111-22222" },
+      card: null,
+      sportCode: null,
+      listingTitle: "2021 Lot order-chip",
+      listed: { title: "2021 Lot order-chip", titleSport: { id: "sp-zz", name: "Zorbball", code: "ZB" } },
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
+    };
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true, "/inventory?tab=pick&pgroup=order");
+    for (const size of ["Spacious", "Condensed"] as const) {
+      fireEvent.click(within(region).getByRole("radio", { name: size }));
+      const row = within(region).getByRole("button", { name: /Lot order-chip/ }).closest("tr")!;
+      // (The wide cell and the phone's one cell each carry it; CSS shows one.)
+      const chips = within(row as HTMLElement).getAllByText("Zorbball", { exact: true });
+      expect(chips.length).toBeGreaterThan(0);
+      for (const chip of chips) expect(chip.getAttribute("aria-hidden")).toBeNull();
     }
   });
 
@@ -949,12 +1213,26 @@ describe("the signed-in Pick List's ways out", () => {
 // runs here on the real component. jsdom paints nothing, so contrast (and so
 // light vs dark) is the one thing this cannot check: those two notices reuse
 // the info and plain-ink roles that the E2E specs' axe passes already cover.
-describe("the Pick List's rare states pass axe", () => {
+//
+// Axe and the component graph are heavy on a loaded runner, so they are loaded
+// once in beforeAll (its own 60 s budget, not the first test's 5 s), and these
+// tests get a scoped 30 s. axe-core refuses a second run while one is going,
+// so a run that outlives a timed-out test is awaited before the next starts.
+describe("the Pick List's rare states pass axe", { timeout: 30_000 }, () => {
+  let lastAxeRun: Promise<unknown> = Promise.resolve();
+  beforeAll(async () => {
+    await import("axe-core");
+    await import("./demoPickStore");
+    await import("./PickListTab");
+    await import("../mode");
+  }, 60_000);
+
   async function violationsFor(data: Partial<import("./types").PickListData>, url: string) {
     const axe = (await import("axe-core")).default;
     const { DemoPickListProvider, DEMO_PICK_DATA } = await import("./demoPickStore");
     const { default: PickListTab } = await import("./PickListTab");
     const { CollectionModeProvider } = await import("../mode");
+    await lastAxeRun.catch(() => {});
     const { container } = render(
       <Theme>
         <MemoryRouter initialEntries={[url]}>
@@ -967,10 +1245,12 @@ describe("the Pick List's rare states pass axe", () => {
       </Theme>,
     );
     const region = screen.getByRole("region", { name: "Pick List" });
-    const results = await axe.run(container, {
+    const run = axe.run(container, {
       runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] },
       rules: { "color-contrast": { enabled: false } },
     });
+    lastAxeRun = run;
+    const results = await run;
     return { region, violations: results.violations.map((v) => `${v.id}: ${v.nodes.length}`) };
   }
 
@@ -996,7 +1276,75 @@ describe("the Pick List's rare states pass axe", () => {
     const lines = DEMO_PICK_DATA.lines.map((l) => (l.card ? { ...l, boxUnrecorded: true as const, spot: undefined } : l));
     const { region, violations } = await violationsFor({ lines }, "/inventory?tab=pick&pv=box");
     expect(within(region).getByRole("heading", { level: 3, name: /^Box not recorded · \d+ to pull$/ })).toBeTruthy();
-    expect(within(region).getByText("These sold before NB kept track of boxes. Look wherever you keep the set.")).toBeTruthy();
+    expect(within(region).getByText("These sold before Neon Binder kept track of boxes. Look wherever you keep the set.")).toBeTruthy();
     expect(violations).toEqual([]);
+  });
+});
+
+// NEO-598: Condensed's wide screen is a fixed-layout table, where a heading that spans more
+// columns than there are adds an empty one and takes a share of the width. So every group
+// heading spans exactly the columns the wide screen draws, with Qty and Slot on or off.
+// (A By the Box stop with slots is one flat run with no group heading, so Slot is checked on
+// the columns a row draws against the header; the headings are checked where they exist.)
+describe("NEO-598: Condensed headings span the wide screen's columns", () => {
+  type Line = import("./types").SaleLine;
+  const wide = (el: Element) => !el.className.split(/\s+/).includes("md:hidden");
+  // Qty shows where a row holds two or more: one line per card keeps it off; two copies put it on.
+  const one = (lines: Line[]) => lines.filter((l, i) => !l.card || lines.findIndex((m) => m.card?.id === l.card?.id) === i).map((l) => ({ ...l, quantity: 1 }));
+  const two = (lines: Line[]) => lines.map((l) => ({ ...l, quantity: 2 }));
+
+  async function tablesFor(shape: (lines: Line[]) => Line[], url: string) {
+    const { DemoPickListProvider, DEMO_PICK_DATA } = await import("./demoPickStore");
+    const { default: PickListTab } = await import("./PickListTab");
+    const { CollectionModeProvider } = await import("../mode");
+    window.localStorage.setItem(PICK_DENSITY_KEY, "condensed");
+    resetPickDensityForTests();
+    render(
+      <Theme>
+        <MemoryRouter initialEntries={[url]}>
+          <CollectionModeProvider mode="app" surface="inventory">
+            <DemoPickListProvider data={{ ...DEMO_PICK_DATA, lines: shape([...DEMO_PICK_DATA.lines]) }}>
+              <PickListTab />
+            </DemoPickListProvider>
+          </CollectionModeProvider>
+        </MemoryRouter>
+      </Theme>,
+    );
+    const region = await screen.findByRole("region", { name: "Pick List" });
+    return within(region).getAllByRole("table");
+  }
+
+  const cases = [
+    { qty: false, slot: false, url: "/inventory?tab=pick", shape: one },
+    { qty: true, slot: false, url: "/inventory?tab=pick", shape: two },
+    { qty: false, slot: true, url: "/inventory?tab=pick&pv=box", shape: one },
+    { qty: true, slot: true, url: "/inventory?tab=pick&pv=box", shape: two },
+  ];
+
+  it.each(cases)("Qty $qty, Slot $slot: a row draws 7 + Qty + Slot columns, and a group heading spans as many", async ({ qty, slot, url, shape }) => {
+    const tables = await tablesFor(shape, url);
+    let met = 0;
+    let headings = 0;
+    for (const table of tables) {
+      const headers = [...table.querySelectorAll("thead th")].filter(wide);
+      const hasQty = headers.some((th) => th.textContent?.includes("Qty"));
+      const hasSlot = headers.some((th) => th.textContent?.trim() === "Slot");
+      if (hasQty !== qty || hasSlot !== slot) continue;
+      const expected = 7 + (qty ? 1 : 0) + (slot ? 1 : 0);
+      expect(headers).toHaveLength(expected);
+      // Every data row draws as many wide columns (a listing with no number spans two of them).
+      for (const row of table.querySelectorAll("tr.nb-pick-row")) {
+        const drawn = [...row.querySelectorAll<HTMLTableCellElement>("td")].filter(wide).reduce((n, td) => n + td.colSpan, 0);
+        expect(drawn).toBe(expected);
+      }
+      for (const head of table.querySelectorAll<HTMLTableCellElement>("th[scope='rowgroup']")) {
+        expect(head.colSpan).toBe(expected);
+        headings += 1;
+      }
+      met += 1;
+    }
+    // The case really met a table with these columns, and (off a flat box run) a heading to check.
+    expect(met).toBeGreaterThan(0);
+    if (!slot) expect(headings).toBeGreaterThan(0);
   });
 });

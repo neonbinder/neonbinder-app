@@ -17,7 +17,7 @@
 //
 // R3: the cascade is drilled through `support/collection.ts`. The minted
 // binder name is a single token from `env.ATTEMPT_TOKEN`.
-import { drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { confirmRemoved, drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -163,6 +163,11 @@ test(
     for (const card of [one, two]) {
       await checklist.getByRole("button", { name: new RegExp(`^Have ${escapeRegExp(card.short)}, `) }).click();
       await expect(checklist.getByRole("button", { name: `Have ${card.short}`, exact: true })).toBeVisible();
+      // The un-Have flips the row optimistically, so the row proves nothing
+      // about the write: wait for the server's "Removed ..." notice and
+      // dismiss it, so the next card's wait cannot pass on this one and the
+      // test never ends (closing its page) before the copy is gone. NEO-603.
+      await confirmRemoved(page.getByRole("main"), `Removed ${card.short}, Raw, Excellent`);
     }
   },
 );

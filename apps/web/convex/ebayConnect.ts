@@ -69,6 +69,7 @@ import {
   SELLING_POLICY_MANAGEMENT,
   createPolicy,
   getOptedInPrograms,
+  startPolicyReadBudget,
   getPolicies,
   getShippingServices,
   openEbaySellerSession,
@@ -196,7 +197,7 @@ function isShownSetupStep(step: typeof ebaySetupStepValidator.type): step is Sho
 
 const connectionStateValidator = v.object({
   configured: v.boolean(),
-  environment: v.union(v.literal("sandbox"), v.literal("production"), v.null()),
+  environment: v.union(v.literal("sandbox"), v.literal("production"), v.literal("fake"), v.null()),
   status: v.union(
     v.literal("notConnected"),
     v.literal("connected"),
@@ -364,6 +365,9 @@ export function returnStateFor(
   environment: EbayEnvironment,
 ): string {
   if (returnOrigin === undefined || returnOrigin.length === 0) return nonce;
+  // NEO-555: the fake's consent page is this deployment's own testing route,
+  // so there is no hop through eBay's return page to steer: the bare nonce.
+  if (environment === "fake") return nonce;
   if (returnOrigin.length > MAX_RETURN_ORIGIN_LENGTH) return nonce;
   let parsed: URL;
   try {
@@ -714,16 +718,22 @@ async function readPolicyLists(
   operation: PolicyReadOperation,
 ): Promise<{ ok: true; lists: PolicyLists; optedIn: boolean } | Fail> {
   const startedAt = Date.now();
-  const programs = await getOptedInPrograms(ctx, session);
+  // One clock for the whole read (programs, then the lists): each try waits 3 s,
+  // a slow one is tried again, and the page's 7 s budget holds (`EBAY_POLICY_READ_MS`).
+  const budget = startPolicyReadBudget(startedAt);
+  const programs = await getOptedInPrograms(ctx, session, budget);
+  // A timeout is said as a timeout ("eBay took too long to answer"), never as
+  // an account without policies: only an answer decides that (`optedIn` below).
   if (!programs.ok) return { ok: false, error: sayEbayFailure(programs.failure, POLICIES_REFUSED) };
   if (!programs.value.includes(SELLING_POLICY_MANAGEMENT)) {
     return { ok: true, lists: { fulfillment: [], payment: [], returns: [] }, optedIn: false };
   }
   const [fulfillment, payment, returns, metadata] = await Promise.all([
-    getPolicies(ctx, session, "fulfillment_policy"),
-    getPolicies(ctx, session, "payment_policy"),
-    getPolicies(ctx, session, "return_policy"),
-    getShippingServices(ctx, session),
+    getPolicies(ctx, session, "fulfillment_policy", budget),
+    getPolicies(ctx, session, "payment_policy", budget),
+    getPolicies(ctx, session, "return_policy", budget),
+    // Only names the summaries: bounded by the same clock, but never worth a retry.
+    getShippingServices(ctx, session, { ...budget, retry: false }),
   ]);
   for (const r of [fulfillment, payment, returns]) if (!r.ok) return { ok: false, error: sayEbayFailure(r.failure, POLICIES_REFUSED) };
   if (!fulfillment.ok || !payment.ok || !returns.ok) return { ok: false, error: CONNECT_ERRORS.unavailable };

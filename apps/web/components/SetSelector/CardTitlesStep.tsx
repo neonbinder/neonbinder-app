@@ -6,14 +6,18 @@ import {
   type TitleContext,
 } from "../../convex/features/listingInputs";
 import { MAX_LISTING_SHORT_NAME_LENGTH } from "../../convex/listingShortName";
+import LeftOutPills from "./LeftOutPills";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
+  OVER_FIELD_CLASS,
+  overFieldProps,
   TitleLengthMeter,
 } from "./TitleLengthMeter";
 import {
   buildTitleGroups,
   oneLine,
+  retitleDraftsForSetName,
   setNameInTitlesPrefill,
   type CardTitlesSource,
   type PreviewCardForTitles,
@@ -39,7 +43,7 @@ import type { TeamAnswer } from "./teams-on-cards";
  *      text, shared by every card that prints it, with a `72/65` meter. The
  *      operator trims it in place; untouched, the card saves as before and
  *      the walker's warn-only item stays.
- *   2. **Titles** that lost a first name or still run over the cap
+ *   2. **Titles** that had to leave something out (Tidy Up) or still run over the cap
  *      (NEO-535: the builder never cuts description words to force a fit) —
  *      grouped by what the generated titles left out, each card's title in
  *      its own field, kept by default and editable in place, with the same
@@ -77,9 +81,14 @@ import type { TeamAnswer } from "./teams-on-cards";
  * parallel), prefilled with the set's stored box text or else the builder's
  * own description (`setNameInTitlesPrefill`), capped at 80. It is sent only
  * when edited. Every listed title is regenerated with the edited text as it
- * is typed; the builder decides which cards it rewrites (those over the cap
- * or short a first name), and the list itself never changes under the
- * operator's typing. The draft settles up like the other edits
+ * is typed; the builder decides which cards it rewrites (NEO-637: exactly
+ * the ones whose title shows the purple "Left out to fit" pills), and the
+ * list itself never changes under the operator's typing. The same goes for
+ * a title the operator edited by hand: when its row shows the line, the old
+ * set-name text inside the edit is swapped for the new and the rest of the
+ * edit is kept (the edit is dropped for the generated title when the old
+ * text is no longer in it); when its row shows no line, the edit is left as
+ * typed (`changeShort`). The draft settles up like the other edits
  * (`onShortNameChange`), and keys the same way: Enter settles in place,
  * Escape undoes in place.
  *
@@ -103,13 +112,17 @@ const VARIATION_LEAD = "Variation's too long to list. Trim it to 65.";
 const TITLE_OVER = "Too long to list as-is.";
 
 /** NEO-535 copy, in the NB voice (no sign-off needed, Jason reviews while testing). */
-const TITLES_LEAD = "These titles lost a first name or ran long. Keep 'em, or make 'em yours.";
-const SHORT_LEAD = "Set name hogging the title? Trim it here and every title below gets it.";
+const TITLES_LEAD = "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.";
+const SHORT_LEAD =
+  "Set name hogging the title? Trim it here and every title that left something out gets it, ones you wrote included.";
 const SHORT_LABEL = "Set name in titles";
 const stillOverLine = (n: number) =>
   n === 0 ? "Every title fits now." : n === 1 ? "1 title still runs long." : `${n} titles still run long.`;
 /** NEO-535 — an untouched prefill past the cap: not a fault, just not in use yet. */
 const PREFILL_OVER = "Over 80, so it's sitting out. Trim it and your titles pick it up.";
+/** NEO-637 copy: a hand edit that could not keep its words was rebuilt, and the box says so. */
+const rebuiltLine = (n: number) =>
+  n === 0 ? "" : n === 1 ? "1 title you wrote was rebuilt." : `${n} titles you wrote were rebuilt.`;
 const moreRowsLine = (n: number) => `And ${n} more, saved as generated.`;
 const USE_GENERATED = "Use generated title";
 /**
@@ -310,8 +323,22 @@ export default function CardTitlesStep({
   // typing, unmount). Its status and refusal are read from this, never from
   // each keystroke, so a screen reader hears the count once per pause.
   const [shortSettledText, setShortSettledText] = useState<string>(() => shortName ?? prefill);
+  // NEO-637 — the rows whose line showed when the current box edit began (null
+  // between edits); see `changeShort`.
+  const lineRows = useRef<ReadonlySet<number> | null>(null);
+  // NEO-637 — hand edits the box could not keep (the set name was not in them)
+  // and rebuilt instead. `rebuiltEver` counts them for the status line;
+  // `restorable` holds their text since the box last took focus, so Escape in
+  // the box gives the words back along with the set name.
+  const rebuiltEver = useRef<Set<number>>(new Set());
+  const restorable = useRef<Map<number, string>>(new Map());
+  const [rebuiltCount, setRebuiltCount] = useState(0);
   const flushShort = useCallback(() => {
     setShortSettledText(shortLatest.current);
+    // Still rebuilt: no hand edit has been typed on the row since.
+    setRebuiltCount(
+      [...rebuiltEver.current].filter((i) => !latest.current[i]?.listingTitle?.trim()).length,
+    );
     const next = shortValue(shortLatest.current);
     if (shortSettled.current === next) return;
     shortSettled.current = next;
@@ -368,7 +395,57 @@ export default function CardTitlesStep({
     [settledShortName, liveShortName, titleGroups, groupsFor, drafts],
   );
 
+  /** The rows whose group or own "Left out to fit" line shows right now. */
+  const linesNow = (): ReadonlySet<number> =>
+    new Set(
+      titleGroups.flatMap((g) =>
+        g.cards.filter((c) => g.leftOut.length > 0 || c.leftOut.length > 0).map((c) => c.index),
+      ),
+    );
+
+  /**
+   * NEO-637 — the box's text changes (typing, or Escape taking it back). The
+   * set name in effect is the checked box text, else the prefill. Titles with
+   * no hand edit follow it through the builder's own rule; a hand-edited
+   * title whose row shows the purple "Left out to fit" pills has its old
+   * set-name text swapped for the new (or is rebuilt when the old text is
+   * not in it), and one whose row does not is left as typed
+   * (`retitleDraftsForSetName`, read from the lists as they stand now).
+   */
+  const changeShort = (raw: string, restore = false) => {
+    // Which rows showed the line is judged once, from where this edit of the
+    // box began: a half-typed box phrase is no longer whole in a title that
+    // carries it, which would show a line that was never there and rebuild
+    // the operator's words. A title edit, or leaving the box, ends the edit.
+    if (lineRows.current === null) lineRows.current = linesNow();
+    const text = oneLine(raw);
+    const nextEdited = shortValue(text) !== undefined;
+    const nextLive = onShortNameChange && nextEdited ? checkShortNameAnswer(text).value : undefined;
+    const oldName = liveShortName ?? prefill;
+    const newName = nextLive ?? prefill;
+    setShortDraft(text);
+    const next = retitleDraftsForSetName(drafts, titleGroups, oldName, newName, lineRows.current);
+    // A hand edit that lost its draft was rebuilt: remember its words.
+    next.forEach((answer, i) => {
+      const was = drafts[i]?.listingTitle;
+      if (was?.trim() && !answer?.listingTitle) {
+        rebuiltEver.current.add(i);
+        restorable.current.set(i, was);
+      }
+    });
+    if (restore) {
+      // Escape takes the rebuilds back with the set name.
+      restorable.current.forEach((was, i) => {
+        if (!next[i]?.listingTitle) next[i] = { ...next[i], listingTitle: was };
+        rebuiltEver.current.delete(i);
+      });
+      restorable.current.clear();
+    }
+    setDrafts(next);
+  };
+
   const setField = (indexes: readonly number[], field: keyof TitleAnswer, value: string) => {
+    lineRows.current = null;
     setDrafts((prev) => {
       const next = [...prev];
       while (next.length < count) next.push(undefined);
@@ -377,6 +454,7 @@ export default function CardTitlesStep({
     });
   };
   const clearField = (indexes: readonly number[], field: keyof TitleAnswer) => {
+    lineRows.current = null;
     setDrafts((prev) => {
       const next = [...prev];
       for (const i of indexes) next[i] = without(next[i], field);
@@ -385,6 +463,7 @@ export default function CardTitlesStep({
   };
   /** Undo to the focus-time value; true when there was something to undo. */
   const undo = (indexes: readonly number[], field: keyof TitleAnswer): boolean => {
+    lineRows.current = null;
     const changed = indexes.some(
       (i) => (latest.current[i]?.[field] ?? undefined) !== (undoPoint.current[i]?.[field] ?? undefined),
     );
@@ -423,7 +502,7 @@ export default function CardTitlesStep({
     } else if (event.key === "Escape" && shortLatest.current !== shortUndo.current) {
       event.preventDefault();
       event.stopPropagation();
-      setShortDraft(shortUndo.current);
+      changeShort(shortUndo.current, true);
     }
   };
 
@@ -448,11 +527,12 @@ export default function CardTitlesStep({
   );
   // Progress only; a refusal is the alert below. Read at the last settle.
   const shortError = settledCheck.error;
-  const shortStatus = settledShortName
+  const shortProgress = settledShortName
     ? stillOverLine(stillOver)
     : !settledEdited && shortSettledText.trim().length > MAX_LISTING_SHORT_NAME_LENGTH
       ? PREFILL_OVER
       : "";
+  const shortStatus = [shortProgress, rebuiltLine(rebuiltCount)].filter(Boolean).join(" ");
 
   return (
     <div
@@ -483,11 +563,16 @@ export default function CardTitlesStep({
               bare
               rows={2}
               value={shortDraft}
-              onChange={(e) => setShortDraft(oneLine(e.target.value))}
+              onChange={(e) => changeShort(e.target.value)}
               onFocus={() => {
                 shortUndo.current = shortLatest.current;
+                restorable.current.clear();
+                lineRows.current = linesNow();
               }}
-              onBlur={flushShort}
+              onBlur={() => {
+                lineRows.current = null;
+                flushShort();
+              }}
               onKeyDown={shortKeys}
               // No maxLength: the prefill can arrive over the cap and must
               // stay visible to be trimmed. The meter says where the cap is.
@@ -515,9 +600,10 @@ export default function CardTitlesStep({
             {shortStatus}
           </p>
           {shortError && (
-            // a11y: a refusal is its own alert. The danger notice ink, not the
-            // neon pink as text: it clears 4.5:1 on this dialog in both modes
-            // (10:1+ dark, 8.2:1 light), where pink is 4.56:1 on a raised row.
+            // a11y: a refusal is its own alert. `notice-danger-ink` IS
+            // `neon-pink-text` (NEO-606: one pink for errors). On this
+            // dialog's `raised-deep` surface it reads 5.5:1 in dark and 5.9:1
+            // in light; it would miss on a row or chip tile (`TEXT_NEVER_ON`).
             <p id={shortErrorId} role="alert" className="mt-1 text-xs text-notice-danger-ink">
               {shortError}
             </p>
@@ -631,10 +717,12 @@ function VariationLine({
         // to be trimmed. The meter says where the cap is.
         aria-label={`Variation for ${owner}`}
         aria-describedby={`${leadId} ${meterId} ${hintId}`}
-        aria-invalid={length > ASPECT_VALUE_MAX || undefined}
+        // Advisory (the card saves with the variation as it is): the pink box
+        // follows the length, but the field is not `aria-invalid`.
+        {...overFieldProps(length > ASPECT_VALUE_MAX)}
         aria-disabled={disabled || undefined}
         readOnly={disabled}
-        className={FIELD_CLASS}
+        className={`${FIELD_CLASS} ${OVER_FIELD_CLASS}`}
       />
       <div id={meterId} className="flex justify-end text-xs">
         <TitleLengthMeter length={length} max={ASPECT_VALUE_MAX} />
@@ -730,15 +818,19 @@ function TitleGroups({
                     Absent for a one-card group, and when the cards share
                     nothing: each row states its own. */}
                 {hasLine && (
-                  <p id={lineId} className="mb-1.5 break-words text-xs text-notice-warn-ink">
-                    Left out to fit: {group.leftOut.join(", ")}
-                    {group.cards.length > 1 && (
-                      <span className="text-ink-3">
-                        {" "}
-                        (<span className="tabular-nums">{group.cards.length}</span> cards)
-                      </span>
-                    )}
-                  </p>
+                  <LeftOutPills
+                    id={lineId}
+                    listNamed={false}
+                    items={group.leftOut}
+                    className="mb-1.5"
+                    trailing={
+                      group.cards.length > 1 ? (
+                        <span className="text-ink-3">
+                          (<span className="tabular-nums">{group.cards.length}</span> cards)
+                        </span>
+                      ) : undefined
+                    }
+                  />
                 )}
                 <ul className="space-y-2">
                   {group.cards.slice(0, shown[groupIndex]).map((card) => (
@@ -820,18 +912,15 @@ function TitleRow({
             .filter(Boolean)
             .join(" ")}
           aria-invalid={over || undefined}
+          {...overFieldProps(over)}
           aria-disabled={disabled || undefined}
           readOnly={disabled}
-          className={FIELD_CLASS}
+          className={`${FIELD_CLASS} ${OVER_FIELD_CLASS}`}
         />
-        {card.leftOut.length > 0 && (
-          // What this card's field lacks beyond its group's line — most often
-          // its own names and number, the loss an operator most wants to put
-          // back, so it sits right under the field.
-          <p id={ownLineId} className="mt-0.5 break-words text-xs text-notice-warn-ink">
-            Left out to fit: {card.leftOut.join(", ")}
-          </p>
-        )}
+        {/* What this card's field lacks beyond its group's line — most often
+            its own names and number, the loss an operator most wants to put
+            back, so it sits right under the field. */}
+        <LeftOutPills id={ownLineId} listNamed={false} items={card.leftOut} className="mt-0.5" />
         <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 text-xs">
           {edited ? (
             <NeonButton
@@ -859,9 +948,8 @@ function TitleRow({
             <span />
           )}
           <span id={meterId}>
-            {/* Neutral until past the cap (no `soft` bands): every title on
-                this step sits near 80, so "may clip in search" would be on
-                every row and say nothing. TitleFixer keeps its bands. */}
+            {/* Neutral until past the cap: every title on this step sits near
+                80, and no counter warns below the cap (NEO-645). */}
             <TitleLengthMeter length={value.trim().length} max={LISTING_TITLE_MAX} />
           </span>
         </div>
@@ -870,7 +958,7 @@ function TitleRow({
             an alert: the step never blocks, so nothing here stops work. Its
             text changes only when the title crosses the cap, so it speaks
             once per crossing rather than per keystroke. */}
-        <p id={alertId} role="status" className="mt-0.5 text-xs text-notice-danger-ink empty:hidden">
+        <p id={alertId} role="status" className="mt-0.5 text-xs text-neon-pink-text empty:hidden">
           {over ? TITLE_OVER : ""}
         </p>
       </div>

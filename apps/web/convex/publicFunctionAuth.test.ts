@@ -32,7 +32,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import type { Id } from "./_generated/dataModel";
@@ -190,15 +190,26 @@ describe("NEO-154: taxonomy reads and writes require a signed-in caller", () => 
     expect("list" in teamsModule).toBe(false);
   });
 
-  test("players.findByNameAndSport and teams.findByNameAndSport reject anonymously", async () => {
+  test("players.findByNameAndSport rejects anonymously", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await expect(
       t.query(api.players.findByNameAndSport, { name: "Mike Trout", sportId }),
     ).rejects.toThrow(/Not authenticated/);
+  });
+
+  test("teams.findByNameAndSport is internal-only (NEO-602): no public caller is left", async () => {
+    // The review gate and the commit prelude moved to `resolveCardTeamName`, so
+    // the signed-in query had no client caller. It is an `internalQuery` now
+    // and no longer part of the public surface.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
     await expect(
-      t.query(api.teams.findByNameAndSport, { name: "Yankees", sportId }),
-    ).rejects.toThrow(/Not authenticated/);
+      t.query(internal.teams.findByNameAndSport, { name: "Yankees", sportId }),
+    ).resolves.toBeNull();
+    const src = readFileSync(join(__dirname, "teams.ts"), "utf8");
+    expect(src).toMatch(/export const findByNameAndSport = internalQuery\(/);
+    expect(src).not.toMatch(/export const findByNameAndSport = query\(/);
   });
 });
 
@@ -270,30 +281,28 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // instead of the capped list. It stands in for `teams.listForManagement`,
     // so it carries that list's gate.
     ["teams.searchForManagement", (t) => t.query(api.teams.searchForManagement, { query: "Yankees" })],
+    // NEO-602. The editor that writes a team's name, years and aliases (and so
+    // the alias-holder refusals). `requireAdmin` runs before the team lookup,
+    // but the id validator runs before the handler, so a real row is seeded
+    // for a well-formed id; the refusal is the gate, not a missing row.
+    [
+      "teams.saveTeamFields",
+      async (t, sportId) => {
+        const id = await t.run(async (ctx) =>
+          ctx.db.insert("teams", {
+            name: "Yankees",
+            nameNormalized: "yankees",
+            sportId,
+            lastUpdated: 1,
+          }),
+        );
+        return t.mutation(api.teams.saveTeamFields, { id, name: "Bombers" });
+      },
+    ],
     // NEO-495. The list it stands in for, now that it also answers the league
     // dropdown from the league's own rows. Admin-only since NEO-156; pinned
     // here when its arguments grew.
     ["teams.listForManagement", (t) => t.query(api.teams.listForManagement, { leagueId: "none" })],
-    // NEO-301: both bulk fast paths are public ACTIONS now (a query picks the
-    // page, an internal mutation writes it), and the admin gate runs in the
-    // action before either half is reached. The create twin was never pinned
-    // here; it is now.
-    [
-      "entityReviewQueue.recordAllRemainingAsSkip",
-      (t, sportId) =>
-        t.action(api.entityReviewQueue.recordAllRemainingAsSkip, {
-          selectorOptionId: sportId,
-          batchId: "no-such-batch",
-        }),
-    ],
-    [
-      "entityReviewQueue.recordAllRemainingAsCreate",
-      (t, sportId) =>
-        t.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
-          selectorOptionId: sportId,
-          batchId: "no-such-batch",
-        }),
-    ],
     // NEO-332. Pinned here because the action's return shape grew
     // (`ambiguousPlayers`); the gate runs before the cards are read, so an
     // empty list is inert and the refusal is the gate.
@@ -305,148 +314,6 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
           sportId,
           cards: [],
         }),
-    ],
-    [
-      "entityReviewSkips.listForSet",
-      (t, sportId) => t.query(api.entityReviewSkips.listForSet, { selectorOptionId: sportId }),
-    ],
-    // NEO-221. Un-deciding a reviewed row puts a name back into the wizard as
-    // an open question, and the wizard drives the GLOBAL players/teams tables
-    // — same surface, same gate as `recordDecision` beside it. Needs a real
-    // row id, so one is seeded first; the gate runs before that id is read, so
-    // the refusal is the gate and not a missing-row error.
-    [
-      "entityReviewQueue.clearDecision",
-      async (t, sportId) => {
-        const reviewRowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "player" as const,
-            name: "Mike Trout",
-            sportId,
-            status: "ready" as const,
-            decision: { action: "create" as const },
-          }),
-        );
-        return t.mutation(api.entityReviewQueue.clearDecision, { reviewRowId });
-      },
-    ],
-    // NEO-236. Staging a player's career teams INSERTS review rows and
-    // schedules pooled Wikidata lookups for them, so an ungated caller could
-    // both put steps in front of an operator who never asked for them and
-    // enqueue unbounded work on the deployment-wide pool. Same table, same
-    // batch, same gate as `recordDecision`. Needs a real row id; the gate runs
-    // before that id is read, so the refusal is the gate and not a
-    // missing-row error.
-    [
-      "entityReviewQueue.stageCareerTeamRows",
-      async (t, sportId) => {
-        const reviewRowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "player" as const,
-            name: "Travis Bazzana",
-            sportId,
-            status: "ready" as const,
-            enrichment: {
-              careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }],
-            },
-          }),
-        );
-        return t.mutation(api.entityReviewQueue.stageCareerTeamRows, {
-          reviewRowId,
-        });
-      },
-    ],
-    // NEO-248. The undo of the staging patch above: it strips the operator's
-    // typed years off a staged step. Ungated, a caller could silently empty
-    // another operator's career-team entries — the same table and the same
-    // blast radius as the mutation that wrote them, so the same gate. Both ids
-    // are read after the gate runs, so the refusal is the gate rather than a
-    // missing-row error.
-    [
-      "entityReviewQueue.clearCareerTeamStint",
-      async (t, sportId) => {
-        const reviewRowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "player" as const,
-            name: "Travis Bazzana",
-            sportId,
-            status: "ready" as const,
-          }),
-        );
-        const teamRowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "team" as const,
-            name: "Sydney Blue Sox",
-            sportId,
-            status: "ready" as const,
-            source: {
-              kind: "careerTeamOf" as const,
-              playerRowId: reviewRowId,
-              manualStint: { fromYear: 2001, toYear: 2005 },
-            },
-          }),
-        );
-        return t.mutation(api.entityReviewQueue.clearCareerTeamStint, {
-          reviewRowId,
-          teamRowId,
-        });
-      },
-    ],
-    // NEO-313. The operator's cross-sport override: re-points a review row at
-    // another sport, deletes the steps it staged and enqueues a pooled
-    // Wikidata lookup. Same table, same batch, same gate as `recordDecision`.
-    // The ids are read after the gate, so the refusal is the gate.
-    [
-      "entityReviewQueue.switchRowSport",
-      async (t, sportId) => {
-        const rowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "player" as const,
-            name: "Justin Fields",
-            sportId,
-            status: "ready" as const,
-          }),
-        );
-        return t.mutation(api.entityReviewQueue.switchRowSport, { rowId, sportId });
-      },
-    ],
-    // NEO-332. Create new on a same-name pick step: flips the row to
-    // `pending` and enqueues a pooled Wikidata lookup (and can re-stage
-    // career-team steps). Ungated, a caller could spend the deployment-wide
-    // 5-wide lane at will. Same table, same batch, same gate as
-    // `recordDecision`. The id is read after the gate, so the refusal is the
-    // gate and not a missing-row error.
-    [
-      "entityReviewQueue.requestPlayerLookup",
-      async (t, sportId) => {
-        const reviewRowId = await t.run(async (ctx) =>
-          ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: sportId,
-            batchId: "batch-1",
-            createdByUserId: "somebody",
-            kind: "player" as const,
-            name: "Bob Allen",
-            sportId,
-            status: "ready" as const,
-          }),
-        );
-        return t.mutation(api.entityReviewQueue.requestPlayerLookup, { reviewRowId });
-      },
     ],
     // NEO-313. Writes a player's additional sports — globally-shared
     // reference data, and it re-derives the alias index. Admin, like
@@ -524,35 +391,6 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // The refusal is only meaningful if nothing was written on the way to it.
     const doc = await t.run(async (ctx) => ctx.db.get(playerId));
     expect(doc?.isHallOfFame).toBeUndefined();
-  });
-
-  test("entityReviewSkips.clearSkip rejects anonymous and signed-in non-admin callers, and deletes nothing", async () => {
-    // The one DESTRUCTIVE function of the ten. A skip row is what keeps a name
-    // out of the review wizard for a set, so an ungated delete would let any
-    // caller silently re-open decisions an operator had already made.
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    const skipId = await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewSkips", {
-        selectorOptionId: sportId,
-        kind: "player" as const,
-        name: "CHECKLIST",
-        nameNormalized: "checklist",
-        skippedAt: 1_700_000_000_000,
-        skippedByUserId: "seed",
-      }),
-    );
-
-    await expect(
-      t.mutation(api.entityReviewSkips.clearSkip, { skipId }),
-    ).rejects.toThrow(/Not authenticated/);
-    await expect(
-      t.withIdentity(SIGNED_IN).mutation(api.entityReviewSkips.clearSkip, { skipId }),
-    ).rejects.toThrow(/Admin access required/);
-
-    expect(
-      await t.run(async (ctx) => ctx.db.query("entityReviewSkips").collect()),
-    ).toHaveLength(1);
   });
 
   test("teams.search is signed-in, not admin, and answers empty rather than throwing", async () => {
@@ -925,8 +763,6 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetCardPlayerLinksBatch",
     "resetCardChecklistBatch",
     "resetCardCrossListingsBatch",
-    // NEO-294 — the entity-review staging tables, added to the reset loop.
-    "resetEntityReviewQueueBatch",
     "resetChecklistCandidatesBatch",
     // NEO-313 — a player's additional sports, drained before the players.
     "resetPlayerSportsBatch",
@@ -1268,6 +1104,48 @@ describe("NEO-291: the card-prefix write is admin-gated, and the whole-metadata 
     });
   });
 
+  /**
+   * NEO-619 — "Parallels name themselves" has its own narrow mutation, gated
+   * like the short name above. The seeded row is a valid target (an insert
+   * under an Insert type), so the refusal is the admin gate, not the role check.
+   */
+  test("selectorOptions.setSelectorOptionParallelsNameThemselves refuses a signed-in non-admin and a signed-out caller", async () => {
+    const t = convexTest(schema, modules);
+    const insertId = await t.run(async (ctx) => {
+      const typeId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Zorbo Special Purple",
+        parentId: typeId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+    });
+    const call = (tt: ReturnType<typeof convexTest>) =>
+      tt.mutation(api.selectorOptions.setSelectorOptionParallelsNameThemselves, {
+        id: insertId,
+        on: true,
+      });
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    await expect(call(t)).rejects.toThrow();
+    // Refused before any write: the row is exactly as seeded.
+    const row = await t.run(async (ctx) => ctx.db.get(insertId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.metadata).toBeUndefined();
+    // And it is the admin gate that refused them: an admin's call lands.
+    await call(t.withIdentity(ADMIN));
+    expect((await t.run(async (ctx) => ctx.db.get(insertId)))!.metadata).toEqual({
+      parallelsNameThemselves: true,
+    });
+  });
+
   test("the whole-metadata mutation stays deleted", () => {
     // `api` is a proxy that resolves any name, so the source is the proof.
     const src = readFileSync(join(__dirname, "selectorOptions.ts"), "utf8");
@@ -1581,28 +1459,23 @@ describe("NEO-305: the set ⇄ parallel doors are admin-gated", () => {
   });
 });
 
-describe("NEO-301: the bulk review decide is a public action over two internal halves", () => {
+describe("NEO-645 / NEO-656: the old review wizard has no surface at all", () => {
   /**
-   * `recordAllRemainingAsCreate` / `recordAllRemainingAsSkip` became actions so
-   * the page they walk is read in a query, outside any transaction's OCC read
-   * set. The two halves take a `callerId` ARGUMENT and trust it — correct for
-   * an internal function whose only caller is the admin-gated action, and a
-   * forged-identity write primitive if either were ever declared public. So
-   * the keyword is pinned, the same reading-the-source way as the NEO-154 and
-   * NEO-289 blocks (convex-test does not enforce the public/internal boundary).
+   * One-card Tidy Up replaced the wizard, and NEO-656 removed what was left of
+   * it: the review queue, the skips, the name rows and the printed rows are
+   * gone with their modules. Pinned the way the NEO-154 blocks are (convex-test
+   * does not enforce the public/internal boundary): a module added back under
+   * one of these names would be a door onto a table nothing reads any more.
    */
   test.each([
-    ["entityReviewQueue.ts", "recordAllRemainingAsCreate", "action"],
-    ["entityReviewQueue.ts", "recordAllRemainingAsSkip", "action"],
-    ["entityReviewQueue.ts", "listBulkCandidates", "internalQuery"],
-    ["entityReviewQueue.ts", "decideRowsByIds", "internalMutation"],
-  ])("%s :: %s is declared %s", (file, fn, keyword) => {
-    const src = readFileSync(join(__dirname, file), "utf8");
-    expect(src).toContain(`export const ${fn} = ${keyword}({`);
-    for (const other of ["query", "mutation", "action", "internalQuery", "internalMutation", "internalAction"]) {
-      if (other === keyword) continue;
-      expect(src).not.toContain(`export const ${fn} = ${other}(`);
-    }
+    "entityReviewQueue.ts",
+    "entityReviewSkips.ts",
+    "tidySkips.ts",
+    "tidyMigrations.ts",
+    "tidyTypedNames.ts",
+    "cardPrintedNames.ts",
+  ])("%s is gone", (file) => {
+    expect(existsSync(join(__dirname, file))).toBe(false);
   });
 });
 
@@ -3348,6 +3221,18 @@ describe("PR 451 (NEO-487, NEO-478): the BSC wait, cooldown and team lane", () =
     ["bscTeamPool.ts", "enqueueBscTeamChecks", "internalMutation"],
     ["bscTeamPool.ts", "cancelAllBscTeamChecks", "internalMutation"],
     ["checklistCandidates.ts", "resolveChecklistTeamTexts", "internalQuery"],
+    ["checklistCandidates.ts", "resolveChecklistPlaceTeams", "internalQuery"],
+    ["checklistCandidates.ts", "resolveChecklistPlaceTeamIds", "internalQuery"],
+    // NEO-591 — the career check's helpers: the commit action calls them, a
+    // public twin would mint players or read the tables with no admin gate.
+    ["players.ts", "createCareerNewPlayers", "internalMutation"],
+    ["selectorOptions.ts", "validateCareerNewPlayers", "internalQuery"],
+    ["selectorOptions.ts", "commitCardChecklistPrelude", "internalMutation"],
+    // NEO-645 — lands the card counts the commit's parallel chunks deferred; a
+    // public twin would let anyone inflate a row's counts.
+    ["selectorOptions.ts", "commitCardChecklistLandCounts", "internalMutation"],
+    ["selectorOptions.ts", "resolveGateTeamNames", "internalQuery"],
+    ["checklistCandidates.ts", "resolveTeamIdentities", "internalQuery"],
     ["adapters/buysportscards.ts", "runBscTeamCheckItem", "internalAction"],
     ["adapters/buysportscards.ts", "processBscTeamEnrichmentQueue", "internalAction"],
     ["adapters/buysportscards.ts", "probeBscChecklistBatch", "internalAction"],
@@ -3582,6 +3467,7 @@ describe("NEO-500: the Pick List is the signed-in seller's own", () => {
     ["pickList.open", (t) => t.query(api.pickList.open, {})],
     ["pickList.cards", (t) => t.query(api.pickList.cards, { cardIds: [] })],
     ["pickList.sports", (t) => t.query(api.pickList.sports, { sportIds: [] })],
+    ["pickList.titleSports", (t) => t.query(api.pickList.titleSports, { titles: [] })],
     ["pickList.soldPhotos", (t) => t.query(api.pickList.soldPhotos, { copyIds: [] })],
     ["pickList.setPulled", (t) => t.mutation(api.pickList.setPulled, { ids: [], pulled: true })],
   ];
@@ -3838,6 +3724,53 @@ describe("NEO-556: the No Team run is admin-gated", () => {
 });
 
 /**
+ * NEO-426 — the "No teams in this sport" switch and its list are operator
+ * tooling (`requireAdmin`). A refused call must not have flagged the sport.
+ * `playersWithTeamlessHomeSport` is internal (no client path).
+ */
+describe("NEO-426: the teamless-sport switch is admin-gated", () => {
+  const flagged = (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
+    t.run(async (ctx) => (await ctx.db.get(sportId))?.teamlessSport ?? null);
+  const ADMIN_GATED: Array<
+    [string, (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) => Promise<unknown>]
+  > = [
+    [
+      "sportTeamless.setTeamlessSport",
+      (t, sportId) => t.mutation(api.sportTeamless.setTeamlessSport, { sportId, teamless: true }),
+    ],
+    ["sportTeamless.listTeamlessSportIds", (t) => t.query(api.sportTeamless.listTeamlessSportIds, {})],
+  ];
+
+  test.each(ADMIN_GATED)("%s rejects an anonymous caller and flags nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t, sportId)).rejects.toThrow(/not authenticated/i);
+    expect(await flagged(t, sportId)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s rejects a signed-in non-admin and flags nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity({ subject: "member", role: "member" }) as never, sportId)).rejects.toThrow(
+      /admin access required/i,
+    );
+    expect(await flagged(t, sportId)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity(ADMIN) as never, sportId)).resolves.toBeDefined();
+  });
+
+  test("playersWithTeamlessHomeSport is declared internalQuery, not query", () => {
+    const src = readFileSync(join(__dirname, "sportTeamless.ts"), "utf8");
+    expect(src).toContain("export const playersWithTeamlessHomeSport = internalQuery({");
+    expect(src).not.toContain("export const playersWithTeamlessHomeSport = query(");
+  });
+});
+
+/**
  * NEO-520 — `testing.seedMyTestEbayOrder`, the unmatched-eBay-sale spec's seed
  * hop, by the same two locks as `seedMyTestPickOrder`: an anonymous caller is
  * refused, and a deployment without `TESTING_RESET_SECRET` (every production
@@ -4039,6 +3972,62 @@ describe("NEO-535: the parallel Card titles functions are admin-gated", () => {
 });
 
 /**
+ * NEO-673 — `parallelTypeSource.setParallelTypeSource` writes the pick that a
+ * set with no Base builds its parallels from. Operator tooling: `requireAdmin`
+ * first, before either row is read. Behaviour is pinned in
+ * `parallelChecklistBuild.chosenSource.test.ts`.
+ */
+describe("NEO-673: setParallelTypeSource is admin-gated", () => {
+  test("requireAdmin runs before any row is read", () => {
+    const src = readFileSync(join(__dirname, "parallelTypeSource.ts"), "utf8");
+    expect(src).toContain("export const setParallelTypeSource = mutation({");
+    const body = src.slice(src.indexOf("export const setParallelTypeSource ="));
+    const guard = body.indexOf("await requireAdmin(ctx)");
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(body.indexOf("ctx.db.get("));
+  });
+
+  test("an anonymous call and a signed-in non-admin are refused, writing nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { typeId, insertId } = await t.run(async (ctx) => {
+      const setName = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Pulse Premier",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const typeId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Parallel",
+        parentId: setName,
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const insertId = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Silver",
+        parentId: typeId,
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      return { typeId, insertId };
+    });
+    const args = { parallelTypeId: typeId, sourceId: insertId };
+    await expect(t.mutation(api.parallelTypeSource.setParallelTypeSource, args)).rejects.toThrow(
+      /not authenticated/i,
+    );
+    await expect(
+      t.withIdentity(SIGNED_IN).mutation(api.parallelTypeSource.setParallelTypeSource, args),
+    ).rejects.toThrow(/admin access required/i);
+    const row = await t.run((ctx) => ctx.db.get(typeId));
+    expect(row?.parallelSourceId).toBeUndefined();
+  });
+});
+
+/**
  * NEO-552 — the fake BuySportsCards test controls (`testing.setMyBscFaults`,
  * `testing.addMyBscOrder`, and their teardowns `testing.clearMyBscFaults`,
  * `testing.clearBscCallGate`) and `testing.resetMyTestState`, now an action so
@@ -4056,8 +4045,15 @@ describe("NEO-552: the fake BSC test controls are locked like the other testing 
   const cases: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
     ["testing.setMyBscFaults", (t) => t.action(api.testing.setMyBscFaults, { rules })],
     ["testing.addMyBscOrder", (t) => t.action(api.testing.addMyBscOrder, { order })],
+    // NEO-555 (G1): the same locks hold for the "name the card by its number" shape, which reads the caller's listings.
+    [
+      "testing.addMyBscOrder (listedCardNumber)",
+      (t) => t.action(api.testing.addMyBscOrder, { order: { items: [{ listedCardNumber: "1", quantity: 1 }] } }),
+    ],
     ["testing.clearMyBscFaults", (t) => t.action(api.testing.clearMyBscFaults, {})],
     ["testing.clearBscCallGate", (t) => t.action(api.testing.clearBscCallGate, {})],
+    // NEO-644 — the lane teardown: cancels the caller's own queued BSC team lookups.
+    ["testing.cancelMyBscTeamChecks", (t) => t.mutation(api.testing.cancelMyBscTeamChecks, {})],
     ["testing.resetMyTestState", (t) => t.action(api.testing.resetMyTestState, {})],
   ];
 
@@ -4075,9 +4071,306 @@ describe("NEO-552: the fake BSC test controls are locked like the other testing 
     await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/not enabled/);
   });
 
-  test.each(cases.slice(0, 4))("%s refuses a deployment on the real BuySportsCards", async (_name, call) => {
+  test.each(cases.slice(0, 6))("%s refuses a deployment on the real BuySportsCards", async (_name, call) => {
     vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
     vi.stubEnv("NEONBINDER_BSC_API_BASE", "");
     await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/real BuySportsCards/);
+  });
+});
+
+/**
+ * NEO-574 — the wizard's career check. `careerCoverage.coverageForPreview`
+ * and `relinkCandidates` are operator reads (`requireAdmin` first); the gate's
+ * `coverageForPairs` and the commit's `players.appendCareerStints` are
+ * internal. Behaviour is pinned in `careerCoverage.test.ts` and
+ * `commitCardChecklist.careerCheck.test.ts`.
+ */
+describe("NEO-574: the career check reads are admin-gated; the writer is internal", () => {
+  test("both public reads call requireAdmin before any read; the others are internal", () => {
+    const src = readFileSync(join(__dirname, "careerCoverage.ts"), "utf8");
+    expect(src).toContain("export const coverageForPreview = query({");
+    expect(src).toContain("export const relinkCandidates = query({");
+    expect(src).toContain("export const careerGaps = query({");
+    expect(src).toContain("export const coverageForPairs = internalQuery({");
+    for (const name of ["coverageForPreview", "relinkCandidates", "careerGaps"]) {
+      const body = src.slice(src.indexOf(`export const ${name} =`));
+      const guard = body.indexOf("await requireAdmin(ctx)");
+      expect(guard).toBeGreaterThan(-1);
+      expect(guard).toBeLessThan(body.indexOf("findSportForSelectorOption(ctx"));
+    }
+    const players = readFileSync(join(__dirname, "players.ts"), "utf8");
+    expect(players).toContain("export const appendCareerStints = internalMutation({");
+  });
+
+  test("an anonymous call is refused", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedSport(t);
+    await expect(
+      t.query(api.careerCoverage.coverageForPreview, { selectorOptionId: id, pairs: [] }),
+    ).rejects.toThrow(/not authenticated/i);
+    await expect(
+      t.query(api.careerCoverage.relinkCandidates, { selectorOptionId: id, printedName: "Bob Allen" }),
+    ).rejects.toThrow(/not authenticated/i);
+    await expect(t.query(api.careerCoverage.careerGaps, { pairs: [] })).rejects.toThrow(
+      /not authenticated/i,
+    );
+  });
+
+  test("a signed-in non-admin is refused", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedSport(t);
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.careerCoverage.coverageForPreview, { selectorOptionId: id, pairs: [] }),
+    ).rejects.toThrow(/admin access required/i);
+    await expect(
+      t
+        .withIdentity(SIGNED_IN)
+        .query(api.careerCoverage.relinkCandidates, { selectorOptionId: id, printedName: "Bob Allen" }),
+    ).rejects.toThrow(/admin access required/i);
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.careerCoverage.careerGaps, { pairs: [] }),
+    ).rejects.toThrow(/admin access required/i);
+  });
+});
+
+/**
+ * NEO-555 — the fake eBay test controls (`testing.fakeEbayConsent`,
+ * `testing.setMyEbaySeller`, `testing.addMyEbayOrder`) and the poll-now
+ * control (`testing.pollMySalesNow`). Public because the stand-in consent page
+ * and the E2E hops call them as the signed-in suite account, so they carry the
+ * testing seeds' locks: refused to an anonymous caller, refused where
+ * `TESTING_RESET_SECRET` is unset (every production deployment), and refused on
+ * a deployment whose eBay is not the fake. None takes a namespace or an owner;
+ * both are derived from the verified Clerk subject (pinned in
+ * `testing.fakeEbay.test.ts`).
+ */
+describe("NEO-555: the fake eBay test controls are locked like the other testing seeds", () => {
+  const order = { lines: [{ quantity: 1 }] };
+  const cases: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["testing.fakeEbayConsent", (t) => t.action(api.testing.fakeEbayConsent, {})],
+    ["testing.setMyEbaySeller", (t) => t.action(api.testing.setMyEbaySeller, { optedIn: true })],
+    ["testing.addMyEbayOrder", (t) => t.action(api.testing.addMyEbayOrder, { order })],
+    // NEO-555 (G1): the same locks hold for the "name the card by its number" shape, which reads the caller's listings.
+    [
+      "testing.addMyEbayOrder (listedCardNumber)",
+      (t) => t.action(api.testing.addMyEbayOrder, { order: { lines: [{ listedCardNumber: "1", quantity: 1 }] } }),
+    ],
+    ["testing.pollMySalesNow", (t) => t.action(api.testing.pollMySalesNow, { platform: "ebay" })],
+  ];
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test.each(cases)("%s refuses an anonymous caller", async (_name, call) => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    await expect(call(convexTest(schema, modules))).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(cases)("%s throws where TESTING_RESET_SECRET is unset", async (_name, call) => {
+    vi.stubEnv("TESTING_RESET_SECRET", "");
+    await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/not enabled/);
+  });
+
+  test.each(cases)("%s refuses a deployment whose eBay is not the fake", async (_name, call) => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    vi.stubEnv("EBAY_ENVIRONMENT", "");
+    await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/does not talk to the fake eBay/);
+  });
+});
+
+/**
+ * NEO-645 — the One-card Tidy Up surface. Every function is admin-only
+ * (`requireAdmin`): the tiles run on the set builder, which sits behind the
+ * same gate as `updateCard` and `entityReviewQueue`. The mutations are
+ * real since W1b: they refuse a signed-out caller and a non-admin BEFORE anything
+ * else, and an admin reaches the body.
+ */
+describe("NEO-645: the Tidy Up surface is admin-gated", () => {
+  async function seedTidy(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const leafId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: sportId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: leafId,
+        cardNumber: "1",
+        cardName: "One",
+        platformData: {},
+        sortOrder: 1,
+        lastUpdated: 1_700_000_000_000,
+      });
+      const playerId = await ctx.db.insert("players", {
+        name: "Doc Gooden",
+        nameNormalized: "doc gooden",
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      });
+      const teamId = await ctx.db.insert("teams", {
+        name: "Mets",
+        nameNormalized: "mets",
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { sportId, leafId, cardId, playerId, teamId };
+    });
+  }
+
+  type Seed = Awaited<ReturnType<typeof seedTidy>>;
+  const calls: Array<[string, (t: ReturnType<typeof convexTest>, s: Seed) => Promise<unknown>]> = [
+    [
+      "tidyNames.answerName",
+      (t, s) =>
+        t.mutation(api.tidyNames.answerName, {
+          cardId: s.cardId,
+          kind: "player",
+          name: "Doc Gooden",
+          sportId: s.sportId,
+          answer: { kind: "linkPlayer", playerId: s.playerId },
+        }),
+    ],
+    [
+      "tidyNames.createPlayer",
+      (t, s) =>
+        t.mutation(api.tidyNames.createPlayer, {
+          cardId: s.cardId,
+          name: "Doc Gooden",
+          sportId: s.sportId,
+        }),
+    ],
+    [
+      "tidyNames.answerOfferedName",
+      (t, s) =>
+        t.action(api.tidyNames.answerOfferedName, {
+          cardId: s.cardId,
+          kind: "player",
+          name: "Doc Gooden",
+          sportId: s.sportId,
+          answer: { kind: "linkPlayer", playerId: s.playerId },
+          offered: true,
+        }),
+    ],
+    [
+      "tidyNames.applyNameToAll",
+      (t, s) =>
+        t.action(api.tidyNames.applyNameToAll, {
+          cardId: s.cardId,
+          kind: "player",
+          name: "Doc Gooden",
+          answer: { kind: "notEntity" },
+        }),
+    ],
+    [
+      "adapters/wikidata.lookupTidyName",
+      (t, s) =>
+        t.action(api.adapters.wikidata.lookupTidyName, {
+          cardId: s.cardId,
+          kind: "player",
+          name: "Doc Gooden",
+          sportId: s.sportId,
+        }),
+    ],
+    [
+      "careerCoverage.careerGaps",
+      (t, s) =>
+        t.query(api.careerCoverage.careerGaps, {
+          pairs: [{ selectorOptionId: s.leafId, playerId: s.playerId, teamId: s.teamId }],
+        }),
+    ],
+    [
+      "selectorOptions.tidyLeafFacts",
+      (t, s) => t.action(api.selectorOptions.tidyLeafFacts, { selectorOptionId: s.leafId }),
+    ],
+    ["tidyCards.cardContext", (t, s) => t.query(api.tidyCards.cardContext, { cardId: s.cardId })],
+    [
+      "tidyCards.saveCard",
+      (t, s) => t.mutation(api.tidyCards.saveCard, { cardId: s.cardId, gaps: [] }),
+    ],
+    [
+      "tidyCards.pickSourceValue",
+      (t, s) =>
+        t.mutation(api.tidyCards.pickSourceValue, {
+          cardId: s.cardId,
+          field: "players",
+          value: ["Doc Gooden"],
+        }),
+    ],
+    [
+      "tidyCameo.pickSourceAsCameo",
+      (t, s) => t.mutation(api.tidyCameo.pickSourceAsCameo, { cardId: s.cardId }),
+    ],
+    [
+      "tidyCards.applyTeamToPlayerCards",
+      (t, s) =>
+        t.mutation(api.tidyCards.applyTeamToPlayerCards, {
+          sourceCardId: s.cardId,
+          teamIds: [s.teamId],
+          cardIds: [s.cardId],
+        }),
+    ],
+    [
+      "tidyCards.applyVariation",
+      (t, s) =>
+        t.mutation(api.tidyCards.applyVariation, { cardIds: [s.cardId], from: "A", to: "B" }),
+    ],
+    [
+      "tidyCards.applySetNameToTitles",
+      (t, s) =>
+        t.mutation(api.tidyCards.applySetNameToTitles, {
+          leafId: s.leafId,
+          cardId: s.cardId,
+          listingShortName: "Chrome",
+        }),
+    ],
+    [
+      "players.addStint",
+      (t, s) =>
+        t.mutation(api.players.addStint, {
+          playerId: s.playerId,
+          teamId: s.teamId,
+          fromYear: 1985,
+          cardId: s.cardId,
+        }),
+    ],
+  ];
+
+  test.each(calls)("%s refuses a signed-out caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const s = await seedTidy(t);
+    await expect(call(t, s)).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(calls)("%s refuses a signed-in non-admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const s = await seedTidy(t);
+    await expect(call(t.withIdentity(SIGNED_IN), s)).rejects.toThrow(/admin access required/i);
+  });
+
+  // W1b made every body real. This pins only the gate: an admin gets past
+  // `requireAdmin` (the body then answers on its own terms: a result, or a
+  // refusal about the seeded card, never an auth error). What each body does is
+  // pinned in its own test file.
+  test.each(calls)("%s lets an admin past the gate", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const s = await seedTidy(t);
+    let message = "";
+    try {
+      await call(t.withIdentity(ADMIN), s);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).not.toMatch(/Not authenticated|admin access required/i);
   });
 });

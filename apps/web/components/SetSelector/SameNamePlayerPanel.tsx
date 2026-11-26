@@ -239,7 +239,7 @@ export function candidateLinkLabel(
  */
 export function pickStepIntro(count: number, scanCapped: boolean): string {
   return scanCapped
-    ? `More than ${count} answer to that name — here are the first ${count}. Can't see them? Link to Existing searches them all.`
+    ? `More than ${count} answer to that name. Here are the first ${count}. Can't see them? Link to Existing searches them all.`
     : `We've got ${count} on file under that name. Pick the one on this card.`;
 }
 
@@ -317,7 +317,7 @@ export default function SameNamePlayerPanel({
                   verdict we have not earned.
                 */}
                 <span className="flex w-full items-baseline gap-2">
-                  <span className="min-w-0 truncate text-sm text-ink">
+                  <span className="min-w-0 break-words text-sm text-ink">
                     {candidate.name}
                   </span>
                   {candidate.activeInSetYear && (

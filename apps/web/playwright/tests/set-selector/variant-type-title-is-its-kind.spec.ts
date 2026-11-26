@@ -24,7 +24,8 @@
 //   6. NEO-496 (NQ2): with a card on that Base, the "Parallel" type's
 //      Parallels of Base section lists the parallel row, which has no
 //      marketplace id, as one to build (never skipped for want of a link), and
-//      a run copies Base's card onto it with no marketplace badge.
+//      a run copies Base's card onto it with no marketplace badge. (That card is
+//      born No Team: any pink card on Base holds the build, NEO-661.)
 //
 // R2 - WHY HAND-MADE TYPES: before NEO-334 the kind was a flag that only a sync
 // conferred, so a type an operator typed in had no kind at all and every claim
@@ -230,7 +231,13 @@ test(
     await field.press("Enter");
     // THE REFUSAL (Jason-approved sentence).
     await expect(refusal(page, /only live under an Insert type/)).toBeVisible();
-    // The title stands: the header renders the stored row, not the field.
+    // NEO-667: the field stands in the title's place while it is open, holding
+    // the refused name. The heading steps aside visually but stays mounted
+    // `sr-only` for a screen reader, and Playwright counts that 1x1 px box as
+    // visible, so the heading still reading the STORED name is the proof the
+    // refusal changed nothing (it reads it again once the field closes, below).
+    await expect(field).toBeVisible();
+    await expect(field).toHaveValue("Promos");
     await expect(panelFor(page, "Inserts")).toBeVisible();
     await expectAccessible(page, { label: "Rename refused while sub-variants exist" });
 
@@ -310,8 +317,19 @@ test(
     await expect(panel.getByRole("button", { name: "Delete Base", exact: true })).toHaveCount(0);
     await edit.click();
     await expect(baseTag).toBeVisible();
-    // Claim 6's source: one hand-made card on the Base.
-    await addCardViaForm(page, { cardNumber: CARD_NUMBER, playerName: CARD_NAME });
+    // Claim 6's source: one hand-made card on the Base, born No Team. A teamless card is pink, and
+    // NEO-661 (Jason, 2026-11-24: "if there is anything that would cause a pink box we should hold
+    // the parallels back") refuses a build from a Base with any pink card.
+    const noTeamToggle = (pressed: boolean) =>
+      page.getByRole("button", { name: "No Team for the new card", exact: true, pressed });
+    await addCardViaForm(page, {
+      cardNumber: CARD_NUMBER,
+      playerName: CARD_NAME,
+      beforeSubmit: async () => {
+        await noTeamToggle(false).click();
+        await expect(noTeamToggle(true)).toBeVisible();
+      },
+    });
 
     // ── CLAIM 5b: A SECOND TYPE RENAMED "Base" IS REFUSED ──
     await addCustomEntry(page, "Variant Types", SECOND_TYPE, { confirm: "required" });
@@ -325,7 +343,12 @@ test(
     // DRAFT copy, see the header. The one-Base rule runs before the sibling
     // clash in renameSelectorOption, so this is the sentence, not the same-word one.
     await expect(refusal(page, /already has a Base/)).toBeVisible();
-    // The title stands.
+    // The title stands: the field holds the place of the heading until it
+    // closes (NEO-667; the heading stays mounted `sr-only` meanwhile, which
+    // Playwright counts as visible, so the field's going is the proof).
+    await expect(second).toBeVisible();
+    await second.press("Escape");
+    await expect(second).toHaveCount(0);
     await expect(panelFor(page, SECOND_TYPE)).toBeVisible();
 
     // ── CLAIM 6 (NEO-496, NQ2): A PARALLEL WITH NO MARKETPLACE ID IS BUILT FROM BASE ──

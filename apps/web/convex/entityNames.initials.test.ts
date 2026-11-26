@@ -7,8 +7,8 @@
  * "c j kayfus"), so the entity wizard offered a player NB already held as new.
  *
  * Each `describe` is a separate crossing of the round trip that could split one
- * person into two rows: the lookup, `findOrCreate`, the review-queue resume
- * key, the durable skip, and the commit prelude's unknown-entity pass.
+ * person into two rows: the lookup, `findOrCreate` and the team key. (The review-queue resume key and
+ * the durable skip went with their tables, NEO-656.)
  */
 
 import { convexTest } from "convex-test";
@@ -160,7 +160,7 @@ describe("teams key joins initials (NEO-322)", () => {
 
     const found = await t
       .withIdentity(USER)
-      .query(api.teams.findByNameAndSport, { name: "Texas A&M", sportId });
+      .query(internal.teams.findByNameAndSport, { name: "Texas A&M", sportId });
     expect(found?.name).toBe("Texas A & M");
   });
 
@@ -176,98 +176,8 @@ describe("teams key joins initials (NEO-322)", () => {
   });
 });
 
-describe("the review-queue resume key agrees across initials (NEO-322)", () => {
-  test("resuming with the other spelling keeps the row and its decision", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(USER);
-    const selectorOptionId = await seedSport(t);
-
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId,
-      createdByUserId: USER.subject,
-      sportId: selectorOptionId,
-      playerNames: ["C. J. Kayfus"],
-      teamNames: ["Texas A & M"],
-    });
-
-    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
-      selectorOptionId,
-      batchId,
-    });
-    expect(rows).toHaveLength(2);
-    const playerRow = rows.find((r) => r.kind === "player")!;
-    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
-      reviewRowId: playerRow._id,
-      action: "create",
-    });
-
-    const resumed = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId,
-      createdByUserId: USER.subject,
-      sportId: selectorOptionId,
-      playerNames: ["C.J. Kayfus"],
-      teamNames: ["Texas A&M"],
-    });
-    expect(resumed).toBe(batchId);
-
-    const after = await asAdmin.query(api.entityReviewQueue.getBatch, {
-      selectorOptionId,
-      batchId,
-    });
-    expect(after).toHaveLength(2);
-    expect(after.map((r) => r._id).sort()).toEqual(
-      rows.map((r) => r._id).sort(),
-    );
-    expect(after.find((r) => r.kind === "player")?.decision).toEqual({
-      action: "create",
-    });
-
-    await drainScheduled(t);
-  });
-});
-
-describe("the entityReviewSkips key agrees across initials (NEO-322)", () => {
-  test("a skip recorded under one spelling suppresses the other", async () => {
-    const t = convexTest(schema, modules);
-    const selectorOptionId = await seedSport(t);
-
-    await t.run(async (ctx) => {
-      await ctx.db.insert("entityReviewSkips", {
-        selectorOptionId,
-        kind: "player",
-        nameNormalized: normalizePlayerName("C. J. Kayfus"),
-        name: "C. J. Kayfus",
-        skippedAt: Date.now(),
-        skippedByUserId: USER.subject,
-      });
-      await ctx.db.insert("entityReviewSkips", {
-        selectorOptionId,
-        kind: "team",
-        nameNormalized: normalizeTeamName("Texas A & M"),
-        name: "Texas A & M",
-        skippedAt: Date.now(),
-        skippedByUserId: USER.subject,
-      });
-    });
-
-    const skipped = await t.query(
-      internal.selectorOptions.findSkippedEntityNames,
-      {
-        selectorOptionId,
-        candidates: [
-          { kind: "player", nameNormalized: normalizePlayerName("C.J. Kayfus") },
-          { kind: "team", nameNormalized: normalizeTeamName("Texas A&M") },
-        ],
-      },
-    );
-    expect(skipped.sort()).toEqual(
-      ["player:cj kayfus", "team:am texas"].sort(),
-    );
-  });
-});
-
 describe("the commit prelude does not ask about a player NB already holds (NEO-322)", () => {
-  test("a card naming 'C.J. Kayfus' with 'C. J. Kayfus' on file reports no unknown and queues nothing", async () => {
+  test("a card naming 'C.J. Kayfus' with 'C. J. Kayfus' on file reports no unknown", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(USER);
     const { variantTypeId, sportId } = await t.run(async (ctx) => {
@@ -336,10 +246,7 @@ describe("the commit prelude does not ask about a player NB already holds (NEO-3
     );
 
     expect(resolved.unknownPlayers).toEqual([]);
-    const queued = await t.run(async (ctx) =>
-      ctx.db.query("entityReviewQueue").collect(),
-    );
-    expect(queued).toEqual([]);
+    expect(resolved.gateLinks ?? []).toEqual([]);
 
     await drainScheduled(t);
   });

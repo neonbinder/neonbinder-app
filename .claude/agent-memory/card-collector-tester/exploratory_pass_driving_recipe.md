@@ -26,3 +26,14 @@ few workers and keep the profile of the one that works.
   Confirm (BSC preselected) to get past it.
 
 Related: [[pasted-checklist-format-traps]]
+
+With the Chrome browser tools (2026-11-22): a hand-made set under Baseball > 2024 > Topps reaches the Tidy Up walk with real NB/Wikidata lookups. Set level "Paste one instead" (sections like BASE / FUTURE STARS), then + Custom "Insert" type, Reconcile Inserts: tick "Show all checklist sections", Keep all, Save. Open an insert and press the card-list fetch button (accessible name "Sync card checklist"). The walk opens by itself after the save; `?tidy=` holds the position. Use a sport with real players, not a hand-made sport, if you want lookups. Viewing a registry set's walk is read-only only if you answer nothing; close it with Esc.
+
+Building a shareable demo link (2026-11-25): the Chrome tools REDACT query values in reported URLs, so read the
+drill ids instead with a read-only query on the worktree's own deployment, from `apps/web`:
+`npx convex run selectorOptions:getAncestorChain '{"id":"<leaf id>"}' --identity '{"subject":"x","role":"admin"}'`
+(leaf id = newest row of `npx convex data selectorOptions --limit 8 --order desc`; a full table dump crashes the CLI).
+Card ids: `selectorOptions:getCardChecklist '{"selectorOptionId":…}'` the same way. `&tidy=first` opens the walk at its
+first card; `&tidy=<cardId>` at that card, so other cards can be shown without answering anything.
+Screenshots: `save_to_disk` saves at the `scale` you pass, so omit scale for a full-res file; `zoom` on the dialog's
+box gives a crisp crop. Hover the mouse off the dialog first or the cursor lands in the image.

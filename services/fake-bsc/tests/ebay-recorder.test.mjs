@@ -17,6 +17,8 @@ const { EbayApi, EbayStop, EBAY_SCOPES, MIN_EBAY_INTERVAL_MS } = require("../dis
 const { readCredsFile, readProductionCreds } = require("../dist/recorder/ebay-credentials.js");
 const { ebayRecordPlan, runEbayRecord } = require("../dist/recorder/ebay-record.js");
 const { runProdCapture, runSandboxCapture, runEbayUndo, prodPlanLines, prodFailureLines, checkCaptureSku, captureSku, GUARDED_SIGNALS } = require("../dist/recorder/ebay-capture.js");
+const { EBAY_REQUIRED_CAPTURES, EBAY_CONDITIONAL_WRITE_CAPTURES, EBAY_CAPTURE_ENDPOINTS } = require("../dist/src/ebay/captures.js");
+const { endpointName } = require("../dist/src/ebay/sample.js");
 const { askYes, askToType, typeOnTerminal, askOnTerminal } = require("../dist/recorder/confirm.js");
 const { ebayCapture, ebayUndo, parseArgs } = require("../dist/recorder/cli.js");
 const { canonicalRequest, requestKey } = require("../dist/src/requestKey.js");
@@ -449,7 +451,7 @@ function sandboxRoutes(over = {}) {
 }
 
 describe("ebay-capture (sandbox)", () => {
-  it("captures reads and the writes the sandbox accepts, files the publish refusal as #25002, and removes everything", async () => {
+  it("captures reads and the writes the sandbox accepts, files the publish refusal as #refused, and removes everything", async () => {
     const { routes, deleted } = sandboxRoutes();
     const { api: a, stub } = api("sandbox", routes);
     const s = sink();
@@ -461,7 +463,7 @@ describe("ebay-capture (sandbox)", () => {
       "POST ebay/api/identity/v1/oauth2/token #refresh_token",
       "POST ebay/api/identity/v1/oauth2/token #client_credentials",
       "POST ebay/api/sell/account/v1/program/opt_in #409",
-      "POST ebay/api/sell/inventory/v1/offer/:offerId/publish #25002",
+      "POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused",
       "PUT ebay/api/sell/inventory/v1/offer/:offerId",
       "DELETE ebay/api/sell/inventory/v1/inventory_item/:sku",
       "GET ebay/api/sell/fulfillment/v1/order",
@@ -482,6 +484,73 @@ describe("ebay-capture (sandbox)", () => {
     assert.match(out.reason, /unauthorized/);
     assert.deepEqual(s.stored, []);
     assert.deepEqual(deleted.sort(), ["loc", "pay", "ret"]);
+  });
+});
+
+// ── The required captures are what the recorder stores (NEO-555 PR B1) ─────
+
+describe("the required eBay captures are exactly what the recorder stores", () => {
+  const isWrite = (name) => !name.startsWith("GET ") && !name.includes("/oauth2/token");
+  const sandboxStored = async (over = {}) => {
+    const { routes } = sandboxRoutes(over);
+    const { api: a } = api("sandbox", routes);
+    const s = sink();
+    const out = await runSandboxCapture({ api: a, sink: s, now: NOW, publicKeyId: null, report: () => {} });
+    assert.equal(out.ok, true, JSON.stringify(out));
+    return s.stored.map((c) => c.endpoint);
+  };
+  const prodStored = async () => {
+    const { routes } = prodRoutes();
+    const { api: a } = api("production", routes);
+    const s = sink();
+    const out = await runProdCapture({ api: a, sink: s, sku: PRD_SKU, picture: PICTURE, report: () => {} });
+    assert.equal(out.ok, true, JSON.stringify(out));
+    return s.stored.map((c) => c.endpoint);
+  };
+
+  it("every required name is stored by the sandbox run or the production run, and is a capture name the fake accepts", async () => {
+    const stored = new Set([...(await sandboxStored()), ...(await prodStored())]);
+    for (const name of EBAY_REQUIRED_CAPTURES) {
+      assert.ok(stored.has(name), `${name}: no recorder run stores it (renamed or dropped?)`);
+      assert.ok(EBAY_CAPTURE_ENDPOINTS.includes(name), `${name} is not an accepted capture name`);
+    }
+    // The two the plan names: the sandbox's refusal and the production publish.
+    assert.ok(EBAY_REQUIRED_CAPTURES.includes("POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused"));
+    assert.ok(EBAY_REQUIRED_CAPTURES.includes("POST ebay/api/sell/inventory/v1/offer/:offerId/publish"));
+  });
+
+  it("every write the recorder stores is classified: required, or known to be stored only when eBay accepts it", async () => {
+    const stored = new Set([
+      ...(await sandboxStored()), // opt-in answers 409
+      ...(await sandboxStored({ "POST /sell/account/v1/program/opt_in": () => ({ status: 200, body: {} }) })),
+      ...(await prodStored()),
+    ]);
+    const known = new Set([...EBAY_REQUIRED_CAPTURES, ...EBAY_CONDITIONAL_WRITE_CAPTURES]);
+    for (const name of [...stored].filter(isWrite)) assert.ok(known.has(name), `${name} is stored by the recorder but neither required nor listed as conditional`);
+    for (const name of EBAY_CONDITIONAL_WRITE_CAPTURES) assert.ok(stored.has(name), `${name} is listed as conditional but no run stores it any more`);
+    for (const name of EBAY_CONDITIONAL_WRITE_CAPTURES) assert.ok(!EBAY_REQUIRED_CAPTURES.includes(name), `${name} is both`);
+  });
+
+  it("a sandbox that refuses the policy creates still stores every sandbox-side required capture", async () => {
+    const refuse = () => ({ status: 400, body: { errors: [{ errorId: 20400 }] } });
+    const stored = await sandboxStored({
+      // Policies exist already, so the creates are refused and the run carries on with those.
+      "GET /sell/account/v1/payment_policy": () => ({ status: 200, body: { total: 1, paymentPolicies: [{ paymentPolicyId: "11" }] } }),
+      "GET /sell/account/v1/return_policy": () => ({ status: 200, body: { total: 1, returnPolicies: [{ returnPolicyId: "22" }] } }),
+      "POST /sell/account/v1/payment_policy": refuse,
+      "POST /sell/account/v1/return_policy": refuse,
+    });
+    for (const op of ["createPaymentPolicy", "createReturnPolicy"]) assert.ok(!stored.includes(endpointName(op)), `${op} stored although eBay refused it`);
+    const prodOnly = new Set([
+      "POST ebay/apim/commerce/media/v1_beta/image/create_image_from_file",
+      "GET ebay/apim/commerce/media/v1_beta/image/:imageId",
+      "POST ebay/api/sell/inventory/v1/bulk_update_price_quantity",
+      "POST ebay/api/sell/inventory/v1/offer/:offerId/withdraw",
+      "POST ebay/api/sell/inventory/v1/offer/:offerId/publish",
+    ]);
+    const sandboxSide = EBAY_REQUIRED_CAPTURES.filter((n) => !prodOnly.has(n));
+    assert.equal(sandboxSide.length, EBAY_REQUIRED_CAPTURES.length - prodOnly.size, "every production-only name is on the list");
+    for (const name of sandboxSide) assert.ok(stored.includes(name), `${name} missing from a sandbox run whose creates were refused`);
   });
 });
 

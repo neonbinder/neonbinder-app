@@ -716,21 +716,10 @@ describe("a chunk applies no more default rows than it was sized for (N1)", () =
 });
 
 describe("a card whose listing named a player is never given the default player (N4)", () => {
-  test("a name entity review ruled out stays out of review AND holds back the default; the cameos still go on", async () => {
+  test("a name the listing gave holds back the default, pending or linked; the cameos still go on", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
     await store(t, fx.set, { defaultPlayerIds: [fx.mahomes], defaultCameoIds: [fx.kelce] });
-    // An earlier save ruled "Team Leaders" not a person, for this checklist.
-    await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewSkips", {
-        selectorOptionId: fx.base,
-        kind: "player",
-        nameNormalized: normalizeEntityName("Team Leaders"),
-        name: "Team Leaders",
-        skippedAt: NOW,
-        skippedByUserId: "admin_earlier",
-      }),
-    );
     const card = (n: string, players: string[]) => ({
       cardNumber: n,
       cardName: `Card ${n}`,
@@ -753,11 +742,11 @@ describe("a card whose listing named a player is never given the default player 
     expect(result).toMatchObject({ success: true, count: 5 });
     const cards = await cardsOn(t, fx.base);
     const leaders = cards.get("1")!;
-    // The listing named someone: no default player, nothing pending (the skip
-    // keeps the name out of the next review), the cameo still added.
+    // The listing named someone: no default player, the name waits on the card
+    // for the operator, the cameo still added.
     expect(leaders.playerIds).toBeUndefined();
     expect(leaders.playerLinks).toBeUndefined();
-    expect(leaders.pendingPlayerNames).toBeUndefined();
+    expect(leaders.pendingPlayerNames).toEqual(["Team Leaders"]);
     expect(await playerIndex(t, leaders._id)).toEqual([]);
     expect(leaders.secondaryPlayerIds).toEqual([fx.kelce]);
     // A card the listing named nobody on (or only blanks) gets the default.

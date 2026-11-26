@@ -146,6 +146,14 @@ describe("report", () => {
     expect(row.heldBack).toBe(MAX_SYNC_REPORT_CARDS + 7);
   });
 
+  test("a sync that didn't finish says Neon Binder retries it on its own, and when to report", async () => {
+    const s = await setup();
+    await record(s, { status: "error", problems: [{ cardId: s.fx.gooden1, reason: "noLink" }] });
+    await expect(s.me.mutation(api.syncReports.report, { variantId: s.fx.baseId, platform: "bsc" })).rejects.toThrow(
+      "That set's last sync didn't finish, and Neon Binder tries it again on its own. If cards are still held back after that, report it then.",
+    );
+  });
+
   test("refuses with no record (another collector's record is not mine), a failed sync, or nothing reportable", async () => {
     const s = await setup();
     await record(s, { ownerId: THEM.subject, problems: [{ cardId: s.fx.gooden1, reason: "noLink" }] });

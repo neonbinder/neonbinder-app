@@ -16,6 +16,7 @@ import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import { columnOption, columnSearch, drillToSet, pick, setBuilderReady } from "../../support/set-builder";
 import {
   TOPPS_CHROME_2024,
+  confirmRemoved,
   countOf,
   drillToCollectorChecklist,
   ordinaryBaseRows,
@@ -189,7 +190,7 @@ test(
           const yourCopies = drawer.getByRole("region", { name: `Your copies of ${held}` });
           await yourCopies.getByRole("button", { name: `Remove ${held}, Raw, Excellent`, exact: true }).click();
           // The list empties optimistically; "Removed ..." is the server's answer.
-          await expect(drawer.getByRole("status").filter({ hasText: `Removed ${held}, Raw, Excellent` })).toBeVisible();
+          await confirmRemoved(drawer, `Removed ${held}, Raw, Excellent`);
           await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
         } catch (error) {
           // A red body keeps its own error as the one the report shows.

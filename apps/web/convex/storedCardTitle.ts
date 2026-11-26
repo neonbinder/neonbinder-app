@@ -32,11 +32,13 @@ import {
   assessListingTitle,
   generateListingDescription,
   type ListingCardInputs,
+  type ListingTeamSplit,
   type ListingTitleAssessment,
 } from "./features/generateListing";
 import { listingInputsForCard } from "./features/listingInputs";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
-import { teamFullName } from "../lib/teams/team-name";
+import { cardSubjectName } from "../lib/cards/unnamed-card";
+import { teamFullName, teamSplitOf } from "../lib/teams/team-name";
 // From listingShortName.ts, not selectorOptions.ts: the cameo writer
 // (cardSecondaryPlayers.ts) imports this module, players.ts imports the
 // writer, and a static path back into selectorOptions.ts would close an
@@ -81,10 +83,16 @@ export type StoredCardReadCache = {
   players: Map<string, string | null>;
   /** A team's full name (`teamFullName`), by id. */
   teams: Map<string, string | null>;
+  /**
+   * NEO-606 — a team's Location / Name split, by id, set wherever `teams` is
+   * (`null`: no id, or no location to give up). Whoever fills `teams` fills
+   * this beside it, from the same read.
+   */
+  teamSplits: Map<string, ListingTeamSplit | null>;
 };
 
 export function newStoredCardReadCache(): StoredCardReadCache {
-  return { chain: new Map(), players: new Map(), teams: new Map() };
+  return { chain: new Map(), players: new Map(), teams: new Map(), teamSplits: new Map() };
 }
 
 /** A player's NB name, or null for an id that no longer resolves. */
@@ -100,7 +108,8 @@ export async function playerNameFor(
   return name;
 }
 
-async function teamNameFor(
+/** A team's full name, and its split when its row has a location (NEO-606). */
+export async function teamNameFor(
   ctx: ReadCtx,
   id: Id<"teams">,
   cache?: StoredCardReadCache,
@@ -111,6 +120,7 @@ async function teamNameFor(
   // NEO-236: full name, matching what the commit path stores on the card.
   const name = team ? teamFullName(team) : null;
   cache?.teams.set(key, name);
+  cache?.teamSplits.set(key, (team && teamSplitOf(team)) ?? null);
   return name;
 }
 
@@ -204,11 +214,15 @@ export async function listingInputsForStoredCard(
     MAX_CARD_TEAMS,
   );
   const resolvedTeamNames: string[] = [];
+  const teamSplits: ListingTeamSplit[] = [];
   let danglingTeams = 0;
   for (const teamId of previewTeamIds) {
     const name = await teamNameFor(ctx, teamId, cache);
-    if (name !== null) resolvedTeamNames.push(name);
-    else danglingTeams += 1;
+    if (name !== null) {
+      resolvedTeamNames.push(name);
+      const split = cache.teamSplits.get(teamId as string);
+      if (split) teamSplits.push(split);
+    } else danglingTeams += 1;
   }
   // Same fallback as `playerNames`: a hand-added card carries the names the
   // operator typed until a sync resolves them into `teams` rows, and those
@@ -260,12 +274,24 @@ export async function listingInputsForStoredCard(
       manufacturerBrandUnknown,
       ...chainFacts,
     },
-    { playerNames, teamNames, cameoNames },
+    // NEO-606 — only the teams that resolved to rows can be split; a typed
+    // name (`pendingTeamNames`) has no row to read a location off.
+    { playerNames, teamNames, teamSplits, cameoNames },
     features,
   );
 
+  // NEO-645 — a card's own name is in its title whenever it has one (Jason,
+  // 2026-11-23), unless it only repeats the players (their NB names, or the
+  // names the card printed). The generator places it; this hands it over.
+  const subjectName =
+    cardSubjectName({
+      cardName: card.cardName,
+      playerNames,
+      printedPlayerNames: (card.playerLinks ?? []).map((l) => l.nameOnCard),
+      cameoNames,
+    }) ?? "";
   return {
-    inputs: { ...inputs, playerNames, teamNames },
+    inputs: { ...inputs, playerNames, teamNames, ...(subjectName ? { subjectName } : {}) },
     unresolved: {
       players: danglingPlayers,
       teams: danglingTeams,

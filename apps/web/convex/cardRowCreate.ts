@@ -34,13 +34,16 @@ import type { Doc, Id } from "./_generated/dataModel";
 import {
   assessListingTitle,
   generateListingDescription,
+  type ListingTeamSplit,
 } from "./features/generateListing";
 import {
+  generatedTitleTruncatedFlag,
   listingInputsForCard,
   mergeCardFeatures,
   storedCardVariation,
   type ListingSetContext,
 } from "./features/listingInputs";
+import { cardSubjectName } from "../lib/cards/unnamed-card";
 import { generateSku } from "./sku";
 import { syncCardPlayerLinks } from "./cardPlayerLinks";
 import { syncCardTeamLinks } from "./cardTeamLinks";
@@ -109,6 +112,12 @@ export type NewCardRow = {
   attributes?: string[];
   isRookie?: boolean;
   isRelic?: boolean;
+  /**
+   * NEO-591 — the checklist said "Prospect": folded into
+   * `features.isProspect`, never a column (`deriveCardObservedFeatures`).
+   * New cards only, by `isRookie`'s route.
+   */
+  isProspect?: boolean;
   printRun?: number;
   cardVariation?: string;
   /** Observed only: folded into `features.autographed`, never stored. */
@@ -131,6 +140,12 @@ export type NewCardRow = {
   /** Canonical team names, for the listing text. */
   teamNames?: string[];
   /**
+   * NEO-606 — the Location / Name split of those teams that have one, read
+   * off their rows by the caller, so the title can give a team's location up
+   * before the team. Absent when none is split.
+   */
+  teamSplits?: ListingTeamSplit[];
+  /**
    * NEO-528 round 3 — the people the card is born with under "Also on this
    * card" (its cameos), with their NB names for the description's cameo
    * line. Usually `bornCardPlayers`' answer. Repeats and the card's own
@@ -139,6 +154,13 @@ export type NewCardRow = {
    */
   cameos?: ReadonlyArray<BornCameo>;
   carried?: CarriedCardFields;
+  /**
+   * NEO-645 — review state a SOURCE card is born with, spread onto the row only
+   * when present. A parallel copy never passes them: they are the source card's
+   * review state, and copying them would make every parallel show blue.
+   */
+  sourceDisagreements?: Doc<"cardChecklist">["sourceDisagreements"];
+  sourceNumbers?: Doc<"cardChecklist">["sourceNumbers"];
   /**
    * NEO-312 — the features map to merge the card's observed facts ONTO,
    * instead of `set.inheritedFeatures`. A parallel copy passes
@@ -345,19 +367,38 @@ export function buildCardRowForInsert(
   const listingInputs = listingInputsForCard(
     card,
     set,
-    { playerNames, teamNames: card.teamNames, cameoNames: cameos.map((c) => c.name) },
+    {
+      playerNames,
+      teamNames: card.teamNames,
+      teamSplits: card.teamSplits,
+      cameoNames: cameos.map((c) => c.name),
+    },
     mergedFeatures,
   );
+  // NEO-645 — the card's own name is in its title whenever it has one, as
+  // `listingInputsForStoredCard` hands it over for Regenerate (one rule, so a
+  // born title and a regenerated one agree).
+  const subjectName = cardSubjectName({
+    cardName: card.cardName,
+    playerNames,
+    printedPlayerNames: (card.playerLinks ?? []).map((l) => l.nameOnCard),
+    cameoNames: cameos.map((c) => c.name),
+  });
+  if (subjectName) listingInputs.subjectName = subjectName;
   const listingTitle = assessListingTitle(listingInputs);
   // NEO-335 — the operator's answer from the "Card titles" step, when one
   // rode on the card: their own words, or the trimmed title kept. Either way
   // the cut-short question was put before save, so the flag is not written.
-  // NEO-535 — `coreFits` is false when the title lost a first name or was
-  // built from the set's box text; an over-cap title is flagged by its length
-  // (`titleOverLimit`), whatever this says.
+  // NEO-535 / NEO-609 — `coreFits` is false when a Tidy Up cut (a whole team,
+  // the number, SP, RELIC, a first name, RC, AUTO) is still out, or the title
+  // was built from the set's box text. An over-cap title has cut all of those,
+  // so it is flagged `listingTitleTruncated` too; `titleOverLimit` (its
+  // length) takes precedence when the attention items are read.
   const operatorTitle = card.listingTitle?.trim();
+  // NEO-645: a title that fits only because the set name was shortened, with
+  // nothing left out, is not flagged (`generatedTitleTruncatedFlag`).
   const flagTruncated =
-    !listingTitle.coreFits &&
+    generatedTitleTruncatedFlag(listingTitle) === true &&
     !operatorTitle &&
     card.listingTitleKept !== listingTitle.title;
 
@@ -394,7 +435,7 @@ export function buildCardRowForInsert(
     listingDescription: generateListingDescription(listingInputs, {
       cameoNames: cameos.map((c) => c.name),
     }),
-    // NEO-535: only when a first name was lost or the box text was used
+    // NEO-535 / NEO-609: only in Tidy Up, or when the box text was used
     // (see schema.ts), and NEO-335: never over an operator's pre-save answer.
     ...(flagTruncated ? { listingTitleTruncated: true } : {}),
     // NEO-221 / NEO-246 — omitted entirely when empty, so a fully-reviewed
@@ -405,6 +446,11 @@ export function buildCardRowForInsert(
     // NEO-528 round 3 — provenance, only when true (absent on every other
     // card, so their rows are exactly what they were).
     ...(card.listingNamedPlayer === true ? { listingNamedPlayer: true as const } : {}),
+    // NEO-645 — a source card's review state; absent on every other row.
+    ...(card.sourceDisagreements && card.sourceDisagreements.length > 0
+      ? { sourceDisagreements: card.sourceDisagreements }
+      : {}),
+    ...(card.sourceNumbers ? { sourceNumbers: card.sourceNumbers } : {}),
     ...(card.pendingTeamNames.length
       ? { pendingTeamNames: card.pendingTeamNames }
       : {}),

@@ -61,6 +61,9 @@ vi.mock("./credentials", async (importOriginal) => {
       returns: v.any(),
       handler: async () => ({ token: "test-token" }),
     }),
+    // NEO-605: the BSC adapter reads the token by calling this directly,
+    // not through `runAction(getSiteToken)`; the same stub answers both.
+    siteTokenForCurrentUser: async () => ({ token: "test-token" }),
     authenticateBsc: internalAction({
       args: { userId: v.optional(v.string()), tokenRefused: v.optional(v.boolean()) },
       returns: v.any(),
@@ -68,6 +71,15 @@ vi.mock("./credentials", async (importOriginal) => {
     }),
   };
 });
+
+// Warm the mocked module once, before any test runs. The adapters import
+// "./credentials" and convex-test's function loader imports it too, and when
+// those two first imports overlap (a BSC and a SportLots side fetched together)
+// vitest builds the async factory twice, and one importer can fall through to
+// the REAL module, so the adapter reads a real token and the sync ends in
+// "error". Vitest's own mocker says this does not work for concurrent imports.
+// Awaiting it here caches the mocked module before anything can race.
+await import("./credentials");
 
 beforeEach(() => {
   vi.spyOn(console, "log").mockImplementation(() => {});
@@ -253,6 +265,8 @@ describe("fetchRawOptions — one side resolvable", () => {
     expect(res.success).toBe(true);
     expect(res.skippedSides).toEqual(["sportlots"]);
     expect(res.errors.some((e) => e.platform === "sportlots")).toBe(false);
+    // BSC was really asked (with the stubbed token), not failed at the token read.
+    expect(res.errors.some((e) => e.platform === "bsc")).toBe(false);
   });
 
   test("a side that FAILED is an error and is NOT in skippedSides", async () => {

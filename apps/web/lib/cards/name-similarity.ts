@@ -22,7 +22,7 @@
  * depends on the order of either list.
  */
 
-import { normalizeEntityName } from "../entities/normalize-name";
+import { entityNameCompareKey } from "../entities/normalize-name";
 
 /**
  * The score at or above which two player names link without the operator.
@@ -93,12 +93,12 @@ export function jaroWinkler(a: string, b: string): number {
 
 /**
  * Two raw player names, scored the way every pairing scores them: each
- * folded with `normalizeEntityName` (the key the players table uses), then
- * Jaro-Winkler. Either name empty after folding scores 0.
+ * folded with `entityNameCompareKey` (the key the players table uses, with a
+ * hyphen read as a space: NEO-643), then Jaro-Winkler. Either name empty after folding scores 0.
  */
 export function playerNameScore(a: string, b: string): number {
-  const na = normalizeEntityName(a);
-  const nb = normalizeEntityName(b);
+  const na = entityNameCompareKey(a);
+  const nb = entityNameCompareKey(b);
   if (!na || !nb) return 0;
   return jaroWinkler(na, nb);
 }

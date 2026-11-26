@@ -23,6 +23,8 @@ import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { insertTestCard } from "../lib/testing/card-row";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { PAUSED_PLATFORMS_ENV } from "./lib/marketplacePause";
+import { assessListingTitle } from "./features/generateListing";
+import { pickTitleChainFacts } from "./listingShortName";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -96,7 +98,7 @@ async function seed(t: T) {
       insertTestCard(ctx, {
         selectorOptionId,
         cardNumber,
-        cardName: `Card ${cardNumber}`,
+        cardName: `Card #${cardNumber}`,
         platformData: {},
         sortOrder: 0,
         lastUpdated: NOW,
@@ -138,6 +140,23 @@ async function seed(t: T) {
   });
 }
 
+/**
+ * What the commit action hands its chunks (NEO-609: the level facts travel by
+ * key from the prelude), so a test that calls the chunk directly stores the
+ * title the real commit would.
+ */
+async function chunkFacts(t: T, selectorOptionId: Id<"selectorOptions">, sportId: Id<"selectorOptions">) {
+  const prelude = await t
+    .withIdentity(ADMIN)
+    .mutation(internal.selectorOptions.commitCardChecklistPrelude, {
+      selectorOptionId,
+      sportId,
+      playerNames: [],
+      teamNames: [],
+    });
+  return pickTitleChainFacts(prelude);
+}
+
 describe("previewListingTitle and titleForStoredCard", () => {
   test("give the same title, flags and inputs for every shape of stored card", async () => {
     const t = convexTest(schema, modules);
@@ -157,6 +176,7 @@ describe("previewListingTitle and titleForStoredCard", () => {
         firstNameLost: stored.firstNameLost,
         ...(stored.shortNameUsed ? { shortNameUsed: true } : {}),
         coreFits: stored.coreFits,
+        tidyUp: stored.tidyUp,
         dropped: stored.dropped,
         inputs: stored.inputs,
       });
@@ -165,15 +185,51 @@ describe("previewListingTitle and titleForStoredCard", () => {
     // The literal titles, so drift on either side shows up here.
     expect(titles).toMatchInlineSnapshot(`
       {
-        "dangling": "Topps Chrome #18 Baseball",
-        "longCore": "Topps Chrome Bartholomew Maximilian Fitzgerald-Worthington #19 Baseball",
-        "pending": "Topps Chrome Doc Gooden #17 New York Mets Baseball",
+        "dangling": "Topps Chrome Base #18 Baseball",
+        "longCore": "Topps Chrome Base Bartholomew Maximilian Fitzgerald-Worthington #19 Baseball",
+        "pending": "Topps Chrome Base Doc Gooden #17 New York Mets Baseball",
         "resolved": "2024 Topps Chrome Dwight Gooden & Darryl Strawberry #16 /99 RC New York Mets",
         "underInsert": "2024 Topps Chrome Future Stars Insert Dwight Gooden #FS-1 AUTO Baseball",
         "underParallel": "2024 Topps Chrome Future Stars Gold Refractor Darryl Strawberry #FS-2 Baseball",
-        "variation": "Topps Chrome Dwight Gooden #16 Image Variation Baseball",
+        "variation": "Topps Chrome Base Dwight Gooden #16 Image Variation Baseball",
       }
     `);
+  });
+
+  test("NEO-618: a Tidy Up card with a fitting box is built from the box, the same in the preview and the stored title", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    // A long name leaves no room for the Mets (a whole team out, no first name lost): Tidy Up.
+    const cardId = await t.run(async (ctx) => {
+      const base = (await ctx.db.get(s.base))!;
+      await ctx.db.patch(base.parentId!, { metadata: { listingShortName: "Chrome Debut" } });
+      return insertTestCard(ctx, {
+        selectorOptionId: s.base,
+        cardNumber: "BOX-1xxxxxxxxxxxxxxxxxxxxxxxx",
+        cardName: "Card #BOX-1",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: NOW,
+        pendingPlayerNames: ["Bartholomew Fitzgerald-Worthington"],
+        teamOnCardIds: [s.mets],
+        features: { season: "2024" },
+      });
+    });
+    const preview = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.previewListingTitle, { cardId });
+    const stored = await t.run(async (ctx) => titleForStoredCard(ctx, (await ctx.db.get(cardId))!));
+    expect(preview.title).toBe(stored.title);
+    expect(preview.inputs.setShortName).toBe("Chrome Debut");
+    expect(stored.shortNameUsed).toBe(true);
+    expect(preview.shortNameUsed).toBe(true);
+    expect(preview.title.startsWith("Chrome Debut ")).toBe(true);
+    expect(preview.fits).toBe(true);
+    // The fixture is what it claims: without the box the builder needs Tidy Up.
+    const builder = assessListingTitle({ ...preview.inputs, setShortName: undefined });
+    expect(builder.fits).toBe(true);
+    expect(builder.tidyUp).toBe(true);
+    expect(builder.firstNameLost).toBe(false);
   });
 
   test("a card born through the commit chunk stores the title Regenerate offers", async () => {
@@ -183,10 +239,11 @@ describe("previewListingTitle and titleForStoredCard", () => {
       selectorOptionId: s.base,
       sportValue: "Baseball",
       setNameValue: "Topps Chrome",
+      ...(await chunkFacts(t, s.base, s.sport)),
       cards: [
         {
           cardNumber: "20",
-          cardName: "Card 20",
+          cardName: "Card #20",
           playerIds: [s.gooden],
           teamOnCardIds: [s.mets],
           platformData: {},
@@ -202,6 +259,39 @@ describe("previewListingTitle and titleForStoredCard", () => {
       .withIdentity(ADMIN)
       .query(api.selectorOptions.previewListingTitle, { cardId });
     expect(stored.listingTitle).toBe(preview.title);
+  });
+});
+
+/**
+ * NEO-619 — "Parallels name themselves" on the insert: Regenerate and the
+ * stored-card path read the one chain, so they agree with the switch on, and
+ * the parallel's card drops the insert's name while the insert's own keeps it.
+ */
+describe("parallels name themselves (NEO-619)", () => {
+  test("the preview and the stored title agree, and the parallel's card leaves the insert out", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await t.run(async (ctx) => {
+      const parallel = (await ctx.db.get(s.cards.underParallel))!;
+      const insertId = (await ctx.db.get(parallel.selectorOptionId))!.parentId!;
+      await ctx.db.patch(insertId, { metadata: { parallelsNameThemselves: true } });
+    });
+    const titles: Record<string, string> = {};
+    for (const key of ["underParallel", "underInsert"] as const) {
+      const cardId = s.cards[key];
+      const preview = await t
+        .withIdentity(ADMIN)
+        .query(api.selectorOptions.previewListingTitle, { cardId });
+      const stored = await t.run(async (ctx) => titleForStoredCard(ctx, (await ctx.db.get(cardId))!));
+      expect(preview.title, key).toBe(stored.title);
+      expect(preview.inputs, key).toEqual(stored.inputs);
+      titles[key] = preview.title;
+    }
+    expect(titles.underParallel).toBe("2024 Topps Chrome Gold Refractor Parallel Darryl Strawberry #FS-2 Baseball");
+    // The parallel keeps its "Parallel" type name: a top level says its type.
+    expect(titles.underParallel).not.toContain("Future Stars");
+    // The insert's own card still names the insert.
+    expect(titles.underInsert).toContain("Future Stars");
   });
 });
 
@@ -285,7 +375,7 @@ describe("a stored title survives the set's move out of Unknown (NEO-527)", () =
       cards: [
         {
           cardNumber: "1",
-          cardName: "Card 1",
+          cardName: "Card #1",
           teams: [],
           players: [],
           platformData: { sportlots: { ref: "SL-1" } },
@@ -355,7 +445,7 @@ describe("cameos in titleForStoredCard and previewListingTitle", () => {
       .mutation(api.selectorOptions.addCustomCard, {
         selectorOptionId: s.base,
         cardNumber: "40",
-        cardName: "Card 40",
+        cardName: "Card #40",
         playerIds: [s.gooden],
       });
     await cancelScheduled(t);
@@ -388,7 +478,7 @@ describe("cameos in titleForStoredCard and previewListingTitle", () => {
       const withGoner = await insertTestCard(ctx, {
         selectorOptionId: s.base,
         cardNumber: "41",
-        cardName: "Card 41",
+        cardName: "Card #41",
         platformData: {},
         sortOrder: 0,
         lastUpdated: NOW,
@@ -415,7 +505,7 @@ describe("cameos in titleForStoredCard and previewListingTitle", () => {
       insertTestCard(ctx, {
         selectorOptionId: s.base,
         cardNumber: "42",
-        cardName: "Card 42",
+        cardName: "Card #42",
         platformData: {},
         sortOrder: 0,
         lastUpdated: NOW,
@@ -431,5 +521,306 @@ describe("cameos in titleForStoredCard and previewListingTitle", () => {
     expect((stored.title.match(/Dwight Gooden/g) ?? []).length).toBe(1);
     expect(stored.title).not.toContain("&");
     expect(read.unresolved.cameos).toBe(0);
+  });
+});
+
+/**
+ * NEO-606 — a team whose row is split (Location "New York", Name "Mets") gives
+ * its location up before the team goes. Every path that titles a card reads the
+ * split off the team row: Regenerate and the stored title (here), the card the
+ * commit chunk inserts (its own team, or the set's team it is born with), and
+ * the hand-added card. They all give the title they would give the Regenerate
+ * button.
+ */
+describe("a split team gives up its location before it goes (NEO-606)", () => {
+  // "Topps Chrome <name> #21" is 17 + the name; the whole team is 14 more
+  // characters ("Topps Chrome" has no year here), the nickname 5.
+  const LONG_NAME = "Q".repeat(52);
+
+  async function seedLong(t: T) {
+    const s = await seed(t);
+    const long = await t.run(async (ctx) => {
+      const sport = (await ctx.db.get(s.base))!;
+      void sport;
+      const sportId = (await ctx.db.get(s.mets))!.sportId;
+      return ctx.db.insert("players", {
+        name: LONG_NAME,
+        nameNormalized: normalizeEntityName(LONG_NAME),
+        sportId,
+        lastUpdated: NOW,
+      });
+    });
+    return { ...s, long };
+  }
+
+  test("the stored title and Regenerate say 'Mets', and carry the split", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLong(t);
+    const cardId = await t.run(async (ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: s.base,
+        cardNumber: "21",
+        cardName: "Card #21",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: NOW,
+        playerIds: [s.long],
+        teamOnCardIds: [s.mets],
+      }),
+    );
+    const stored = await t.run(async (ctx) => titleForStoredCard(ctx, (await ctx.db.get(cardId))!));
+    // The Base word fits back in once the city is gone (row 1, then row 11, then the refill).
+    expect(stored.title).toBe(`Topps Chrome Base ${LONG_NAME} #21 Mets`);
+    expect(stored.dropped).toEqual([]);
+    expect(stored.inputs.teamNames).toEqual(["New York Mets"]);
+    expect(stored.inputs.teamSplits).toEqual([{ location: "New York", name: "Mets" }]);
+    const preview = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.previewListingTitle, { cardId });
+    expect(preview.title).toBe(stored.title);
+    expect(preview.inputs.teamSplits).toEqual([{ location: "New York", name: "Mets" }]);
+  });
+
+  test("a team typed by name (no row) has no split and is dropped whole", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLong(t);
+    const cardId = await t.run(async (ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: s.base,
+        cardNumber: "21",
+        cardName: "Card #21",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: NOW,
+        playerIds: [s.long],
+        pendingTeamNames: ["New York Mets"],
+      }),
+    );
+    const stored = await t.run(async (ctx) => titleForStoredCard(ctx, (await ctx.db.get(cardId))!));
+    // Dropped whole; the sport the team's room had cost comes back in its place.
+    expect(stored.title).toBe(`Topps Chrome ${LONG_NAME} #21 Baseball`);
+    expect(stored.dropped).toEqual(["New York Mets"]);
+    expect(stored.inputs.teamSplits).toBeUndefined();
+  });
+
+  test("a team row with no location is dropped whole", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLong(t);
+    const cardId = await t.run(async (ctx) => {
+      await ctx.db.patch(s.mets, { location: undefined, name: "New York Mets" });
+      return insertTestCard(ctx, {
+        selectorOptionId: s.base,
+        cardNumber: "21",
+        cardName: "Card #21",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: NOW,
+        playerIds: [s.long],
+        teamOnCardIds: [s.mets],
+      });
+    });
+    const stored = await t.run(async (ctx) => titleForStoredCard(ctx, (await ctx.db.get(cardId))!));
+    expect(stored.title).toBe(`Topps Chrome ${LONG_NAME} #21 Baseball`);
+    expect(stored.dropped).toEqual(["New York Mets"]);
+    expect(stored.inputs.teamSplits).toBeUndefined();
+  });
+
+  test("a card the commit chunk inserts with its own team stores what Regenerate offers", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLong(t);
+    const result = await t.mutation(internal.selectorOptions.commitCardChecklistChunk, {
+      selectorOptionId: s.base,
+      sportValue: "Baseball",
+      setNameValue: "Topps Chrome",
+      ...(await chunkFacts(t, s.base, s.sport)),
+      cards: [
+        {
+          cardNumber: "21",
+          cardName: "Card #21",
+          playerIds: [s.long],
+          teamOnCardIds: [s.mets],
+          platformData: {},
+          sortOrder: 21,
+          playerNames: [LONG_NAME],
+          teamNames: ["New York Mets"],
+        },
+      ],
+    });
+    const cardId = result.storedIds[0];
+    const stored = await t.run(async (ctx) => (await ctx.db.get(cardId))!);
+    expect(stored.listingTitle).toBe(`Topps Chrome Base ${LONG_NAME} #21 Mets`);
+    const preview = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.previewListingTitle, { cardId });
+    expect(stored.listingTitle).toBe(preview.title);
+  });
+
+  test("a card born with the set's team (no team of its own) is shortened the same way", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLong(t);
+    await t.run(async (ctx) => ctx.db.patch(s.base, { teamIds: [s.mets] }));
+    const result = await t.mutation(internal.selectorOptions.commitCardChecklistChunk, {
+      selectorOptionId: s.base,
+      sportValue: "Baseball",
+      setNameValue: "Topps Chrome",
+      ...(await chunkFacts(t, s.base, s.sport)),
+      cards: [
+        {
+          cardNumber: "21",
+          cardName: "Card #21",
+          playerIds: [s.long],
+          platformData: {},
+          sortOrder: 21,
+          playerNames: [LONG_NAME],
+          teamNames: [],
+        },
+      ],
+    });
+    const cardId = result.storedIds[0];
+    const stored = await t.run(async (ctx) => (await ctx.db.get(cardId))!);
+    expect(stored.teamOnCardIds).toEqual([s.mets]);
+    expect(stored.listingTitle).toBe(`Topps Chrome Base ${LONG_NAME} #21 Mets`);
+    const preview = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.previewListingTitle, { cardId });
+    expect(stored.listingTitle).toBe(preview.title);
+  });
+
+  test("a hand-added card with a picked team is shortened the same way", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLong(t);
+    const cardId = await t.withIdentity(ADMIN).mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: s.base,
+      cardNumber: "21",
+      cardName: "Card #21",
+      playerIds: [s.long],
+      teamOnCardIds: [s.mets],
+    });
+    const stored = await t.run(async (ctx) => (await ctx.db.get(cardId))!);
+    // A hand-added card carries the set's year; the team is the nickname.
+    expect(stored.listingTitle).toBe(`2024 Topps Chrome ${LONG_NAME} #21 Mets`);
+    const preview = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.previewListingTitle, { cardId });
+    expect(stored.listingTitle).toBe(preview.title);
+  });
+});
+
+/**
+ * NEO-609 — a variant type that is not "Insert": the type's own row title is
+ * the word the title and the description use, singular. The preview
+ * (Regenerate), the stored-card path and the commit chunk (handed the
+ * prelude's facts by key) must name the very same levels.
+ */
+describe("a Proof chain: type names from the rows, one title everywhere (NEO-609)", () => {
+  const LEVEL = "Animated Autographs Pre-Production Proofs Lazer Red";
+
+  async function seedProof(t: T) {
+    return t.run(async (ctx) => {
+      const row = (
+        level: Doc<"selectorOptions">["level"],
+        value: string,
+        parentId?: Id<"selectorOptions">,
+        features?: Record<string, string>,
+      ) =>
+        ctx.db.insert("selectorOptions", {
+          level,
+          value,
+          ...(parentId ? { parentId } : {}),
+          ...(features ? { features } : {}),
+          platformData: {},
+          children: [],
+          lastUpdated: NOW,
+        });
+      const sport = await row("sport", "Baseball");
+      const year = await row("year", "2026", sport);
+      const brand = await row("manufacturer", "Leaf", year, { season: "2026", manufacturer: "Leaf" });
+      const set = await row("setName", "Vivid", brand, { season: "2026", manufacturer: "Leaf" });
+      const proofType = await row("variantType", "Proof", set, { season: "2026", manufacturer: "Leaf" });
+      const proof = await row("insert", LEVEL, proofType, { season: "2026", manufacturer: "Leaf" });
+      const leagueId = await ctx.db.insert("leagues", {
+        level: "college",
+        name: "NCAA",
+        nameNormalized: "ncaa",
+        sportId: sport,
+        lastUpdated: NOW,
+      });
+      const sunDevils = await ctx.db.insert("teams", {
+        name: "Sun Devils baseball",
+        location: "Arizona State",
+        nameNormalized: normalizeEntityName("Arizona State Sun Devils baseball"),
+        sportId: sport,
+        leagueId,
+        lastUpdated: NOW,
+      });
+      const carlon = await ctx.db.insert("players", {
+        name: "Cole Carlon",
+        nameNormalized: normalizeEntityName("Cole Carlon"),
+        sportId: sport,
+        lastUpdated: NOW,
+      });
+      return { sport, proof, sunDevils, carlon };
+    });
+  }
+
+  const WORKED = "2026 Leaf Vivid Animated Autographs Pre-Production Proofs Lazer Red Carlon /1";
+
+  test("the stored card, Regenerate and the chunk-born card all say the worked example", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedProof(t);
+    const stored = await t.run(async (ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: s.proof,
+        cardNumber: "NNO",
+        cardName: "Cole Carlon",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: NOW,
+        playerIds: [s.carlon],
+        teamOnCardIds: [s.sunDevils],
+        printRun: 1,
+        features: { season: "2026", manufacturer: "Leaf" },
+      }),
+    );
+    const viaStored = await t.run(async (ctx) => titleForStoredCard(ctx, (await ctx.db.get(stored))!));
+    expect(viaStored.title).toBe(WORKED);
+    expect(viaStored.inputs.titleLevels).toEqual([{ name: LEVEL, typeName: "Proof" }]);
+    expect(viaStored.dropped).toEqual(["Arizona State Sun Devils baseball", "#NNO", "Cole"]);
+    const preview = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.previewListingTitle, { cardId: stored });
+    expect(preview.title).toBe(WORKED);
+    expect(preview.inputs.titleLevels).toEqual([{ name: LEVEL, typeName: "Proof" }]);
+
+    const result = await t.mutation(internal.selectorOptions.commitCardChecklistChunk, {
+      selectorOptionId: s.proof,
+      sportValue: "Baseball",
+      setNameValue: "Vivid",
+      // The year and maker reach a title through the leaf's features.
+      inheritedFeatures: { season: "2026", manufacturer: "Leaf" },
+      ...(await chunkFacts(t, s.proof, s.sport)),
+      cards: [
+        {
+          cardNumber: "NNO2",
+          cardName: "Cole Carlon",
+          playerIds: [s.carlon],
+          teamOnCardIds: [s.sunDevils],
+          platformData: {},
+          sortOrder: 2,
+          printRun: 1,
+          playerNames: ["Cole Carlon"],
+          teamNames: ["Arizona State Sun Devils baseball"],
+        },
+      ],
+    });
+    const born = await t.run(async (ctx) => (await ctx.db.get(result.storedIds[0]))!);
+    const regenerated = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.previewListingTitle, { cardId: born._id });
+    // Same chain, so the same words; only the number differs ("NNO2" is cut too).
+    expect(born.listingTitle).toBe(regenerated.title);
+    expect(born.listingTitle).toBe(WORKED);
+    expect(born.listingTitleTruncated).toBe(true);
+    expect(born.listingDescription).toContain(`Proof: ${LEVEL}.`);
   });
 });

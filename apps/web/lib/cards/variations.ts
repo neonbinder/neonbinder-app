@@ -236,6 +236,20 @@ export function displayVariationLabel(raw: string): string {
  * Color Swap" is the case that needs a human: neither contains the other, and
  * no amount of string cleverness makes that a safe automatic call.
  */
+/**
+ * NEO-640 (Jason, 2026-11-21: "no, some lower percent") — the confidence of a
+ * BSC↔SportLots variation pair made by its LABEL alone (`pairedBy:
+ * "variation"`). A label match is a link, not a name confirmation: the
+ * marketplaces word a variation differently ("Action" / "Action Image"), so a
+ * pair that agrees on the card's name too is still not certain, and one whose
+ * label only "contains" the other is less so. Flat, whatever the basis, so
+ * the amber % in Match Cards reads one way. 0.9 on purpose: the same weight as
+ * the names-first core's `NUMBERS_DIFFER_FACTOR` and `NAMES_UNCONFIRMED_FACTOR`
+ * (one half of rule 7's evidence missing). A stored (operator-confirmed)
+ * pairing and BSC's own SportLots cross-reference stay 1.
+ */
+export const VARIATION_LABEL_CONFIDENCE = 0.9;
+
 export interface VariationPairingSuggestion {
   leftIndex: number;
   rightIndex: number;

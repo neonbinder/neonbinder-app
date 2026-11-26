@@ -63,24 +63,6 @@ crons.interval(
 );
 
 /**
- * Age review rows stranded on `pending` to `error` (NEO-99).
- *
- * The last-resort net behind the Wikidata pool's `onComplete` backstop and the
- * `runSparql` fetch timeout: if a lookup work item is lost so completely that
- * its completion callback never fires, this is what stops the entity-review
- * wizard hanging on "Looking up…" forever. Like the two sweeps above it is an
- * `interval` (a timeout, not a time-of-day job), fifteen minutes against a
- * thirty-minute staleness threshold, and the common run reads the oldest few
- * pending rows, finds none stale, and stops — see `sweepStalePendingRows`.
- */
-crons.interval(
-  "age stale entity-review lookups",
-  { minutes: 15 },
-  internal.entityReviewQueue.sweepStalePendingRows,
-  {},
-);
-
-/**
  * NEO-195 — reap checklist candidates whose fetch never finished.
  *
  * Confirm and cancel both clean up after themselves; this covers the run that
@@ -103,28 +85,6 @@ crons.interval(
   "reap stale checklist name resolutions",
   { hours: 1 },
   internal.checklistNameResolutions.sweepStaleResolutions,
-  {},
-);
-
-/**
- * NEO-221 — delete entity-review batches nobody is coming back to.
- *
- * A separate entry from "age stale entity-review lookups" above, and
- * deliberately so: that one is about a single row's LOOKUP hanging (30
- * minutes, `pending` → `error`, deletes nothing), while this is about the
- * SESSION ending — a closed tab leaves a batch of perfectly healthy rows that
- * `startBatch` would otherwise resume into the next fetch of that set, weeks
- * later, complete with decisions made against a card list that has moved on.
- *
- * Hourly against a 24-hour threshold, matching the checklist-candidate reaper
- * next to it: the cost of being an hour late is nothing, and the common run
- * samples the oldest few rows, finds them all fresh, and stops — see
- * `sweepAbandonedBatches`.
- */
-crons.interval(
-  "reap abandoned entity-review batches",
-  { hours: 1 },
-  internal.entityReviewQueue.sweepAbandonedBatches,
   {},
 );
 

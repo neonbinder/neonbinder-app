@@ -1,5 +1,9 @@
 import type { ComponentType, ReactNode, Ref, SVGProps } from "react";
-import { ExclamationCircleIcon } from "@heroicons/react/24/outline";
+import {
+  ExclamationCircleIcon,
+  ExclamationTriangleIcon,
+  EyeIcon,
+} from "@heroicons/react/24/outline";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 
 /**
@@ -29,6 +33,20 @@ import { activateOnEnter } from "@/lib/dom/activate-on-enter";
  *   answers a count the screen is already showing (the checklist's "N cards
  *   need a team"). It sits on the checklist card, which has a light-mode
  *   surface too, so its ring offset follows the theme.
+ *
+ * - `fix` / `check` (NEO-645, Jason 2026-11-22: "color by worst color"): the
+ *   Tidy Up walk's own two levels, for a count that stands for cards in the
+ *   walk. Pink (`fix`) when any card can't be listed yet, blue (`check`) when
+ *   the worst is a stop for review. They are the walk's tile colours
+ *   (`neon-*-text` edge and icon on the `wash-*` ground, the same tokens
+ *   `TidyTile` and `CardAttentionBadge` use), so the pill, the row badges and
+ *   the tiles read as one scale. The words stay `ink`: on the checklist's
+ *   `raised` card the pink wash is lighter than the walk's panel, and dark
+ *   pink text on it is 4.17:1 (see `TONE_ICON_CLASSES`). Colour is never the
+ *   only carrier: the leading icon is the tile's own, the warning triangle
+ *   for `fix` and the eye for `check`, and the caller's text carries the words. Hover steps the wash up
+ *   to 20%, because the resting wash is already 10% and a hover that repeated
+ *   it would not show.
  *
  * ## One focus ring
  *
@@ -60,7 +78,7 @@ type HeroIcon = ComponentType<
   SVGProps<SVGSVGElement> & { title?: string; titleId?: string }
 >;
 
-export type SetRowActionTone = "quiet" | "attention";
+export type SetRowActionTone = "quiet" | "attention" | "fix" | "check";
 
 type CommonProps = {
   /** The visible text, which is also the accessible name. */
@@ -86,7 +104,7 @@ type Props = CommonProps &
     | { tone?: "quiet"; icon: HeroIcon }
     // The attention pill always leads with the exclamation: the icon is part
     // of what the tone means, not a per-caller choice.
-    | { tone: "attention"; icon?: never }
+    | { tone: "attention" | "fix" | "check"; icon?: never }
   );
 
 const BASE =
@@ -102,6 +120,30 @@ export const SET_ROW_ACTION_TONE_CLASSES: Record<SetRowActionTone, string> = {
   attention:
     "rounded-full border-notice-warn-rule bg-notice-warn-bg font-semibold " +
     "text-notice-warn-ink hover:bg-notice-warn-rule/20 aria-disabled:hover:bg-notice-warn-bg",
+  fix:
+    "rounded-full border-neon-pink-text bg-wash-pink font-semibold " +
+    "text-ink hover:bg-neon-pink/20 aria-disabled:hover:bg-wash-pink",
+  check:
+    "rounded-full border-neon-blue-text bg-wash-blue font-semibold " +
+    "text-ink hover:bg-neon-blue/20 aria-disabled:hover:bg-wash-blue",
+};
+
+/**
+ * The icon's own colour, where a tone has one. `fix` and `check` keep their
+ * words in `ink` and carry the level in the edge, the wash and this icon:
+ * dark `neon-pink-text` on the pink wash over the checklist's `raised` card
+ * is 4.17:1, short of 4.5 for text, but a graphic only needs 3 (SC 1.4.11).
+ */
+const TONE_ICON_CLASSES: Partial<Record<SetRowActionTone, string>> = {
+  fix: "text-neon-pink-text",
+  check: "text-neon-blue-text",
+};
+
+/** The leading icon each non-quiet tone carries (it is part of the tone). */
+const TONE_ICONS: Record<Exclude<SetRowActionTone, "quiet">, HeroIcon> = {
+  attention: ExclamationCircleIcon,
+  fix: ExclamationTriangleIcon,
+  check: EyeIcon,
 };
 
 export default function SetRowActionButton(props: Props) {
@@ -117,7 +159,9 @@ export default function SetRowActionButton(props: Props) {
     tone = "quiet",
   } = props;
   const Icon: HeroIcon =
-    props.tone === "attention" ? ExclamationCircleIcon : props.icon;
+    props.tone === "attention" || props.tone === "fix" || props.tone === "check"
+      ? TONE_ICONS[props.tone]
+      : props.icon;
   const blocked = Boolean(disabled || busy);
 
   const activate = () => {
@@ -142,7 +186,10 @@ export default function SetRowActionButton(props: Props) {
       title={title}
       className={`${BASE} ${SET_ROW_ACTION_TONE_CLASSES[tone]}`}
     >
-      <Icon className="w-4 h-4 shrink-0" aria-hidden="true" />
+      <Icon
+        className={`w-4 h-4 shrink-0 ${TONE_ICON_CLASSES[tone] ?? ""}`.trimEnd()}
+        aria-hidden="true"
+      />
       {children}
     </button>
   );

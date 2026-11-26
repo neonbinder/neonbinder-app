@@ -99,12 +99,69 @@ describe("readChecklistFile", () => {
     const readPdf = vi.fn(async () => ({
       ok: true as const,
       pages: 1,
-      lines: [{ page: 1, line: 1, cells: ["1", "A"], xs: [53, 132.6] }],
+      lines: [{ page: 1, line: 1, cells: ["1", "A"], xs: [53, 132.6], items: [] }],
     }));
     const out = await readChecklistFile(fileOf("t.pdf", text("%PDF-1.4\n")), { readPdf });
     expect(out).toEqual({
       ok: true,
       input: { kind: "cells", cells: { format: "pdf", records: [{ line: 1, page: 1, cells: ["1", "A"], xs: [53, 132.6] }] } },
+    });
+  });
+
+  describe("hands a PDF line's text runs on only when they say more than its cells (NEO-591)", () => {
+    const run = (text: string, x: number, end: number) => ({ text, x, end, size: 10, font: "f1" });
+    const pdfOf = (lines: Array<{ cells: string[]; xs: number[]; items: ReturnType<typeof run>[] }>) =>
+      readChecklistFile(fileOf("t.pdf", text("%PDF-1.4\n")), {
+        readPdf: async () => ({
+          ok: true as const,
+          pages: 1,
+          lines: lines.map((l, i) => ({ page: 1, line: i + 1, ...l })),
+        }),
+      });
+    const recordsOf = (out: Awaited<ReturnType<typeof pdfOf>>) => {
+      if (!out.ok || out.input.kind !== "cells") throw new Error("not cells");
+      return out.input.cells.records;
+    };
+    const ordinary = {
+      cells: ["1", "Shohei Ohtani"],
+      xs: [53, 132.6],
+      items: [run("1", 53, 58), run("Shohei Ohtani", 132.6, 197.6)],
+    };
+
+    it("carries the runs of every line when one line is a Last Name / First Name header", async () => {
+      const header = {
+        cells: ["Last Name", "First Name", "Team"],
+        xs: [52.5, 110.7, 328.9],
+        items: [run("Last Name", 52.5, 90), run("First Name", 110.7, 150), run("Team", 328.9, 350)],
+      };
+      const records = recordsOf(await pdfOf([header, ordinary]));
+      expect(records.map((r) => r.items)).toEqual([header.items, ordinary.items]);
+    });
+
+    it("carries the runs of every line when one line merged a gap of a font height or more", async () => {
+      // 17.5 pt apart: over one 10 pt font height, under the 20 pt cell gap.
+      const merged = {
+        cells: ["De La Torre Luis"],
+        xs: [52.5],
+        items: [run("De La Torre", 52.5, 100), run("Luis", 117.5, 135)],
+      };
+      const records = recordsOf(await pdfOf([ordinary, merged]));
+      expect(records.map((r) => r.items)).toEqual([ordinary.items, merged.items]);
+    });
+
+    it("leaves the runs off when no header names Last/First and no gap was hidden", async () => {
+      const records = recordsOf(await pdfOf([ordinary]));
+      expect(records).toEqual([{ line: 1, page: 1, cells: ordinary.cells, xs: ordinary.xs }]);
+      expect("items" in records[0]).toBe(false);
+    });
+
+    it("does not count a word space (a quarter of a font height) as a hidden gap", async () => {
+      const spaced = {
+        cells: ["Bobby Witt"],
+        xs: [53],
+        items: [run("Bobby", 53, 78), run("Witt", 80.5, 100)],
+      };
+      expect("items" in recordsOf(await pdfOf([spaced]))[0]).toBe(false);
     });
   });
 

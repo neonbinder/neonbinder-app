@@ -6,9 +6,9 @@ metadata:
 ---
 
 A ranking rule in `players.nearMatches` (`rankPlayerCandidates`) is reachable
-two ways: the Tidy-up wizard's New Player step and `/admin/players`' add form.
-Both render `NearMatchPanel` (list `Possible player matches`). The wizard only
-opens from a real checklist fetch (real names, R7a), so a minted-name fixture
+two ways: the Tidy up walk's Player row and `/admin/players`' add form.
+Both render `NearMatchPanel` (list `Possible player matches`). The walk's Player rows only
+arise from a real fetch or a pasted checklist (real names, R7a), so a minted-name fixture
 (`W<token>`, `J. W<token>`, `Jonah W<token>` in `customSport(env)`) only works
 on the add form. Say so in the spec header; the coverage auditor accepts it.
 
@@ -31,6 +31,6 @@ stays `Create player <name>` while only CLOSE matches exist (it becomes
 `Open …` / `Create player … anyway` only on an exact one).
 
 **Why:** a negative assert passes on a dead page or a wrong locator
-([[negative-asserts-pass-on-a-dead-page]]); this agent may not push functions
+([[patterns_negative_asserts_pass_on_a_dead_page]]); this agent may not push functions
 ([[patterns_planted_red_for_server_side_behaviour]]).
 **How to apply:** any spec asserting something is LEFT OUT of a ranked list.

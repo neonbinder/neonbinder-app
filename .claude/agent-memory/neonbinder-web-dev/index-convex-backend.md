@@ -1,0 +1,54 @@
+# Convex Backend
+
+Convex functions, op budgets, pagination, search indexes, validators, OCC, bulk loads, listing-input plumbing and production-data gotchas.
+
+- [Bulk-load op budget counts calls](reference_bulkload_op_budget_counts_calls_not_rows_or_stints.md) — roster leg: ~5 ops plain row, ~11 for a 3-alias create; budget tests need alias creates
+- [External ids must be verified live](external-ids-must-be-verified-live.md) — Wikidata/ESPN QIDs and other external identifiers shipped as constants must be checked against the live source before merge — four sportConfig hallOfFameQid values wer…
+- [Convex call spread hides bad args](reference_convex_call_spread_hides_bad_args.md) — Spreading conditional keys into a useMutation/useAction call bypasses TS excess-property checking, so a Convex arg the validator will reject at runtime compiles clean
+- [Convex codegen only blocks types](reference_convex_codegen_only_blocks_types.md) — Missing Convex codegen blocks ONLY tsc, never vitest/convex-test — api.js is anyApi/componentsGeneric proxies, so new functions and components resolve at runtime witho…
+- [Convex one paginate per function](reference_convex_one_paginate_per_function.md) — Convex + convex-test allow ONE .paginate() per execution; a multi-node chunked walker pages with .take() + a _creationTime cursor instead
+- [Search index is or so longest token fallback is dead](reference_search_index_is_or_so_longest_token_fallback_is_dead.md) — Both Convex and convex-test full-text search are OR over query terms, so the `if (hits.length === 0) retry with longestToken(name)` fallback in teams.nearMatches and p…
+- [Workpool oncomplete inline batched](reference_workpool_oncomplete_inline_batched.md) — @convex-dev/workpool runs onComplete callbacks INLINE and batches several into ONE transaction (Promise.all) — so a shared-doc read-modify-write across completions los…
+- [Sport config is copied onto rows](sport-config-is-copied-onto-rows.md) — sportConfig defaults are COPIED onto a selectorOptions sport row at creation; editing the defaults never reaches an existing deployment's rows
+- [Alias index pin exempts reset drain by name and position](reference_alias_index_pin_exempts_reset_drain_by_name_and_position.md) — side-table pins flag READS; outside the owner, scan via an exported page helper (pagePlayerAliasRows etc.)
+- [Client imports from convex only pure modules](reference_client_imports_from_convex_only_pure_modules.md) — a component cannot import a bound from convex/teams.ts (server graph in the bundle); hand-copy with a keep-in-step comment or let the server refuse
+- [A re-parent drops a row out of its open column](reference_a_reparent_drops_a_row_out_of_its_open_column.md) — SetSelector columns are scoped to the parent id; re-point the parent column, never clear the selection
+- [Convex system-op budget and bounded walks](reference_convex_system_op_budget_and_bounded_walks.md) — ~900 ops/txn comfortable, ~1800 strains, ~4000 fails; workpool component call costs ~3; cursor walk, or self-scheduled pages when no caller can loop
+- [Reset loop has a fifth consumer](reference_reset_loop_has_a_fifth_consumer.md) — publicFunctionAuth.test.ts pins each reset*Batch as internalMutation; the seeded toEqual block lives at two indent levels
+- [OCC window moves to a query behind an action](reference_occ_window_moves_to_a_query_behind_an_action.md) — wide-range mutation losing OCC: action → internal query picks ids → internal mutation gets + re-validates; pin via ctx.db Proxy
+- [Subtree delete intra-table pointers](reference_subtree_delete_intra_table_pointers.md) — leaf-first paging still dangles sync-status notices (keyed on parent) and queue `source`; delete them with their target
+- [Moving cards remaps the src slot key](reference_moving_cards_remaps_the_src_slot_key.md) — card src is a per-row slot key; remap via dest allocateSlots, clear an unmapped src, refuse a split pair; delete helpers exported
+- [Bulkload budget tests pin exact ops](reference_bulkload_budget_tests_pin_exact_ops.md) — 854/989 opsSpent are asserted exactly; reuse a read the row loop already made, and run the whole file
+- [Convex mutation resolves after queries reflect it](reference_convex_mutation_resolves_after_queries_reflect_it.md) — after `await apply()` useQuery holds the writes but no render yet; an ACTION's do not — fence on a server-read count
+- [Placeholder module cycle TDZ](reference_placeholder_module_cycle_tdz.md) — pipeline ↔ pool/heavyPool import each other; a shared const is TDZ at load; shared validators go in pure lib/
+- [selectorOptions import cycle](reference_selectoroptions_import_cycle.md) — a module players.ts imports must not reach selectorOptions.ts statically; validators load undefined (asOptional TypeError)
+- [Key join rules need a typeahead reading](reference_key_join_rules_need_a_typeahead_reading.md) — joined initials break prefix AND substring typeahead one keystroke; entityNameQueryReadings; player-in-sport = home + playerSports legs
+- [Action blind insert is invisible to OCC](reference_action_blind_insert_is_invisible_to_occ.md) — re-check status + read the range inside the write; repro the interleave by driving the action steps by hand
+- [Convex snapshot import keeps table numbers](reference_convex_snapshot_import_keeps_table_numbers.md) — ids encode table numbers (prod vs preview collide); bare ints import as int64, write floats as N.0
+- [One search per index per query](reference_one_search_per_index_per_query.md) — two same-text withSearchIndex reads go stale (narrower filter wins); narrow leg = index range + JS text filter
+- [Query-then-mutation page misses late rows](reference_query_then_mutation_page_misses_late_rows.md) — rows staged between a bulk page's query and write are invisible; last page re-reads (NEO-330 skip)
+- [Capped master list needs search and by-id](reference_capped_master_list_needs_search_and_by_id.md) — a `.take(CAP)` list filtered client-side hides rows past the cap; newest-first window + server search + by-id read for ?param and the open panel
+- [Keep counts per scope, not global](reference_keep_counts_per_scope_not_global.md) — admin-invalidated count on the per-set row (clear + bounded recount), never one owner-wide counter
+- [users table is never written](reference_users_table_is_never_written.md) — never join it for names; profile names, else Clerk via adminResolveOwnerLabels (label===id means none)
+- [Batch reads in waves, validate in order](reference_batch_reads_in_waves_validate_in_order.md) — Promise.all read waves then original-order checks; ranges only after scope passes; moveSubtree pin regex is one-line
+- [Walk a ledger by position](reference_walk_a_ledger_by_position.md) — reading open.first()'s label races the last landing; nth(i) + toHaveAccessibleName
+- [Paginated query leaves Exhausted live](reference_paginated_query_leaves_exhausted_live.md) — a live update drops an Exhausted gate to Loading and unmounts dialogs; hold the last full read
+- [Newest set rows are empty](reference_newest_set_rows_are_empty.md) — "newest sets" by set-row creation finds only empties; walk newest cards per variant, read once
+- [Folded key growth needs NFC expansion](reference_folded_key_growth_needs_nfc_expansion.md) — lower-case grows ≤2x; U+FB2C NFC grows 1→3, use it to exceed a folded-key cap
+- [Replace-list writes: unknown is not empty](reference_replace_semantics_need_unknown_not_empty.md) — absent=untouched/[]=clear args need a per-row "links unknown" state; refuse attach, never send
+- [No NB account-deletion sweep](reference_no_nb_account_deletion_sweep.md) — deletion is manual; per-user scrubs are operator-run internal mutations (forgetUploader pattern)
+- [Set leagues are ids, nearest wins](reference_set_leagues_are_ids_nearest_wins.md) — NEO-569: leagueIds setName-and-below, any-of; features.league retired; seed leagues before a real-way set
+- [Replay a tester report from convex logs](reference_convex_logs_replay_a_tester_report.md) — mutation list + per-query read counts show what really ran; NEO-528 "Have" was the locked All toggle
+- [Convex prod redacts plain Error text](reference_convex_prod_redacts_plain_error_messages.md) — never string-match a server refusal; coded ConvexError from a pure convex/lib module, read data.code
+- [New listing problem reason: hand lists](reference_new_listing_problem_reason_has_hand_lists.md) — SYNC_HELD_REASONS, REPORTABLE_SYNC_REASONS judgement, test Reason union, spec copy literals
+- [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators
+- [Convex new-module gotchas](convex-new-module-gotchas.md) — api.d.ts hand-registration, playerIds pin, lib/*Facts for cycles, pdfjs env failure
+- [Host-stored count goes stale](host-stored-count-goes-stale-ask-the-door.md) — door reports live counts (onCounts + recount + countOnMount); no subscription for big parents
+- [convex data caps at 8192 rows](reference_convex_data_caps_at_8192_rows.md) — page a big table read-only with --order asc/desc and dedupe by _id
+- [Pickers take a source/value list](reference_pickers_take_a_source_value_list.md) — name+number pickers: pick-options.ts, adapter per wire, typed = exact, namePicks answers the wizard
+- [Listing inputs field threads through validators](reference_listing_inputs_field_threads_through_validators.md) — new ListingCardInputs field: 2 returns validators, 5 build paths, shared team cache; fixtures by title length + tsx probe
+- [Bound R2 calls yourself](reference_bound_r2_calls_yourself_aws4fetch_retries_ten_times.md) — aws4fetch retries 5xx x10 past any signal; sign + fetch with an AbortController timer
+- [Apply result outlives its offer](reference_apply_result_must_outlive_the_offer_it_empties.md) — key the outcome on count at press time; also purple-text dark contrast fix
+- [Userprofile fields go top level](reference_userprofile_fields_go_top_level.md) — A new per-user field on userProfiles goes at the top level, not under `preferences`; getUserProfile returns preferences through a fixed validator and updateUserProfile replaces the object whole
+- [Client label proof lives in the action](reference_client_label_proof_scan_lives_in_the_action.md) — query ctx has no runQuery; action runs scanSetHistory and passes the proven subset to the checker; seed history on a sibling leaf
+- [selectorOptions metadata vs top-level fields](reference_selectoroptions_metadata_vs_top_level_fields.md) — a row.field pointer goes in selectorOptionFields beside children, not the metadata object; new required return field breaks toEqual pins

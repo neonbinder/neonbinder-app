@@ -25,9 +25,11 @@ import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import type { GateLink } from "./lib/tidyAnswerDecisions";
 import {
   CAREER_TEAM_READS_PER_NAME,
   CARD_YEAR_TEAM_READS_PER_TRANSACTION,
+  buildExistingPlayerCandidates,
   createCardYearTeamCache,
   narrowSameNamePlayersByCardYear,
 } from "./players";
@@ -369,7 +371,7 @@ async function commit(
   t: ReturnType<typeof convexTest>,
   ids: { sportId: Id<"selectorOptions">; variantTypeId: Id<"selectorOptions"> },
   cards: ReturnType<typeof makeCard>[],
-  batchId?: string,
+  gateLinks?: GateLink[],
 ) {
   await t
     .withIdentity(ADMIN_IDENTITY)
@@ -377,7 +379,7 @@ async function commit(
       selectorOptionId: ids.variantTypeId,
       sportId: ids.sportId,
       cards,
-      ...(batchId ? { batchId } : {}),
+      ...(gateLinks ? { gateLinks } : {}),
     });
   return t.run(async (ctx) =>
     ctx.db
@@ -442,16 +444,13 @@ describe("NEO-254: the commit prelude narrows on the card's year too", () => {
     expect(cards[0].playerIds).toEqual([cub]);
   });
 
-  test("an operator's recorded decision beats the narrowing", async () => {
+  test("a gate link beats the narrowing", async () => {
     /*
      * The ordering this pins.
      *
-     * A review session is human-paced and the commit happens at the end of it.
-     * Between the operator picking the 1930s man (they had a reason — a
-     * missing stint, a source they checked) and pressing Confirm, a bulk load
-     * can add stints that make the year evidence point at the other row. If
-     * the narrowing ran first it would silently overrule a person who had
-     * already looked at these very rows. Inference fills a silence; it never
+     * The gate's own link (NEO-656: `gateLinks`, handed back at commit) is the
+     * answer the commit reads. If the narrowing ran first it would overrule the
+     * row the gate already linked. Inference fills a silence; it never
      * overrules an answer.
      */
     const t = convexTest(schema, modules);
@@ -461,63 +460,17 @@ describe("NEO-254: the commit prelude narrows on the card's year too", () => {
     await insertBobAllen(t, ids.sportId, [
       { teamId: padres, fromYear: 1986, toYear: 1994 },
     ]);
-    const operatorsPick = await insertBobAllen(t, ids.sportId, [
+    const linkedByGate = await insertBobAllen(t, ids.sportId, [
       { teamId: padres, fromYear: 1930, toYear: 1937 },
     ]);
-
-    await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: ids.variantTypeId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "player" as const,
-        name: "Bob Allen",
-        sportId: ids.sportId,
-        status: "ready" as const,
-        decision: { action: "link" as const, linkedPlayerId: operatorsPick },
-      }),
-    );
 
     const cards = await commit(
       t,
       ids,
       [makeCard({ players: ["Bob Allen"] })],
-      "batch-1",
+      [{ kind: "player", name: "Bob Allen", playerId: linkedByGate, origin: "careerTeam" }],
     );
-    expect(cards[0].playerIds).toEqual([operatorsPick]);
-  });
-
-  test("a SKIP is an answer too, and the narrowing does not undo it", async () => {
-    const t = convexTest(schema, modules);
-    const ids = await seedSetOfYear(t, "1990");
-    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres", "diego padres san");
-    await insertBobAllen(t, ids.sportId, [
-      { teamId: padres, fromYear: 1986, toYear: 1994 },
-    ]);
-    await insertBobAllen(t, ids.sportId, [
-      { teamId: padres, fromYear: 1930, toYear: 1937 },
-    ]);
-
-    await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: ids.variantTypeId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "player" as const,
-        name: "Bob Allen",
-        sportId: ids.sportId,
-        status: "ready" as const,
-        decision: { action: "skip" as const },
-      }),
-    );
-
-    const cards = await commit(
-      t,
-      ids,
-      [makeCard({ players: ["Bob Allen"] })],
-      "batch-1",
-    );
-    expect(cards[0].playerIds ?? []).toEqual([]);
+    expect(cards[0].playerIds).toEqual([linkedByGate]);
   });
 
   test("two spellings of one name pool the teams their cards carry", async () => {
@@ -589,7 +542,7 @@ describe("NEO-254: the commit prelude narrows on the card's year too", () => {
 describe("NEO-254: candidates carry whether they were active in the set's year", () => {
   test("only the candidate whose stints cover the year is flagged", async () => {
     const t = convexTest(schema, modules);
-    const { sportId, variantTypeId } = await seedSetOfYear(t, "1990");
+    const { sportId } = await seedSetOfYear(t, "1990");
     const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
     const modern = await insertBobAllen(t, sportId, [
       { teamId: padres, fromYear: 1986, toYear: 1994 },
@@ -601,102 +554,26 @@ describe("NEO-254: candidates carry whether they were active in the set's year",
     // year, and nothing on file to say.
     const bare = await insertBobAllen(t, sportId);
 
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId: variantTypeId,
-      createdByUserId: ADMIN_IDENTITY.subject,
-      sportId,
-      playerNames: ["Bob Allen"],
-      teamNames: [],
-    });
-    expect(batchId).toBeTruthy();
-
-    const row = await t.run(async (ctx) =>
-      ctx.db
-        .query("entityReviewQueue")
-        .withIndex("by_selector_option_and_batch", (q) =>
-          q.eq("selectorOptionId", variantTypeId).eq("batchId", batchId),
-        )
-        .first(),
+    const candidates = await t.run(async (ctx) =>
+      buildExistingPlayerCandidates(ctx, "Bob Allen", sportId, { cardYear: 1990 }),
     );
-    const byId = new Map(
-      (row!.enrichment!.existingCandidates ?? []).map((c) => [c.playerId, c]),
-    );
+    const byId = new Map(candidates.map((c) => [c.playerId, c]));
     expect(byId.get(modern)!.activeInSetYear).toBe(true);
     // Absent, never `false`: the flag states what we can stand behind.
     expect(byId.get(older)!.activeInSetYear).toBeUndefined();
     expect(byId.get(bare)!.activeInSetYear).toBeUndefined();
   });
 
-  test("getBatch returns the flag — the wizard actually opens", async () => {
-    /*
-     * The regression this exists for.
-     *
-     * `enrichmentValidator` in convex/entityReviewQueue.ts is a hand-kept copy
-     * of the schema's enrichment shape, and Convex validates a function's
-     * RETURN against it. A field written to the row but missing from that copy
-     * is not a type error — it is a runtime "Unexpected field" thrown by every
-     * query that returns a row, so the whole wizard fails to open for any batch
-     * containing a same-name player whose stint covers the set year.
-     *
-     * The sibling tests above read rows through `t.run`, which goes straight to
-     * the database and past every validator, so none of them could catch it.
-     * This one goes through the public query the wizard actually calls.
-     */
-    const t = convexTest(schema, modules);
-    const { sportId, variantTypeId } = await seedSetOfYear(t, "1990");
-    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
-    const modern = await insertBobAllen(t, sportId, [
-      { teamId: padres, fromYear: 1986, toYear: 1994 },
-    ]);
-    await insertBobAllen(t, sportId, [
-      { teamId: padres, fromYear: 1930, toYear: 1937 },
-    ]);
-
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId: variantTypeId,
-      createdByUserId: ADMIN_IDENTITY.subject,
-      sportId,
-      playerNames: ["Bob Allen"],
-      teamNames: [],
-    });
-
-    const rows = await t
-      .withIdentity(ADMIN_IDENTITY)
-      .query(api.entityReviewQueue.getBatch, {
-        selectorOptionId: variantTypeId,
-        batchId,
-      });
-    expect(rows).toHaveLength(1);
-    const candidates = rows[0].enrichment!.existingCandidates ?? [];
-    expect(candidates).toHaveLength(2);
-    expect(
-      candidates.find((c) => c.playerId === modern)!.activeInSetYear,
-    ).toBe(true);
-  });
-
   test("with no set year, nothing is flagged and nothing is dropped", async () => {
     const t = convexTest(schema, modules);
-    const { sportId, variantTypeId } = await seedSetOfYear(t, null);
+    const { sportId } = await seedSetOfYear(t, null);
     const padres = await insertTeam(t, sportId, "San Diego", "Padres", "diego padres san");
     await insertBobAllen(t, sportId, [{ teamId: padres, fromYear: 1986, toYear: 1994 }]);
     await insertBobAllen(t, sportId, [{ teamId: padres, fromYear: 1930, toYear: 1937 }]);
 
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId: variantTypeId,
-      createdByUserId: ADMIN_IDENTITY.subject,
-      sportId,
-      playerNames: ["Bob Allen"],
-      teamNames: [],
-    });
-    const row = await t.run(async (ctx) =>
-      ctx.db
-        .query("entityReviewQueue")
-        .withIndex("by_selector_option_and_batch", (q) =>
-          q.eq("selectorOptionId", variantTypeId).eq("batchId", batchId),
-        )
-        .first(),
+    const candidates = await t.run(async (ctx) =>
+      buildExistingPlayerCandidates(ctx, "Bob Allen", sportId, {}),
     );
-    const candidates = row!.enrichment!.existingCandidates ?? [];
     expect(candidates).toHaveLength(2);
     expect(candidates.every((c) => c.activeInSetYear === undefined)).toBe(true);
   });
@@ -780,7 +657,7 @@ describe("NEO-254: two Griffeys, one alias, and the card's year", () => {
 
   test("a 1989 card with NO team goes to review, with the son flagged active", async () => {
     const t = convexTest(schema, modules);
-    const { sportId, variantTypeId } = await seedSetOfYear(t, "1989");
+    const { sportId } = await seedSetOfYear(t, "1989");
     const { father, son } = await seedGriffeys(t, sportId);
 
     // Neither wins: both were on a roster that year.
@@ -789,24 +666,10 @@ describe("NEO-254: two Griffeys, one alias, and the card's year", () => {
         .playerId,
     ).toBeUndefined();
 
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId: variantTypeId,
-      createdByUserId: ADMIN_IDENTITY.subject,
-      sportId,
-      playerNames: ["Ken Griffey"],
-      teamNames: [],
-    });
-    const row = await t.run(async (ctx) =>
-      ctx.db
-        .query("entityReviewQueue")
-        .withIndex("by_selector_option_and_batch", (q) =>
-          q.eq("selectorOptionId", variantTypeId).eq("batchId", batchId),
-        )
-        .first(),
+    const candidates = await t.run(async (ctx) =>
+      buildExistingPlayerCandidates(ctx, "Ken Griffey", sportId, { cardYear: 1989 }),
     );
-    const byId = new Map(
-      (row!.enrichment!.existingCandidates ?? []).map((c) => [c.playerId, c]),
-    );
+    const byId = new Map(candidates.map((c) => [c.playerId, c]));
     expect(byId.size).toBe(2);
     expect(byId.get(son)!.activeInSetYear).toBe(true);
     expect(byId.get(father)!.activeInSetYear).toBe(true);
@@ -1579,26 +1442,16 @@ describe("NEO-424: the commit prelude applies the Hall of Fame tie-break to a na
     expect(await t.run(async (ctx) => ctx.db.query("players").collect())).toHaveLength(2);
   });
 
-  test("an operator's link to the other man beats the Hall of Fame tie-break", async () => {
+  test("a gate link to the other man beats the Hall of Fame tie-break", async () => {
     const t = convexTest(schema, modules);
     const ids = await seedSetOfYear(t, "2024");
     await insertFamer(t, ids.sportId, true);
-    const operatorsPick = await insertFamer(t, ids.sportId, false);
-    await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: ids.variantTypeId,
-        batchId: "batch-hof",
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "player" as const,
-        name: "Bob Allen",
-        sportId: ids.sportId,
-        status: "ready" as const,
-        decision: { action: "link" as const, linkedPlayerId: operatorsPick },
-      }),
-    );
+    const linkedByGate = await insertFamer(t, ids.sportId, false);
 
-    const cards = await commit(t, ids, [makeCard({ players: ["Bob Allen"] })], "batch-hof");
-    expect(cards[0].playerIds).toEqual([operatorsPick]);
+    const cards = await commit(t, ids, [makeCard({ players: ["Bob Allen"] })], [
+      { kind: "player", name: "Bob Allen", playerId: linkedByGate, origin: "setHistory" },
+    ]);
+    expect(cards[0].playerIds).toEqual([linkedByGate]);
   });
 
   test("two Hall of Famers leave the card unlinked", async () => {
@@ -1946,5 +1799,295 @@ describe("NEO-490: rule 6b is bounded, and a bound always means review", () => {
       expect(narrowed).toMatchObject({ playerId: onPadres, viaCareerTeam: true });
       expect(cache.reads).toBeGreaterThan(0);
     });
+  });
+});
+
+// ===========================================================================
+// NEO-574 — rule 6b shares the career-coverage rule
+// ===========================================================================
+
+describe("NEO-574: rule 6b counts a stint only when it began by the card's year, and matches teams by franchise", () => {
+  async function insertTeamIn(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    location: string,
+    name: string,
+    nameNormalized: string,
+    franchiseId?: Id<"franchises">,
+  ): Promise<Id<"teams">> {
+    return t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        location,
+        name,
+        nameNormalized,
+        sportId,
+        ...(franchiseId ? { franchiseId } : {}),
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+
+  test("a namesake whose only stint with the card's team begins AFTER the card year is not linked", async () => {
+    // The prospect case (Jason, 2026-11-16: strict). Before NEO-574 this
+    // linked him, because "any year" counted the 2030 stint.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    await insertBobAllen(t, sportId, [{ teamId: padres, fromYear: 2030, toYear: 2032 }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBeUndefined();
+    expect(resolved.narrowedBy).toBeUndefined();
+    expect(resolved.matchCount).toBe(2);
+  });
+
+  test("a stint beginning in the card's own year counts", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    // Starts 2024 and ends 2024: the career span covers the year, but the
+    // namesake is one of two survivors only if the other is active too.
+    const onPadres = await insertBobAllen(t, sportId, [{ teamId: padres, fromYear: 2024, toYear: 2024 }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, fromYear: 2024, toYear: 2024 }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    // Rule 4 (the team in the card's year) answers first; either way the
+    // namesake on the Padres is the one.
+    expect(resolved.playerId).toBe(onPadres);
+  });
+
+  test("an undated stint counts toward the card's team", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const onPadres = await insertBobAllen(t, sportId, [{ teamId: padres }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBe(onPadres);
+    expect(resolved.narrowedBy).toBe("careerTeam");
+  });
+
+  test("a stint on another row of the card team's FRANCHISE counts", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1999");
+    const franchiseId = await t.run(async (ctx) =>
+      ctx.db.insert("franchises", {
+        name: "Titans / Oilers",
+        nameNormalized: "oilers titans",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const oilers = await insertTeamIn(t, sportId, "Houston", "Oilers", "houston oilers", franchiseId);
+    await insertTeamIn(t, sportId, "Tennessee", "Titans", "tennessee titans", franchiseId);
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const oiler = await insertBobAllen(t, sportId, [{ teamId: oilers, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 1999, cardTeamNames: ["Tennessee Titans"] });
+
+    expect(resolved.playerId).toBe(oiler);
+    expect(resolved.narrowedBy).toBe("careerTeam");
+  });
+
+  test("without the franchise link the same names do not match", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1999");
+    const oilers = await insertTeamIn(t, sportId, "Houston", "Oilers", "houston oilers");
+    await insertTeamIn(t, sportId, "Tennessee", "Titans", "tennessee titans");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    await insertBobAllen(t, sportId, [{ teamId: oilers, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 1999, cardTeamNames: ["Tennessee Titans"] });
+
+    expect(resolved.playerId).toBeUndefined();
+  });
+
+  test("the franchise leg is off without a sport, and its rows are metered on the shared cache", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1999");
+    const franchiseId = await t.run(async (ctx) =>
+      ctx.db.insert("franchises", {
+        name: "Titans / Oilers",
+        nameNormalized: "oilers titans",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const oilers = await insertTeamIn(t, sportId, "Houston", "Oilers", "houston oilers", franchiseId);
+    await insertTeamIn(t, sportId, "Tennessee", "Titans", "tennessee titans", franchiseId);
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const oiler = await insertBobAllen(t, sportId, [{ teamId: oilers, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    await t.run(async (ctx) => {
+      const candidates = await ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "allen bob").eq("sportId", sportId),
+        )
+        .collect();
+      const without = await narrowSameNamePlayersByCardYear(ctx, candidates, {
+        cardYear: 1999,
+        cardTeamNames: ["Tennessee Titans"],
+      });
+      expect(without.playerId).toBeNull();
+
+      const cache = createCardYearTeamCache();
+      const withSport = await narrowSameNamePlayersByCardYear(ctx, candidates, {
+        cardYear: 1999,
+        cardTeamNames: ["Tennessee Titans"],
+        sportId,
+        teamCache: cache,
+      });
+      expect(withSport).toMatchObject({ playerId: oiler, viaCareerTeam: true });
+      // The franchise leg's printed-team lookup was charged to the meter, and
+      // a second name printing the same team pays for it once.
+      const afterFirst = cache.reads;
+      expect(afterFirst).toBeGreaterThan(0);
+      await narrowSameNamePlayersByCardYear(ctx, candidates, {
+        cardYear: 1999,
+        cardTeamNames: ["Tennessee Titans"],
+        sportId,
+        teamCache: cache,
+      });
+      expect(cache.reads).toBe(afterFirst);
+    });
+  });
+
+  test("a rival whose only stint on the card's team begins after the card does not block the link", async () => {
+    // The mirror of the prospect case: the namesake who played for the club in
+    // the past is the one; a rival who joins it years later is not "also on
+    // that team" as of the card.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const veteran = await insertBobAllen(t, sportId, [{ teamId: padres, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: padres, fromYear: 2031, toYear: 2033 }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBe(veteran);
+    expect(resolved.narrowedBy).toBe("careerTeam");
+  });
+});
+
+describe("NEO-574 adversarial: rule 6b's exactly-one guard holds under the widened matching", () => {
+  async function franchiseOf(t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("franchises", {
+        name: "Titans / Oilers",
+        nameNormalized: "oilers titans",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+  async function teamOf(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    location: string,
+    name: string,
+    franchiseId?: Id<"franchises">,
+  ) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        location,
+        name,
+        nameNormalized: `${location} ${name}`.toLowerCase().split(" ").sort().join(" "),
+        sportId,
+        ...(franchiseId ? { franchiseId } : {}),
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+
+  test("two namesakes on DIFFERENT rows of the card team's franchise are both covered: review, not a pick", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1999");
+    const franchiseId = await franchiseOf(t, sportId);
+    const oilers = await teamOf(t, sportId, "Houston", "Oilers", franchiseId);
+    const titans = await teamOf(t, sportId, "Tennessee", "Titans", franchiseId);
+    await insertBobAllen(t, sportId, [{ teamId: oilers, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: titans, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 1999, cardTeamNames: ["Tennessee Titans"] });
+
+    expect(resolved.playerId).toBeUndefined();
+    expect(resolved.narrowedBy).toBeUndefined();
+  });
+
+  test("a franchise-row stint that begins after the card year does not cover it", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1999");
+    const franchiseId = await franchiseOf(t, sportId);
+    const oilers = await teamOf(t, sportId, "Houston", "Oilers", franchiseId);
+    await teamOf(t, sportId, "Tennessee", "Titans", franchiseId);
+    const cubs = await teamOf(t, sportId, "Chicago", "Cubs");
+    await insertBobAllen(t, sportId, [{ teamId: oilers, fromYear: 2005, toYear: 2006 }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 1999, cardTeamNames: ["Tennessee Titans"] });
+
+    expect(resolved.playerId).toBeUndefined();
+  });
+
+  test("a bare printed nickname shared by two clubs matches both namesakes: review", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1995");
+    const lsu = await teamOf(t, sportId, "LSU", "Tigers");
+    const auburn = await teamOf(t, sportId, "Auburn", "Tigers");
+    await insertBobAllen(t, sportId, [{ teamId: lsu, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: auburn, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 1995, cardTeamNames: ["Tigers"] });
+
+    expect(resolved.playerId).toBeUndefined();
+  });
+
+  test("an undated stint on the card's team makes a second namesake a rival: review", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await teamOf(t, sportId, "San Diego", "Padres");
+    // Two undated careers: unknown spans are never excluded, so rules 4-5
+    // cannot pick, and both "have a stint" on the card's team.
+    for (let i = 0; i < 2; i++) {
+      await t.run(async (ctx) =>
+        ctx.db.insert("players", {
+          name: "Bob Allen",
+          nameNormalized: "allen bob",
+          sportId,
+          teamYears: [{ teamId: padres }],
+          lastUpdated: Date.now(),
+        }),
+      );
+    }
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBeUndefined();
+  });
+
+  test("a stint whose team row was deleted covers nothing and does not make the player a rival", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await teamOf(t, sportId, "San Diego", "Padres");
+    const gone = await teamOf(t, sportId, "Gone", "Ghosts");
+    const onPadres = await insertBobAllen(t, sportId, [{ teamId: padres, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: gone, ...LONG_AGO }]);
+    await t.run(async (ctx) => ctx.db.delete(gone));
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBe(onPadres);
   });
 });

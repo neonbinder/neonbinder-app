@@ -206,6 +206,10 @@ describe("NEO-528: the cameo list stays out of everything that reads a card's ow
         // description name its cameos, read here once for every title and
         // description path (Regenerate, the refresh, the backfill).
         "storedCardTitle.ts",
+        // NEO-645 (T5): the Tidy Up walk's Player tile lists a card's cameos by
+        // name, read-only through `cardContext`; every cameo write still goes
+        // through `setSecondaryPlayers`.
+        "tidyCards.ts",
       ].sort(),
     );
   });
@@ -214,7 +218,8 @@ describe("NEO-528: the cameo list stays out of everything that reads a card's ow
     // Jason (NEO-528 + NEO-535 merge): "secondary names should be dropped
     // before we drop anything else with meaning". The title reads cameos from
     // one input (`cameoNames`), never the card's field, and cuts them right
-    // after the no-loss cuts (repeats and labels), before the sport.
+    // after the no-loss cuts (Base, repeats and the variant type names), before
+    // the sport.
     for (const name of ["features/generateListing.ts", "features/listingInputs.ts"]) {
       expect(read(name), name).not.toMatch(/secondaryPlayerIds/);
     }
@@ -222,11 +227,12 @@ describe("NEO-528: the cameo list stays out of everything that reads a card's ow
     const inputsType = gen.slice(gen.indexOf("export type ListingCardInputs"), gen.indexOf("\n};", gen.indexOf("export type ListingCardInputs")));
     expect(inputsType).toMatch(/cameoNames\?: string\[\];/);
     const plan = gen.slice(gen.indexOf("function planCuts("), gen.indexOf("const LAST_FIRST"));
-    const parallelLabel = plan.indexOf("state.parallelLabelIn = false");
+    // NEO-609: the no-loss cuts end with the variant type names (rows 5-6).
+    const typeNameCut = plan.indexOf("add(ROW.typeName");
     const cameoCut = plan.indexOf("cameo.in = false");
     const sportCut = plan.indexOf('tokens("sport")');
-    expect(parallelLabel).toBeGreaterThan(0);
-    expect(cameoCut).toBeGreaterThan(parallelLabel);
+    expect(typeNameCut).toBeGreaterThan(0);
+    expect(cameoCut).toBeGreaterThan(typeNameCut);
     expect(sportCut).toBeGreaterThan(cameoCut);
     expect(gen).toMatch(/export function generateListingDescription\(\s*inputs: ListingCardInputs,\s*extras: \{ cameoNames\?/);
   });

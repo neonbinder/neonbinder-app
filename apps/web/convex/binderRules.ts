@@ -208,12 +208,12 @@ export async function cleanRule(ctx: Ctx, raw: Rule): Promise<Rule> {
   for (const { test } of rule.terms) {
     if (test.kind === "player") {
       for (const id of test.playerIds) {
-        if (!(await ctx.db.get(id))) refuse(COLLECTION_ERRORS.invalid, "One of the rule's players isn't in NB anymore. Pick them again.");
+        if (!(await ctx.db.get(id))) refuse(COLLECTION_ERRORS.invalid, "One of the rule's players isn't in Neon Binder anymore. Pick them again.");
       }
     }
     if (test.kind === "team" || test.kind === "playedFor") {
       for (const id of test.teamIds) {
-        if (!(await ctx.db.get(id))) refuse(COLLECTION_ERRORS.invalid, "One of the rule's teams isn't in NB anymore. Pick it again.");
+        if (!(await ctx.db.get(id))) refuse(COLLECTION_ERRORS.invalid, "One of the rule's teams isn't in Neon Binder anymore. Pick it again.");
       }
     }
     const level = LEVEL_OF[test.kind];
@@ -223,7 +223,7 @@ export async function cleanRule(ctx: Ctx, raw: Rule): Promise<Rule> {
       for (const id of ids) {
         const row = await ctx.db.get(id);
         if (!row || row.level !== level) {
-          refuse(COLLECTION_ERRORS.invalid, `One of the rule's ${test.kind}s isn't in NB anymore. Pick it again.`);
+          refuse(COLLECTION_ERRORS.invalid, `One of the rule's ${test.kind}s isn't in Neon Binder anymore. Pick it again.`);
         }
       }
     }

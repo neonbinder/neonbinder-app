@@ -95,6 +95,7 @@ const FULLY_POPULATED = {
  */
 async function seedFullTree(t: ReturnType<typeof convexTest>): Promise<{
   sportId: Id<"selectorOptions">;
+  setNameId: Id<"selectorOptions">;
   variantTypeId: Id<"selectorOptions">;
   insertId: Id<"selectorOptions">;
 }> {
@@ -138,7 +139,10 @@ async function seedFullTree(t: ReturnType<typeof convexTest>): Promise<{
       lastUpdated: Date.now(),
       ...FULLY_POPULATED,
     });
-    return { sportId, variantTypeId, insertId };
+    // NEO-673 — the Parallel type's source pick, so every returns validator
+    // below has to name `parallelSourceId` or it throws on the real row.
+    await ctx.db.patch(variantTypeId, { parallelSourceId: insertId });
+    return { sportId, setNameId, variantTypeId, insertId };
   });
 }
 
@@ -207,6 +211,24 @@ describe("selectorOptions returns-validator drift", () => {
     expect(row?.sportConfig).toBeDefined();
     expect(row?.platformSlotSeq).toEqual({ bsc: 2, sportlots: 1 });
     expect(row?.platformData.sportlots).toEqual({ s0: "884412" });
+  });
+
+  test("a variantType row carrying parallelSourceId (NEO-673) passes the returns validators", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { setNameId, variantTypeId, insertId } = await seedFullTree(t);
+
+    const byId = await asAdmin.query(api.selectorOptions.getSelectorOptionById, {
+      id: variantTypeId,
+    });
+    expect(byId?.parallelSourceId).toBe(insertId);
+
+    const rows = await asAdmin.query(api.selectorOptions.getSelectorOptions, {
+      level: "variantType",
+      parentId: setNameId,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].parallelSourceId).toBe(insertId);
   });
 
   test("the fully-populated insert row reads back whole from the table", async () => {

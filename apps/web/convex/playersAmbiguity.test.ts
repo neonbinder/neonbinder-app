@@ -26,6 +26,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { buildExistingPlayerCandidates } from "./players";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -543,34 +544,14 @@ describe("NEO-254: resolveNameForReview decides whether the wizard opens", () =>
 // existingCandidates — what the wizard shows for an ambiguous name
 // ===========================================================================
 
-describe("NEO-254: applyLookupResult attaches NB's own candidates", () => {
-  async function seedReviewRow(
+describe("NEO-254: buildExistingPlayerCandidates lists NB's own candidates", () => {
+  // NEO-656: the candidates are built when the walk asks (this is the function
+  // the Player tile's lookup calls), never stored on a review row.
+  const candidatesFor = (
     t: ReturnType<typeof convexTest>,
     sportId: Id<"selectorOptions">,
     name: string,
-  ) {
-    const selectorOptionId = await t.run(async (ctx) =>
-      ctx.db.insert("selectorOptions", {
-        level: "variantType",
-        value: "Base",
-        platformData: {},
-        children: [],
-        lastUpdated: Date.now(),
-      }),
-    );
-    const rowId = await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId,
-        batchId: "batch-1",
-        createdByUserId: "user_1",
-        kind: "player" as const,
-        name,
-        sportId,
-        status: "pending" as const,
-      }),
-    );
-    return rowId;
-  }
+  ) => t.run(async (ctx) => buildExistingPlayerCandidates(ctx, name, sportId));
 
   test("two same-name rows become candidates, with a birth year and a career line", async () => {
     const t = convexTest(schema, modules);
@@ -589,24 +570,14 @@ describe("NEO-254: applyLookupResult attaches NB's own candidates", () => {
       birthYear: 1937,
       teamYears: [{ teamId: padres, fromYear: 1961 }],
     });
-    const rowId = await seedReviewRow(t, sportId, "Bob Allen");
 
-    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
-      id: rowId,
-      status: "ready",
-      enrichment: { wikidataId: "Q1" },
-    });
-
-    const row = await t.run(async (ctx) => ctx.db.get(rowId));
-    const candidates = row!.enrichment!.existingCandidates!;
+    const candidates = await candidatesFor(t, sportId, "Bob Allen");
     expect(candidates).toHaveLength(2);
     expect(candidates.map((c) => c.birthYear).sort()).toEqual([1867, 1937]);
     expect(candidates.map((c) => c.careerSummary).sort()).toEqual([
       "Padres 1961–present",
       "Phillies 1890–94",
     ]);
-    // The lookup's own result is preserved alongside them.
-    expect(row!.enrichment!.wikidataId).toBe("Q1");
   });
 
   test("a candidate with more teams than the line names counts the unread ones in one +N more", async () => {
@@ -629,92 +600,31 @@ describe("NEO-254: applyLookupResult attaches NB's own candidates", () => {
       ],
     });
     await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
-    const rowId = await seedReviewRow(t, sportId, "Bob Allen");
 
-    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
-      id: rowId,
-      status: "ready",
-      enrichment: { wikidataId: "Q1" },
-    });
-
-    const row = await t.run(async (ctx) => ctx.db.get(rowId));
-    const summaries = row!.enrichment!.existingCandidates!.map((c) => c.careerSummary);
+    const summaries = (await candidatesFor(t, sportId, "Bob Allen")).map((c) => c.careerSummary);
     expect(summaries).toContain("Astros 2009–18 · Braves 2004–08 +2 more");
   });
 
-  test("candidates are attached even when the Wikidata lookup found nothing", async () => {
-    // The error branch sends no enrichment at all. A name Wikidata has never
-    // heard of is exactly as ambiguous as one it knows, so the candidates have
-    // to be minted here rather than merged into a result that never arrives.
+  test("a candidate with nothing on file still appears, with an empty career line", async () => {
+    // A name Wikidata has never heard of is exactly as ambiguous as one it
+    // knows, so the candidates do not depend on a lookup. The operator needs to
+    // see that the row exists even when it can say nothing about itself.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
     await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
-    const rowId = await seedReviewRow(t, sportId, "Bob Allen");
 
-    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
-      id: rowId,
-      status: "error",
-    });
-
-    const row = await t.run(async (ctx) => ctx.db.get(rowId));
-    expect(row!.status).toBe("error");
-    expect(row!.enrichment!.existingCandidates).toHaveLength(2);
-    // A candidate with nothing on file still appears — the operator needs to
-    // see that the row exists even when it can say nothing about itself.
-    expect(row!.enrichment!.existingCandidates![0].careerSummary).toBe("");
+    const candidates = await candidatesFor(t, sportId, "Bob Allen");
+    expect(candidates).toHaveLength(2);
+    expect(candidates[0].careerSummary).toBe("");
   });
 
-  test("a single match is NOT a choice, and stores no candidates", async () => {
+  test("a single match is NOT a choice, and lists no candidates", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await insertPlayer(t, sportId, { name: "Tony Gwynn", nameNormalized: "gwynn tony" });
-    const rowId = await seedReviewRow(t, sportId, "Tony Gwynn");
 
-    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
-      id: rowId,
-      status: "ready",
-      enrichment: { wikidataId: "Q1" },
-    });
-
-    const row = await t.run(async (ctx) => ctx.db.get(rowId));
-    expect(row!.enrichment!.existingCandidates).toBeUndefined();
-  });
-
-  test("a team row never gets candidates", async () => {
-    const t = convexTest(schema, modules);
-    const sportId = await seedSport(t);
-    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
-    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
-    const selectorOptionId = await t.run(async (ctx) =>
-      ctx.db.insert("selectorOptions", {
-        level: "variantType",
-        value: "Base",
-        platformData: {},
-        children: [],
-        lastUpdated: Date.now(),
-      }),
-    );
-    const rowId = await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId,
-        batchId: "batch-1",
-        createdByUserId: "user_1",
-        kind: "team" as const,
-        name: "Bob Allen",
-        sportId,
-        status: "pending" as const,
-      }),
-    );
-
-    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
-      id: rowId,
-      status: "ready",
-      enrichment: { location: "San Diego" },
-    });
-
-    const row = await t.run(async (ctx) => ctx.db.get(rowId));
-    expect(row!.enrichment!.existingCandidates).toBeUndefined();
+    expect(await candidatesFor(t, sportId, "Tony Gwynn")).toEqual([]);
   });
 });
 
@@ -722,222 +632,11 @@ describe("NEO-254: applyLookupResult attaches NB's own candidates", () => {
 // The bulk fast-paths and an ambiguous row
 // ===========================================================================
 
-describe("NEO-254: 'Add All Remaining as New' will not answer a choice for you", () => {
-  async function seedBatch(t: ReturnType<typeof convexTest>) {
-    const sportId = await seedSport(t);
-    const selectorOptionId = await t.run(async (ctx) =>
-      ctx.db.insert("selectorOptions", {
-        level: "variantType",
-        value: "Base",
-        platformData: {},
-        children: [],
-        lastUpdated: Date.now(),
-      }),
-    );
-    return { sportId, selectorOptionId };
-  }
-
-  async function insertRow(
-    t: ReturnType<typeof convexTest>,
-    opts: {
-      selectorOptionId: Id<"selectorOptions">;
-      sportId: Id<"selectorOptions">;
-      name: string;
-      candidates?: Array<Id<"players">>;
-    },
-  ) {
-    return t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: opts.selectorOptionId,
-        batchId: "batch-1",
-        // `recordAllRemaining*` refuses to rule on another session's batch, so
-        // the row has to belong to the identity driving the mutation.
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "player" as const,
-        name: opts.name,
-        sportId: opts.sportId,
-        status: "ready" as const,
-        ...(opts.candidates
-          ? {
-              enrichment: {
-                existingCandidates: opts.candidates.map((playerId, i) => ({
-                  playerId,
-                  name: opts.name,
-                  careerSummary: `Team ${i} 1990–1991`,
-                })),
-              },
-            }
-          : {}),
-      }),
-    );
-  }
-
-  test("bulk create decides the ordinary rows and leaves the ambiguous one alone", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { sportId, selectorOptionId } = await seedBatch(t);
-    const plain = await insertRow(t, { selectorOptionId, sportId, name: "Daulton Varsho" });
-    const ambiguous = await insertRow(t, {
-      selectorOptionId,
-      sportId,
-      name: "Bob Allen",
-      candidates: [
-        await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" }),
-        await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" }),
-      ],
-    });
-
-    const decided = await asAdmin.action(
-      api.entityReviewQueue.recordAllRemainingAsCreate,
-      { selectorOptionId, batchId: "batch-1" },
-    );
-
-    expect(decided.decided).toBe(1);
-    expect((await t.run(async (ctx) => ctx.db.get(plain)))!.decision).toEqual({
-      action: "create",
-    });
-    // Still a question. "Everything else is new" is not an answer to "which of
-    // these two Bob Allens is on the card".
-    expect((await t.run(async (ctx) => ctx.db.get(ambiguous)))!.decision).toBeUndefined();
-  });
-
-  test("bulk SKIP still covers an ambiguous row — skip creates nothing", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { sportId, selectorOptionId } = await seedBatch(t);
-    const ambiguous = await insertRow(t, {
-      selectorOptionId,
-      sportId,
-      name: "Bob Allen",
-      candidates: [
-        await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" }),
-        await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" }),
-      ],
-    });
-
-    const decided = await asAdmin.action(
-      api.entityReviewQueue.recordAllRemainingAsSkip,
-      { selectorOptionId, batchId: "batch-1" },
-    );
-
-    expect(decided.decided).toBe(1);
-    expect((await t.run(async (ctx) => ctx.db.get(ambiguous)))!.decision).toEqual({
-      action: "skip",
-    });
-  });
-});
 
 // ===========================================================================
 // The bulk create asks the INDEX, not the stored marker
 // ===========================================================================
 
-describe("NEO-254: bulk create re-reads ambiguity rather than trusting the row", () => {
-  test("a row with NO stored candidates is still left alone when the index says two", async () => {
-    // The marker is written at enqueue and refreshed at lookup. Neither
-    // happens for a row the completion backstop or the stale sweep settled to
-    // "error", nor for one queued before this shipped — and a name can become
-    // ambiguous after the row was written, when a preload run or a colleague's
-    // commit lands. This caller turns "not ambiguous" straight into an INSERT,
-    // so it has to ask the index.
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const sportId = await seedSport(t);
-    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
-    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
-
-    const selectorOptionId = await t.run(async (ctx) =>
-      ctx.db.insert("selectorOptions", {
-        level: "variantType",
-        value: "Base",
-        platformData: {},
-        children: [],
-        lastUpdated: Date.now(),
-      }),
-    );
-    const stranded = await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "player" as const,
-        name: "Bob Allen",
-        sportId,
-        // Exactly what the backstop leaves behind: settled, and with no
-        // enrichment ever written.
-        status: "error" as const,
-      }),
-    );
-
-    const decided = await asAdmin.action(
-      api.entityReviewQueue.recordAllRemainingAsCreate,
-      { selectorOptionId, batchId: "batch-1" },
-    );
-
-    expect(decided.decided).toBe(0);
-    expect((await t.run(async (ctx) => ctx.db.get(stranded)))!.decision).toBeUndefined();
-  });
-
-  test("a TEAM row is left to its own New Team step, not to the player index", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const sportId = await seedSport(t);
-    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
-    await insertPlayer(t, sportId, { name: "Bob Allen", nameNormalized: "allen bob" });
-
-    const selectorOptionId = await t.run(async (ctx) =>
-      ctx.db.insert("selectorOptions", {
-        level: "variantType",
-        value: "Base",
-        platformData: {},
-        children: [],
-        lastUpdated: Date.now(),
-      }),
-    );
-    const teamRow = await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "team" as const,
-        // Same string, but it is a team name — the player index says nothing
-        // about it.
-        name: "Bob Allen",
-        sportId,
-        status: "ready" as const,
-      }),
-    );
-    // A player nobody shares a name with, so the call has something it IS
-    // allowed to decide. Without it a count of zero would prove nothing: it
-    // would be the same answer an empty batch gives.
-    const playerRow = await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "player" as const,
-        name: "Ken Griffey Jr",
-        sportId,
-        status: "ready" as const,
-      }),
-    );
-
-    const decided = await asAdmin.action(
-      api.entityReviewQueue.recordAllRemainingAsCreate,
-      { selectorOptionId, batchId: "batch-1" },
-    );
-
-    // NEO-236: the bulk create decides PLAYERS ONLY. The team is left
-    // undecided for its own New Team step, which is the one place the league
-    // question gets answered — and that, not the NEO-254 ambiguity guard, is
-    // what held it back. The guard reads `players` by normalized name, so a
-    // team row carrying a name two PLAYERS share must never trip it.
-    expect(decided.decided).toBe(1);
-    expect((await t.run(async (ctx) => ctx.db.get(playerRow)))!.decision).toEqual({
-      action: "create",
-    });
-    expect((await t.run(async (ctx) => ctx.db.get(teamRow)))!.decision).toBeUndefined();
-  });
-});
 
 // ===========================================================================
 // findByNameAndSport

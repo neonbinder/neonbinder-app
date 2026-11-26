@@ -674,7 +674,7 @@ describe("NewTeamDialog — focus", () => {
     fireEvent.keyDown(nameField(), { key: "Enter" });
 
     const button = await screen.findByRole("button", { name: "Creating team Padres" });
-    expect(document.activeElement).toBe(button);
+    await waitFor(() => expect(document.activeElement).toBe(button));
     expect(dialog().contains(document.activeElement)).toBe(true);
   });
 
@@ -810,6 +810,77 @@ describe("NewTeamDialog — the panel fits the viewport", () => {
     const panel = body().parentElement!;
     expect(panel.className).toContain("max-h-[calc(100dvh-2rem)]");
     expect(panel.className).toContain("flex-col");
+  });
+});
+
+/**
+ * NEO-602 — a name that is only another team's ALIAS.
+ *
+ * Nothing is called it, so "already exists for 2025–present" would call the
+ * holder a first era of this team. The refusal is `TEAM_NAME_IS_ALIAS`, the
+ * dialog says who answers to the name (holder · era) and does not talk about a
+ * second era, and the next press still goes through (the server only sends it
+ * when the years don't overlap, which the rule allows).
+ */
+describe("NewTeamDialog — a name another team answers to as an alias", () => {
+  const aliasRefusal = () =>
+    new ConvexError({
+      code: "TEAM_NAME_IS_ALIAS",
+      holders: [{ id: "t1", name: "Athletics", yearsActive: { from: 2025 } }],
+    });
+
+  it("names the team that answers to it, not a second era", async () => {
+    mockFindOrCreate.mockRejectedValueOnce(aliasRefusal());
+    renderDialog({ initialName: "Oakland Athletics" });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Create team/ }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      "Athletics · 2025–present already answers to this name as an alias. This team's years don't overlap, so Create again to add it as its own team.",
+    );
+    expect(alert.textContent).not.toContain("already exists");
+    expect(alert.textContent).not.toContain("second era");
+  });
+
+  it("re-sends with newEra on the next press, so the team can still be made", async () => {
+    mockFindOrCreate
+      .mockRejectedValueOnce(aliasRefusal())
+      .mockResolvedValueOnce("t-new");
+    renderDialog({ initialName: "Oakland Athletics" });
+
+    const button = () => screen.getByRole("button", { name: /^Create team/ });
+    fireEvent.click(button());
+    await screen.findByRole("alert");
+    expect(mockFindOrCreate.mock.calls[0][0].newEra).toBeUndefined();
+
+    fireEvent.click(button());
+    await waitFor(() => expect(mockFindOrCreate).toHaveBeenCalledTimes(2));
+    expect(mockFindOrCreate.mock.calls[1][0].newEra).toBe(true);
+  });
+
+  it("ignores a payload with no usable holder", async () => {
+    mockFindOrCreate.mockRejectedValueOnce(
+      new ConvexError({ code: "TEAM_NAME_IS_ALIAS", holders: [{ id: "t1" }] }),
+    );
+    renderDialog({ initialName: "Oakland Athletics" });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Create team/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Could not create team.");
+  });
+
+  it("a real same-name row keeps the second-era copy", async () => {
+    mockFindOrCreate.mockRejectedValueOnce(
+      new ConvexError({ code: "TEAM_ERA_EXISTS", eras: [{ id: "t1", years: "1968–2024" }] }),
+    );
+    renderDialog({ initialName: "Oakland Athletics" });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Create team/ }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      "Oakland Athletics already exists for 1968–2024. Create again to add this as a second era.",
+    );
   });
 });
 

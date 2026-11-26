@@ -384,6 +384,8 @@ const GATE_WORDS =
   "Show box sells on your marketplaces, so cards going in need a price first. Set a common price for the checklist, or give the card a price of its own.";
 
 const statuses = () => screen.getAllByRole("status").map((s) => s.textContent);
+/** Resolves once a frame has run after the caller's: the status line writes its words in one (NEO-529), so a "says nothing" check is only meaningful after this. */
+const afterFrame = () => act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())); });
 
 beforeEach(() => {
   window.sessionStorage.clear();
@@ -712,7 +714,8 @@ describe("Checklists on the real collection", () => {
     fireEvent.click(undo);
     expect(store.undo).toHaveBeenCalledTimes(1);
     // Still running: the line still says what it said, and Undo stays, inert.
-    expect(statuses()).not.toContain("Undone.");
+    await afterFrame();
+    expect(statuses().some((t) => t?.endsWith("Undone."))).toBe(false);
     expect(statuses()).toContain("Added #2 Aaron Judge to Main");
     expect(screen.getByRole("button", { name: "Undo" }).getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
@@ -1041,9 +1044,12 @@ describe("the card drawer on the real collection", () => {
       expect(alertText.match(/Couldn't reach the photo store\./g)).toHaveLength(1);
       // Neither attempt was skipped because the other failed.
       expect(photos.addPhoto).toHaveBeenCalledTimes(2);
-      expect(
-        within(drawer).getAllByRole("status").some((s) => /\. Its front and back photos didn't save\. Try again under Edit\.$/.test(s.textContent ?? "")),
-      ).toBe(true);
+      // The line's live region is written a frame after the notice lands (`useLiveWords`).
+      await waitFor(() =>
+        expect(
+          within(drawer).getAllByRole("status").some((s) => /\. Its front and back photos didn't save\. Try again under Edit\.$/.test(s.textContent ?? "")),
+        ).toBe(true),
+      );
     });
 
     describe("a held photo starts its resize when picked (NEO-466)", () => {
@@ -1124,6 +1130,8 @@ describe("the card drawer on the real collection", () => {
         fireEvent.click(within(drawer).getByRole("button", { name: /^Add another copy of / }));
         const form = within(drawer).getByRole("form", { name: "Add another copy" });
         const box = within(form).getByRole("region", { name: /^Photos of / });
+        // The Add form takes the keyboard a frame after it opens; wait for that before the test moves it.
+        await waitFor(() => expect(form.contains(document.activeElement)).toBe(true));
         await act(async () => {
           fireEvent.change(box.querySelector('[data-copy-photo-input="front"]')!, { target: { files: [jpeg()] } });
         });
@@ -1271,7 +1279,7 @@ describe("the card drawer on the real collection", () => {
       await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(1));
       fireEvent.click(within(drawer).getByRole("button", { name: "Close card detail" }));
       await act(async () => fail(new Error("Gone.")));
-      expect(screen.getAllByRole("status").some((s) => /front photo didn't save/.test(s.textContent ?? ""))).toBe(true);
+      await waitFor(() => expect(screen.getAllByRole("status").some((s) => /front photo didn't save/.test(s.textContent ?? ""))).toBe(true));
     });
 
     it("the line-limit refusal keeps both held files, Add is ready, and a retry that succeeds uploads exactly those two files", async () => {
@@ -1306,7 +1314,7 @@ describe("the card drawer on the real collection", () => {
     fireEvent.click(within(drawer).getByRole("button", { name: "Remove #1 Shohei Ohtani, Raw" }));
     expect(actions.removeCopy).toHaveBeenCalledWith(COPY_OHTANI);
     await waitFor(() =>
-      expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "Removed #1 Shohei Ohtani, Raw · Main")).toBe(true),
+      expect(within(drawer).getAllByRole("status").some((s) => s.textContent?.endsWith("Removed #1 Shohei Ohtani, Raw · Main"))).toBe(true),
     );
   });
 });
@@ -1458,9 +1466,9 @@ describe("Inventory is on for the real collection (NEO-364)", () => {
     await waitFor(() => expect(within(drawer).getByRole("button", { name: "Undo" })).toBeTruthy());
     fireEvent.click(within(drawer).getByRole("button", { name: "Undo" }));
     await waitFor(() =>
-      expect(within(drawer).getAllByRole("status").some((s) => s.textContent === `That undo didn't go through. ${GATE_WORDS}`)).toBe(true),
+      expect(within(drawer).getAllByRole("status").some((s) => s.textContent?.endsWith(`That undo didn't go through. ${GATE_WORDS}`))).toBe(true),
     );
-    expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "Undone.")).toBe(false);
+    expect(within(drawer).getAllByRole("status").some((s) => s.textContent?.endsWith("Undone."))).toBe(false);
   });
 
   it("Move here into an open box the listing gate refuses says the gate's words on the status line (NEO-370)", async () => {

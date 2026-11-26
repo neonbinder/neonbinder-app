@@ -131,6 +131,40 @@ describe("getSelectorSyncSuggestions", () => {
     });
   });
 
+  test("NEO-643: a hyphen is a space, so a hyphen-for-space label is only a reformat", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const parentId = await parentRow(t);
+    await setRow(t, parentId, "Topps Chrome", "Topps-Chrome");
+
+    const out = await asAdmin.query(
+      api.selectorOptions.getSelectorSyncSuggestions,
+      { level: "setName", parentId },
+    );
+
+    // `nameKey` is the one ordered entity reading: a hyphen is a word break
+    // there (Jason, 2026-11-21), so this folds equal.
+    expect(out[0].suggestions[0]).toMatchObject({ label: "Topps-Chrome", foldEqual: true });
+  });
+
+  test("NEO-643: a stored junk value is offered the cleansed marketplace label as a rename", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const parentId = await parentRow(t);
+    // Rows are not backfilled: the NB value keeps its backslash, the label the
+    // marketplace now sends (and the sync stores) is the cleansed one.
+    const stored = await setRow(t, parentId, "B\\eisbol", "Beisbol");
+
+    const out = await asAdmin.query(
+      api.selectorOptions.getSelectorSyncSuggestions,
+      { level: "setName", parentId },
+    );
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ existingId: stored, currentValue: "B\\eisbol" });
+    expect(out[0].suggestions).toEqual([{ side: "bsc", label: "Beisbol", foldEqual: true }]);
+  });
+
   test("a declined label stops nagging, and a NEW label starts again", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);

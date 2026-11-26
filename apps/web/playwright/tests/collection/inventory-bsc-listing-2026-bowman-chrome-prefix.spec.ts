@@ -86,7 +86,7 @@ import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, savedLine, settleChecklistFetch, usePublishersChecklist } from "../../support/published-checklist";
 import {
   columnOption,
   columnSearch,
@@ -97,7 +97,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { addAsNewStep, advanceToSave, answerStepAsNew, awaitLookupsSettled, confirmSaveButton, reviewWizard } from "../../support/wizard";
+import { needsYouPill, openTidyWalk, settleWalkAfterCommit, tidyForTheParallelBuild, tidyWalk } from "../../support/tidy-walk";
 
 const SPORT = "Football";
 const YEAR = "2026";
@@ -130,7 +130,7 @@ const BSC = "BuySportsCards";
  * 7 s of our own time plus the seconds the screen says it is "Waiting on
  * BuySportsCards...", capped at 180 s, the measured wait in the report. It
  * replaces the flat 60 s this spec used to give them (Jason: if BSC took n
- * seconds the step gets n + 7 s, never a flat bump). The wizard's steps and our
+ * seconds the step gets n + 7 s, never a flat bump). The Tidy Up walk's answers and our
  * own save are NeonBinder answering a user and keep the 7 s default.
  */
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -238,7 +238,6 @@ async function clearCommonPrice(page: Page, checklist: Locator, was: string): Pr
  * state either way.
  */
 async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
-  const wizard = reviewWizard(page);
   const noCards = page.getByText("No cards in this checklist yet.");
   const someCard = page.getByText(/^#[0-9]/).first();
 
@@ -256,40 +255,26 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
     // card one by one; the bulk checklist itself is still a live BSC round trip.
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowman2026Base);
     await syncChecklistButton(page).click();
-    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards
-    // opens with SportLots paused or live. The helper waits on it with
-    // `expectAfterMarketplace`, proves the teams line while it is open (the line is gone
-    // once the wizard takes over), keeps every card only one marketplace has, confirms.
-    await confirmChecklistMatchCards(page, { facts, what: "the Base fetch" });
-    await expect(wizard).toBeVisible();
-    // The names the catalogue does not know: added as new, in bulk, then any
-    // team, league or pick step one at a time (the seed's walk).
-    await wizard.getByRole("button", { name: /^Add remaining players as new/ }).click();
-    // A row whose lookup is still in flight is not presented, so the walk below
-    // would read a step that is about to move: settle the batch's lookups first
-    // (the footer's "N still looking up" goes), as the other wizard walks do.
-    await awaitLookupsSettled(page);
-    const pickStep = wizard.getByRole("heading", { level: 3, name: /^Which .* is this\?$/ });
-    const namesDone = wizard.getByRole("button", { name: /^Next \(Enter\)$|Confirm & Save/ });
-    const firstCandidate = wizard
-      .getByRole("list", { name: "Players already filed under this name" })
-      .getByRole("button", { name: /^Link to / })
-      .first();
-    for (let i = 0; i < 40; i++) {
-      await expect(addAsNewStep(page).or(pickStep).or(namesDone).first()).toBeVisible();
-      if (await namesDone.isVisible()) break;
-      if (await pickStep.isVisible()) {
-        const step = ((await pickStep.textContent()) ?? "").trim();
-        await firstCandidate.click();
-        await expect(wizard.getByRole("heading", { level: 3, name: step, exact: true })).toBeHidden();
-      } else {
-        await answerStepAsNew(page);
-      }
-    }
-    await advanceToSave(page);
-    await confirmSaveButton(page).click();
-    await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible();
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources. NEO-640: the file is
+    // BSC's own 200 cards, each paired by its number at 100%, so Match Cards is skipped; the
+    // helper waits on the fetch with `expectAfterMarketplace` and proves the saved line with its
+    // reason and the teams line (it confirms the dialog instead, should the file's facts say it opens).
+    await settleChecklistFetch(page, env, { facts, what: "the Base fetch" });
+    // NEO-645 C5: the cards SAVE first, then the Tidy Up walk opens on its own: the 2026 rookies
+    // are names the catalogue does not know yet.
+    const saved = savedLine(page, facts.rows);
+    expect(await settleWalkAfterCommit(page, saved), "Base's rookies need a person, so the walk opened").toBe(true);
+    // J3: Chrome is built from Base, so Base's names are answered first (below).
   }
+  await expect(someCard).toBeVisible();
+  // J3: "Build from Base" is refused while a Base card has a name waiting. The walk answers
+  // them as the seed's walk did (new players and teams, a same-name pick's top candidate). It is
+  // open after a fresh save; a rerun that adopts the tree reopens it from the "N need you" pill
+  // when a Base card still needs a person, and has nothing to walk otherwise (the pill counts
+  // the same rows the list shows, so it is settled with them).
+  if (!(await tidyWalk(page).isVisible()) && (await needsYouPill(page).isVisible())) await openTidyWalk(page);
+  if (await tidyWalk(page).isVisible()) await tidyForTheParallelBuild(page);
+  await expect(tidyWalk(page)).toBeHidden();
   await expect(someCard).toBeVisible();
 
   // --- Parallel -> Chrome ---

@@ -2,13 +2,16 @@
  * The Wikidata workpool instance, its completion backstop, and the enqueue
  * mutations that feed it (NEO-99).
  *
- * Kept in its own module, separate from adapters/wikidata.ts and
- * entityReviewQueue.ts, for the same concrete reason as placeholderPool.ts:
- * this is the only file that touches `components.wikidataPool`, and therefore
- * the only file that cannot be loaded without the generated component types.
- * The lookup body (runEntityReviewLookup) and the backstop math
- * (backstopEntityReviewRowImpl) live elsewhere so the unit tests can drive them
- * without mounting the workpool component, which convex-test cannot register.
+ * Kept in its own module, separate from adapters/wikidata.ts, for the same
+ * concrete reason as placeholderPool.ts: this is the only file that touches
+ * `components.wikidataPool`, and therefore the only file that cannot be loaded
+ * without the generated component types. The lookup bodies live elsewhere so
+ * the unit tests can drive them without mounting the workpool component, which
+ * convex-test cannot register.
+ *
+ * NEO-656: the review-row and Tidy Up name lanes are gone. The walk asks
+ * Wikidata on demand (`adapters/wikidata.lookupTidyName`) and holds the answer
+ * in memory; the pool now carries only row enrichment (`enqueueEnrichment`).
  *
  * WHY THIS POOL EXISTS — the "Looking up…" hang (NEO-99):
  * Wikidata documents a hard limit of 5 parallel SPARQL queries per client IP,
@@ -32,8 +35,6 @@ import type { RunResult } from "@convex-dev/workpool";
 import { components, internal } from "./_generated/api";
 import type { MutationCtx } from "./_generated/server";
 import { internalMutation } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
-import { backstopEntityReviewRowImpl } from "./entityReviewQueue";
 import {
   enrichmentCompletionLogLine,
   type WikidataLookupKind,
@@ -112,18 +113,6 @@ export const WIKIDATA_MAX_PARALLELISM = 5;
  *    action run): 83 s.
  *  - The workpool's own recovery scan only inspects runs older than 5 min;
  *    no attempt gets near that.
- *  - `ENTITY_REVIEW_STALE_MS` (entityReviewQueue.ts, 30 min, measured from the
- *    row's `_creationTime`, swept every 15 min): an item that starts promptly
- *    gives up by 18.2 min, leaving 11.8 min for queueing. A large batch
- *    draining through a sustained outage CAN queue past that, and the sweep
- *    then ages the row to "error" while a retry is still scheduled. That is
- *    deliberately left alone rather than heartbeated: the early "error" is
- *    self-correcting — a later attempt that gets an answer still writes
- *    "ready" (`applyLookupResult` guards only DECIDED rows), and a later
- *    final failure's backstop no-ops on a row that is no longer pending — and
- *    after 30 minutes of Wikidata failing, "error" is the right thing to show.
- *  - `ENTITY_REVIEW_ABANDONED_MS` (24 h) and the placeholder wedge watchdog
- *    (a different pool) are not in reach.
  *  - A retry after the row was deleted (batch committed or cancelled, player
  *    merged away) reads `null` and returns; after an operator filled the row
  *    in, the creation-only marker guard skips it. Nothing is written by an
@@ -147,36 +136,16 @@ export const wikidataPool = new Workpool(components.wikidataPool, {
 });
 
 /**
- * Runs once per review-row work item after it finally succeeds, fails, or is
- * canceled — the guarantee that a row can NEVER be stranded on `pending`.
- *
- * `runEntityReviewLookup` already resolves the row to "ready"/"error" on its own
- * happy and caught-error paths, so in the common case this finds the row already
- * resolved and no-ops. It earns its place on the residue that path cannot reach
- * from inside itself: an UNCAUGHT throw, an action-level timeout, or a pool
- * cancellation — in every one of those the action never ran its own patch, and
- * this ages the still-`pending` row to "error" instead.
- *
- * SAFE against the workpool's batched-inline `onComplete` (the trap that
- * stranded the NEO-170 placeholder counter): that bug bites a read-modify-write
- * on a SHARED document, because several `onComplete`s can run in ONE
- * transaction and lose all but one update. Here every completion writes its OWN
- * distinct `entityReviewQueue` row keyed by `rowId`, and there is no shared
- * counter — the wizard's "N of M reviewed" is derived by `getBatch` counting
- * rows live, not stored — so batched completions cannot interfere. No per-key
- * serialization is needed, unlike placeholderPipeline's `withJobSettleLock`.
+ * NEO-656 — KEPT FOR ONE RELEASE, and does nothing. It was the completion
+ * backstop of the review-row and Tidy Up name lookups, which no longer exist.
+ * A work item queued before this deploy may still be in flight and will call it
+ * when it finishes, so it stays registered with a validator that accepts
+ * whatever context those items carried. Remove it in the release after.
  */
 export const onEntityReviewLookupComplete = wikidataPool.defineOnComplete({
-  context: v.object({ rowId: v.id("entityReviewQueue") }),
-  handler: async (
-    ctx: MutationCtx,
-    { context, result }: { context: { rowId: Id<"entityReviewQueue"> }; result: RunResult },
-  ) => {
-    // NEO-301: the workpool calls this only once retries are exhausted (or
-    // the item succeeded, or was non-retryable/canceled) — never between
-    // attempts — so a row whose lookup was unavailable stays `pending` for
-    // the whole ladder and is aged to "error" here only after the last one.
-    await backstopEntityReviewRowImpl(ctx, context.rowId, result);
+  context: v.any(),
+  handler: async (_ctx: MutationCtx, _args: { context: unknown; result: RunResult }) => {
+    return;
   },
 });
 
@@ -219,68 +188,8 @@ export const onEnrichmentLookupComplete = wikidataPool.defineOnComplete({
 });
 
 /**
- * How many rows one enqueue mutation enqueues before self-scheduling the rest.
- *
- * A first-time real-set sync can surface 100s of unknown names, and each
- * `enqueueAction` is a few writes into the pool's own tables — so enqueuing all
- * of them in the single mutation `startBatch` scheduled would build a
- * transaction that grows with the batch. Chunking keeps each enqueue mutation a
- * fixed size regardless of batch size; the pool caps concurrency at 5 anyway, so
- * enqueuing faster than this would buy nothing. Mirrors placeholderPipeline's
- * ENQUEUE_CHUNK_SIZE reasoning.
- */
-export const WIKIDATA_ENQUEUE_CHUNK_SIZE = 25;
-
-/**
- * Enqueue one chunk of a review batch's pending rows onto the pool, then
- * self-schedule for the remainder. Scheduled (not called inline) by
- * `startBatch`, so the mutation the user's fetch is waiting on stays small and
- * the enqueuing happens in the background — the same split as
- * `startPlaceholderBatch` → `enqueueImageChunk`.
- *
- * `rowIds` is re-passed to each chunk rather than re-queried: `startBatch` just
- * inserted these ids, and the list is bounded by the batch size. A row that a
- * concurrent Cancel deleted between scheduling and here is enqueued harmlessly —
- * `runEntityReviewLookup` no-ops on a missing row and the completion backstop
- * finds nothing to age.
- */
-export const enqueueEntityReviewLookups = internalMutation({
-  args: {
-    rowIds: v.array(v.id("entityReviewQueue")),
-    from: v.optional(v.number()),
-  },
-  returns: v.null(),
-  handler: async (ctx, args): Promise<null> => {
-    const from = args.from ?? 0;
-    const chunk = args.rowIds.slice(from, from + WIKIDATA_ENQUEUE_CHUNK_SIZE);
-
-    for (const rowId of chunk) {
-      await wikidataPool.enqueueAction(
-        ctx,
-        internal.adapters.wikidata.runEntityReviewLookup,
-        { rowId },
-        {
-          onComplete: internal.wikidataPool.onEntityReviewLookupComplete,
-          context: { rowId },
-        },
-      );
-    }
-
-    const nextFrom = from + WIKIDATA_ENQUEUE_CHUNK_SIZE;
-    if (nextFrom < args.rowIds.length) {
-      await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueEntityReviewLookups, {
-        rowIds: args.rowIds,
-        from: nextFrom,
-      });
-    }
-    return null;
-  },
-});
-
-/**
  * Enqueue id-based enrichment (post-creation `enrichPlayer` / `enrichTeam`)
- * onto the SAME 5-wide lane, so this path shares Wikidata's IP budget with the
- * review-wizard drain instead of competing with it.
+ * onto the 5-wide lane, so this path stays inside Wikidata's IP budget.
  *
  * ## CONTRACT (NEO-203): pass ONLY ids you just inserted
  *

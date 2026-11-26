@@ -25,6 +25,7 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
+import { BSC_SELECTOR_BUDGET } from "./adapters/selectorBudgets";
 import { __resetContractCache } from "./credentials";
 import { api } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
@@ -118,6 +119,8 @@ function slBrandHtml(brands: Array<[string, string]>): string {
   return `<html><body><form><select name="brd">${opts}</select></form></body></html>`;
 }
 
+const realSetTimeout = globalThis.setTimeout; // captured once, before any spy
+
 beforeEach(() => {
   fetched = [];
   process.env.POSTHOG_API_KEY = "test-posthog-key";
@@ -125,6 +128,10 @@ beforeEach(() => {
   __resetContractCache();
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
+  // A failing BSC call retries after BSC_SELECTOR_BUDGET.backoffMs (500 ms, then
+  // 1 s of real time). Run exactly those pauses at once; other timers are untouched.
+  vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: (...args: unknown[]) => void, ms?: number, ...rest: unknown[]) =>
+    realSetTimeout(handler, ms !== undefined && BSC_SELECTOR_BUDGET.backoffMs.includes(ms) ? 0 : ms, ...rest)) as typeof setTimeout);
 });
 
 afterEach(() => {

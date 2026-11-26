@@ -142,12 +142,15 @@ export function diffShapes(a: Shape, b: Shape, only?: (path: string) => boolean)
  * path synthesis produces exists in the capture with an overlapping type. A
  * capture may hold more (fields NB never reads); synthesis must not invent.
  */
-export function synthConformsTo(synth: Shape, capture: Shape): ShapeDiff {
+export function synthConformsTo(synth: Shape, capture: Shape, optional?: (path: string) => boolean): ShapeDiff {
   const out: string[] = [];
   for (const [path, types] of Object.entries(synth)) {
     const ct = capture[path];
     if (!ct) {
-      if (!underUnseenItems(path, capture)) out.push(path);
+      // `optional`: a field eBay documents whose presence varies with the
+      // object the capture happened to see. Absent is fine; if present, its
+      // type is still checked (the branch below).
+      if (!underUnseenItems(path, capture) && !optional?.(path)) out.push(path);
       continue;
     }
     const ns = types.filter((t) => t !== "null");

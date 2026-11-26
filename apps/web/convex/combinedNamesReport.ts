@@ -15,20 +15,18 @@
  *  - `separator`: a raw value containing the separator the adapters split
  *    that kind of name on (`./adapters/marketplaceNames`), checked as stored,
  *    untrimmed:
- *    - TEAM values — `teams.name`, `teams.aliases[]`, team- and league-kind
- *      `entityReviewQueue` / `entityReviewSkips` rows,
+ *    - TEAM values — `teams.name`, `teams.aliases[]`,
  *      `cardChecklist.bscTeamName` and `cardChecklist.pendingTeamNames[]` —
  *      on a COMMA only (`TEAM_NAME_SEPARATOR`). Real team names carry `/`
  *      ("Bodø/Glimt", Negro League "Browns/Stogies"), so flagging a slash
  *      would bury the real hits under correct rows. A league is an
  *      organisation name like a team and gets the same rule.
- *    - PLAYER values — `players.name`, player-kind queue / skip rows and
+ *    - PLAYER values — `players.name` and
  *      `cardChecklist.pendingPlayerNames[]` — on `,`, `/` or `|`
  *      (`PLAYER_NAME_SEPARATOR`); no player name carries any of them.
  *  - `suffixOnly`: a PLAYER name that is only a generational suffix ("Jr.",
  *    "Sr", "II"–"IV") — what "Ken Griffey, Jr." becomes when split without
- *    the suffix guard. Checked on `players.name`, player-kind
- *    `entityReviewQueue` / `entityReviewSkips` rows and
+ *    the suffix guard. Checked on `players.name` and
  *    `cardChecklist.pendingPlayerNames[]`.
  *
  * A hit is a lead, not a verdict: a real team name can carry a comma
@@ -44,7 +42,7 @@
  *
  *   npx convex run combinedNamesReport:run '{}'
  *
- * The action walks the five tables in a fixed order, one `scanPage` call per
+ * The action walks the three tables in a fixed order, one `scanPage` call per
  * page. Each call is ONE `.paginate()` over one table (Convex allows one per
  * function execution) with a page size sized to that table's documents, and
  * returns only the ids that hit — never a name. The run stops by itself after
@@ -70,8 +68,6 @@ import {
 export const REPORT_SOURCES = [
   "teams",
   "players",
-  "entityReviewQueue",
-  "entityReviewSkips",
   "cardChecklist",
 ] as const;
 export type ReportSource = (typeof REPORT_SOURCES)[number];
@@ -85,8 +81,6 @@ export type ReportSource = (typeof REPORT_SOURCES)[number];
 export const REPORT_PAGE_SIZE: Record<ReportSource, number> = {
   teams: 500,
   players: 500,
-  entityReviewQueue: 500,
-  entityReviewSkips: 500,
   cardChecklist: 150,
 };
 /**
@@ -113,10 +107,6 @@ export const REPORT_KINDS = [
   "teamAliasSeparator",
   "playerNameSeparator",
   "playerNameSuffixOnly",
-  "reviewQueueNameSeparator",
-  "reviewQueuePlayerSuffixOnly",
-  "reviewSkipNameSeparator",
-  "reviewSkipPlayerSuffixOnly",
   "cardBscTeamNameSeparator",
   "cardPendingTeamNameSeparator",
   "cardPendingPlayerNameSeparator",
@@ -127,8 +117,6 @@ export type ReportKind = (typeof REPORT_KINDS)[number];
 const sourceValidator = v.union(
   v.literal("teams"),
   v.literal("players"),
-  v.literal("entityReviewQueue"),
-  v.literal("entityReviewSkips"),
   v.literal("cardChecklist"),
 );
 
@@ -137,10 +125,6 @@ const kindValidator = v.union(
   v.literal("teamAliasSeparator"),
   v.literal("playerNameSeparator"),
   v.literal("playerNameSuffixOnly"),
-  v.literal("reviewQueueNameSeparator"),
-  v.literal("reviewQueuePlayerSuffixOnly"),
-  v.literal("reviewSkipNameSeparator"),
-  v.literal("reviewSkipPlayerSuffixOnly"),
   v.literal("cardBscTeamNameSeparator"),
   v.literal("cardPendingTeamNameSeparator"),
   v.literal("cardPendingPlayerNameSeparator"),
@@ -166,11 +150,6 @@ export function hasTeamNameSeparator(raw: string): boolean {
 /** Pure: is this player name only a generational suffix? Exported for the test. */
 export function isSuffixOnlyName(raw: string): boolean {
   return GENERATIONAL_SUFFIX_ONLY.test(raw.trim());
-}
-
-/** The separator rule for a review row's kind: players broad, others comma. */
-function reviewRowHasSeparator(kind: "player" | "team" | "league", name: string) {
-  return kind === "player" ? hasNameSeparator(name) : hasTeamNameSeparator(name);
 }
 
 type Hit = { kind: ReportKind; id: string };
@@ -219,30 +198,6 @@ export const scanPage = internalQuery({
         }
         return { hits, scanned: page.page.length, isDone: page.isDone, continueCursor: page.continueCursor };
       }
-      case "entityReviewQueue": {
-        const page = await ctx.db.query("entityReviewQueue").paginate(opts);
-        for (const row of page.page) {
-          if (reviewRowHasSeparator(row.kind, row.name)) {
-            flag("reviewQueueNameSeparator", row._id);
-          }
-          if (row.kind === "player" && isSuffixOnlyName(row.name)) {
-            flag("reviewQueuePlayerSuffixOnly", row._id);
-          }
-        }
-        return { hits, scanned: page.page.length, isDone: page.isDone, continueCursor: page.continueCursor };
-      }
-      case "entityReviewSkips": {
-        const page = await ctx.db.query("entityReviewSkips").paginate(opts);
-        for (const row of page.page) {
-          if (reviewRowHasSeparator(row.kind, row.name)) {
-            flag("reviewSkipNameSeparator", row._id);
-          }
-          if (row.kind === "player" && isSuffixOnlyName(row.name)) {
-            flag("reviewSkipPlayerSuffixOnly", row._id);
-          }
-        }
-        return { hits, scanned: page.page.length, isDone: page.isDone, continueCursor: page.continueCursor };
-      }
       case "cardChecklist": {
         const page = await ctx.db.query("cardChecklist").paginate(opts);
         for (const card of page.page) {
@@ -287,8 +242,6 @@ export const run = internalAction({
     scanned: v.object({
       teams: v.number(),
       players: v.number(),
-      entityReviewQueue: v.number(),
-      entityReviewSkips: v.number(),
       cardChecklist: v.number(),
     }),
     /** The run stopped before the last page of the last table. */
@@ -328,8 +281,6 @@ export const run = internalAction({
     const scanned: Record<ReportSource, number> = {
       teams: 0,
       players: 0,
-      entityReviewQueue: 0,
-      entityReviewSkips: 0,
       cardChecklist: 0,
     };
     const counts = new Map<ReportKind, number>();

@@ -52,6 +52,7 @@ function baseCard(overrides: Partial<NewCardRow> = {}): NewCardRow {
     pendingTeamNames: [],
     sortOrder: 0,
     playerNames: ["Ken Griffey Jr."],
+    printedNames: [],
     ...overrides,
   };
 }
@@ -599,6 +600,30 @@ describe("buildCardRowForInsert — a parallel copy's parallelName (NEO-321)", (
   });
 });
 
+describe("buildCardRowForInsert — the card's own name is in its born title (NEO-645)", () => {
+  test("a card named for something that is not a player carries the name; a placeholder or the player's own name changes nothing", () => {
+    const set = baseSet();
+    const player = buildCardRowForInsert(baseCard(), set, 1).row.listingTitle;
+    const named = buildCardRowForInsert(
+      baseCard({ cardName: "Team Card", playerNames: [] }),
+      set,
+      1,
+    ).row.listingTitle;
+    expect(named).toContain("Team Card");
+    const placeholder = buildCardRowForInsert(
+      baseCard({ cardName: "Card #10", playerNames: [] }),
+      set,
+      1,
+    ).row.listingTitle;
+    expect(placeholder).not.toContain("Card #");
+    // "Ken Griffey Jr." is the player's own name: the title says it once.
+    expect(player.match(/Ken Griffey Jr\./g)).toHaveLength(1);
+    const own = buildCardRowForInsert(baseCard({ cardName: "It Takes Two CPC" }), set, 1).row
+      .listingTitle;
+    expect(own).toContain("It Takes Two CPC Ken Griffey Jr.");
+  });
+});
+
 describe("buildCardRowForInsert — a card committed on a parallel leaf names the leaf (NEO-535)", () => {
   // The leaf's snapshot inherited "Base" from a Parallel type; the chain says
   // the leaf IS a parallel (`parallelLeafValue`, set only on that role).
@@ -611,15 +636,15 @@ describe("buildCardRowForInsert — a card committed on a parallel leaf names th
   });
 
   test("the commit (no parallelName passed) is born like a parallel copy", () => {
-    const committed = buildCardRowForInsert(baseCard({ cardNumber: "BA-3", playerNames: ["Murakami"] }), leafSet, 1);
+    const committed = buildCardRowForInsert(baseCard({ cardNumber: "BA-3", cardName: "Murakami", playerNames: ["Murakami"] }), leafSet, 1);
     const copied = buildCardRowForInsert(
-      baseCard({ cardNumber: "BA-3", playerNames: ["Murakami"], parallelName: "Anime Red Refractors" }),
+      baseCard({ cardNumber: "BA-3", cardName: "Murakami", playerNames: ["Murakami"], parallelName: "Anime Red Refractors" }),
       leafSet,
       1,
     );
     expect(committed.row.features?.parallelName).toBe("Anime Red Refractors");
     expect(committed.row.listingTitle).toBe(copied.row.listingTitle);
-    expect(committed.row.listingTitle).toContain("2026 Bowman Anime Insert Red Refractors Parallel Murakami");
+    expect(committed.row.listingTitle).toContain("2026 Bowman Anime Red Refractors Parallel Murakami");
   });
 
   test("off a parallel leaf nothing changes: the snapshot's name stands", () => {
@@ -629,5 +654,29 @@ describe("buildCardRowForInsert — a card committed on a parallel leaf names th
       1,
     );
     expect(row.row.features?.parallelName).toBe("Refractor");
+  });
+});
+
+describe("buildCardRowForInsert — a team gives up its location first (NEO-606)", () => {
+  // "<filler> Ken Griffey Jr. #10" is 66 characters with a 46-character set
+  // name: no room for "New York Yankees" (83), room for "Yankees" (74).
+  const set = (): CardRowSetContext => baseSet({ setNameValue: "Q".repeat(46) });
+  const teamed = (teamSplits?: { location: string; name: string }[]) =>
+    buildCardRowForInsert(
+      baseCard({ teamNames: ["New York Yankees"], teamSplits }),
+      set(),
+      1_700_000_000_000,
+    ).row.listingTitle;
+
+  test("a split team is stored under its nickname", () => {
+    const title = teamed([{ location: "New York", name: "Yankees" }]);
+    expect(title.endsWith("#10 Yankees")).toBe(true);
+    expect(title.length).toBeLessThanOrEqual(80);
+  });
+
+  test("the same card without the split drops the team whole", () => {
+    const title = teamed(undefined);
+    expect(title).not.toContain("Yankees");
+    expect(title).not.toContain("New York");
   });
 });

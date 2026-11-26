@@ -48,6 +48,8 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import { applyBscAttributeFill } from "./cardChecklist";
+import { newStoredCardReadCache } from "./storedCardTitle";
+import { regenerateListingNow } from "./tidyListingText";
 import {
   AUTOGRAPH_FORMAT_LEVELS,
   carriesAutographToken,
@@ -71,6 +73,13 @@ export const CASCADE_SCAN_PER_PAGE = 500;
  * re-run over a mostly-formatted leaf does not pay one call per 150 rows.
  */
 export const CASCADE_WRITES_PER_PAGE = 150;
+
+/**
+ * The same bound when each fill also rebuilds the card's title and description
+ * (NEO-645 T4): a rebuild is a read of the card, its facts (shared per page),
+ * a patch and the retitle queue, several operations more than the fill itself.
+ */
+export const CASCADE_REGENERATING_WRITES_PER_PAGE = 40;
 
 /**
  * Runaway guard for the walk. 500 rows a page × 2,000 pages is far beyond
@@ -98,6 +107,12 @@ export const setAutographFormat = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     value: v.union(formatValidator, v.literal("")),
+    /**
+     * NEO-645 T4 — the Tidy Up walk's answer: every card the cascade fills
+     * also has its title and description rebuilt (always, a typed title
+     * included). Only the walk sends it.
+     */
+    regenerateListing: v.optional(v.literal(true)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -143,6 +158,7 @@ export const setAutographFormat = mutation({
         ...(previousFormat && previousFormat !== args.value
           ? { previousFormat }
           : {}),
+        ...(args.regenerateListing ? { regenerateListing: true as const } : {}),
       },
     );
     return null;
@@ -177,6 +193,8 @@ export const cascadeAutographFormatPage = internalMutation({
     scanLimit: v.optional(v.number()),
     /** Tests only: can make a page SMALLER, never larger. */
     writeLimit: v.optional(v.number()),
+    /** NEO-645 T4: rebuild each filled card's title and description. */
+    regenerateListing: v.optional(v.literal(true)),
   },
   returns: pageResultValidator,
   handler: async (ctx, args) => {
@@ -192,7 +210,12 @@ export const cascadeAutographFormatPage = internalMutation({
       };
     }
     const scanLimit = clampLimit(args.scanLimit, CASCADE_SCAN_PER_PAGE);
-    const writeLimit = clampLimit(args.writeLimit, CASCADE_WRITES_PER_PAGE);
+    const regenerate = args.regenerateListing === true;
+    const writeLimit = clampLimit(
+      args.writeLimit,
+      regenerate ? CASCADE_REGENERATING_WRITES_PER_PAGE : CASCADE_WRITES_PER_PAGE,
+    );
+    const titles = newStoredCardReadCache();
     const after = args.after;
     const rows = await ctx.db
       .query("cardChecklist")
@@ -239,7 +262,10 @@ export const cascadeAutographFormatPage = internalMutation({
           ? { previousAutographFormat: args.previousFormat }
           : {}),
       });
-      if (result.wrote) writes++;
+      if (result.wrote) {
+        writes++;
+        if (regenerate) await regenerateListingNow(ctx, row._id, titles);
+      }
       if (result.autographFormatted) formatted++;
     }
     return {
@@ -264,6 +290,7 @@ export const cascadeAutographFormat = internalAction({
     selectorOptionId: v.id("selectorOptions"),
     format: formatValidator,
     previousFormat: v.optional(formatValidator),
+    regenerateListing: v.optional(v.literal(true)),
   },
   returns: v.object({
     pages: v.number(),
@@ -293,6 +320,7 @@ export const cascadeAutographFormat = internalAction({
         selectorOptionId: args.selectorOptionId,
         format: args.format,
         ...(args.previousFormat ? { previousFormat: args.previousFormat } : {}),
+        ...(args.regenerateListing ? { regenerateListing: true as const } : {}),
         ...(after !== undefined ? { after } : {}),
       });
       pages++;

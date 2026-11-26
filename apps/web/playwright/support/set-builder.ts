@@ -22,6 +22,8 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { columnSyncFailedMessage } from "../../components/SetSelector/column-sync-failed";
 import type { FlowEnv } from "./env";
 import { expectAfterMarketplace, expectStepWithSportLots } from "./marketplace-wait";
+import { expectAccessible } from "./fixtures";
+import type { ChecklistName, ChecklistRow } from "./published-checklist";
 
 export type Column =
   | "Sports"
@@ -339,9 +341,17 @@ export async function drillToSet(page: Page, env: FlowEnv, target: DrillTarget =
   });
 }
 
-/** The card checklist's fetch control: "Fetch from Marketplaces" when empty, "Refresh" once loaded. */
+/**
+ * The card checklist's fetch control, in any state. It has no aria-label: its
+ * visible words are its accessible name, and they change with the state
+ * ("Fetch from Marketplaces" when empty, "Fetching..." and "Saving..." while
+ * busy, "Refresh" once loaded). A spec that needs one state asserts that exact
+ * name itself. Contract: a locator, nothing waited for.
+ */
+export const SYNC_CHECKLIST_NAME = /^(Fetch from Marketplaces|Fetching\.\.\.|Saving\.\.\.|Refresh)$/;
+
 export function syncChecklistButton(page: Page): Locator {
-  return page.getByRole("button", { name: "Sync card checklist" });
+  return page.getByRole("button", { name: SYNC_CHECKLIST_NAME });
 }
 
 /**
@@ -517,6 +527,93 @@ export async function drillToColdManufacturer(
   }
 }
 
+/** `openOneMarketplaceSetBase`'s ancestors when the caller names none. */
+export const ONE_MARKETPLACE_DEFAULTS = { sport: "Hockey", year: "1995", manufacturer: "All Brands" } as const;
+
+export interface OneMarketplaceSet {
+  /** The set's NB name, as the Sets column lists it. */
+  set: string;
+  /** Ancestors; default Hockey / 1995 / the pinned "All Brands" view. */
+  sport?: string;
+  year?: string;
+  manufacturer?: string;
+  /**
+   * NEO-478/482: a captured publisher's checklist to upload before the Sync
+   * (`CHECKLISTS` in support/published-checklist.ts). Omitted, the fetch asks
+   * BSC for every card itself.
+   */
+  checklist?: ChecklistName;
+  /**
+   * NEO-574: rows appended to `checklist` that the marketplace has no card for
+   * (`usePublishersChecklist`'s `extraRows`). Match Cards then KEEPS them all, so
+   * they are saved as cards the checklist alone names.
+   */
+  extraRows?: readonly ChecklistRow[];
+}
+
+/**
+ * util-open-one-marketplace-set-base.yaml (NEO-330): drill to a REAL set that
+ * carries ONE marketplace (BuySportsCards), select it, open `Base`, and CANCEL
+ * the base picker so exactly one side stays attached. Nothing is fetched. The
+ * Base stays unmapped on SportLots ("Map Base Set" is on screen) and the
+ * checklist section is below it. A flow that has committed the set calls this
+ * again for a fresh load of its checklist (the picker re-opens on a committed
+ * set too: only the SportLots slot counts as a mapping, and cancelling never
+ * writes one).
+ */
+export async function openOneMarketplaceSetBase(
+  page: Page,
+  env: FlowEnv,
+  { set, sport = ONE_MARKETPLACE_DEFAULTS.sport, year = ONE_MARKETPLACE_DEFAULTS.year, manufacturer = ONE_MARKETPLACE_DEFAULTS.manufacturer }: OneMarketplaceSet,
+): Promise<void> {
+  await drillToColdManufacturer(page, env, { sport, year, manufacturer });
+
+  // The drill's own "Syncing Sets" gate can report done while the year-wide
+  // BSC phase is still storing, so the rows can still be one marketplace round
+  // trip away (the util's 15 s, an R5 marketplace exception).
+  await expectStepWithSportLots(page, page.getByRole("listbox", { name: "Sets" }), env, { liveMs: 15_000, what: "the Sets list" });
+  await columnSearch(page, "Sets").fill(set);
+  await columnOption(page, "Sets", set).click();
+  // Selecting the set fires its cold, BSC-only variant-type sync.
+  await expect(columnHeading(page, "Variant Types")).toBeVisible({ timeout: 20_000 });
+  await expectStepWithSportLots(page, columnOption(page, "Variant Types", "Base"), env, {
+    liveMs: VARIANT_TYPES_SYNC,
+    what: "Variant Types row Base",
+  });
+
+  // An unmapped Base (`baseHasMapping` counts the SportLots slot only) opens the picker.
+  await columnOption(page, "Variant Types", "Base").click();
+  const picker = page.getByRole("dialog", { name: "Select Base Set" });
+  await expect(picker).toBeVisible();
+  // The confirm reads "Loading…" until the picker's SportLots + BSC round trip lands (live: the
+  // old 60 s; paused it is BSC's candidates alone, under the picker's wait line).
+  await expectStepWithSportLots(page, picker.getByRole("button", { name: "Confirm Base Set" }), env, {
+    liveMs: 60_000,
+    what: "the Base picker's candidates",
+  });
+  // R2 precondition: BSC really answers for this set, so the fetch is a real one-marketplace fetch.
+  await expect(picker.getByRole("option", { name: /^BSC base candidate: / }).first()).toBeVisible();
+  const slCandidates = picker.getByRole("option", { name: /^SportLots base candidate: / });
+  if (!env.SL_PAUSED) {
+    // Live, the year's SportLots catalogue is OFFERED (offering is not attaching) and declined.
+    await expect(slCandidates.first()).toBeVisible();
+  } else {
+    await expect(picker.getByText(/^SportLots wasn't asked: /)).toBeVisible();
+    await expect(slCandidates).toHaveCount(0);
+  }
+  await expectAccessible(page, { within: picker, label: "Select Base Set picker, one marketplace offers a base" });
+
+  // Cancelling writes nothing and is what keeps exactly one marketplace attached.
+  await picker.getByRole("button", { name: "Cancel" }).click();
+  const cancelled = page.getByText(/Base mapping cancelled/);
+  await expect(cancelled).toBeVisible();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(cancelled).toBeHidden();
+  // Positive proof that Cancel left the row UNMAPPED: a Base that had picked up
+  // a SportLots mapping would offer "Re-map Base" instead.
+  await expect(page.getByRole("button", { name: "Map Base Set" })).toBeVisible();
+}
+
 /** The per-worker custom sport every custom subtree lives under. */
 export function customSport(env: FlowEnv): string {
   return `E2E Test Sport ${env.WORKER_INDEX}`;
@@ -533,9 +630,13 @@ export interface CustomTarget {
   variant?: string;
 }
 
-/** The variant type's own column title: "Insert" -> "Inserts". */
+/**
+ * The variant type's own column title, worded as the set builder words it
+ * (`variantsColumnLabel`): "Insert" -> "Inserts", and a type already named in
+ * the plural keeps its name ("Proofs" -> "Proofs").
+ */
 function variantColumn(variantType: string): Column {
-  return `${variantType}s` as Column;
+  return (variantType.endsWith("s") ? variantType : `${variantType}s`) as Column;
 }
 
 /**
