@@ -316,7 +316,7 @@ function UnansweredPlayerName({
 
   const matches: NearMatch[] | undefined = nearMatches;
   const exactRows = (matches ?? []).filter((m) => m.confidence === "exact");
-  const exactSingle = exactRows.length === 1 && !exactRows[0].matchedAlias ? exactRows[0] : null;
+  const exactSingle = exactRows.length === 1 ? exactRows[0] : null;
 
   // NEO-254: the players already filed under this exact name. The lookup's own
   // list when it has one, else the live exact rows when there is more than one.

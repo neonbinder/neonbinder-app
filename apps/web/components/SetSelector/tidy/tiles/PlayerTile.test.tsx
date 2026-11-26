@@ -456,6 +456,26 @@ describe("PlayerTile", () => {
     expect(screen.getByRole("button", { name: "Add as new player anyway" })).toBeTruthy();
   });
 
+  it("a single exact hit through a saved alias is the lead link, not 'new to NeonBinder' (NEO-680)", async () => {
+    queryResults["players.nearMatches"] = [
+      { _id: "player-1", name: "Hye-Seong Kim", confidence: "exact", matchedAlias: "Jackson Merrill", birthYear: 1999 },
+    ];
+    renderTile();
+    expect(screen.queryByText("“Jackson Merrill” is new to NeonBinder.")).toBeNull();
+    expect(screen.queryByText("Possible matches")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add as new player" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as new player anyway" })).toBeTruthy();
+    // The alias is already stored: the link sends no saveAsAlias flag.
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Link to Hye-Seong Kim" })));
+    expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+      cardId: CARD,
+      kind: "player",
+      name: "Jackson Merrill",
+      sportId: SPORT,
+      answer: { kind: "linkPlayer", playerId: "player-1" },
+    });
+  });
+
   it("a linked name is plain and Edit clears the answer; no 'Linked for you' note is ever shown", async () => {
     renderTile({
       row: card({ playerIds: ["player-1"] }),
@@ -986,6 +1006,12 @@ describe("PlayerTile: one filled button per tile, and long labels wrap (NEO-645 
     queryResults["players.nearMatches"] = [exact];
     renderOne(morales());
     expect(filledNames()).toEqual(["Link to Kendry Morales"]);
+  });
+
+  it("a single exact hit through a saved alias leads too (NEO-680)", () => {
+    queryResults["players.nearMatches"] = [{ ...exact, name: "Kendry Morales Sr.", matchedAlias: "Kendry Morales" }];
+    renderOne(morales());
+    expect(filledNames()).toEqual(["Link to Kendry Morales Sr."]);
   });
 
   it("the suggestion's button is described by the reason line under it, and nothing else is", () => {

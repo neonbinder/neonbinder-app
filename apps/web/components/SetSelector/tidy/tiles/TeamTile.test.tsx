@@ -248,6 +248,21 @@ describe("TeamTile", () => {
       });
     });
 
+    it("links a lone exact hit through a saved alias like any exact match (NEO-680)", async () => {
+      queryResults["teams.nearMatches"] = [
+        { _id: "team-7", name: "San Diego Padres", confidence: "exact", matchedAlias: "Padres", yearsActive: { from: 1969 } },
+      ];
+      renderTile();
+      await click(screen.getByRole("button", { name: "Link to San Diego Padres · 1969–present" }));
+      expect(mutation("tidyNames.answerName")).toHaveBeenCalledWith({
+        cardId: CARD,
+        kind: "team",
+        name: "Padres",
+        sportId: SPORT,
+        answer: { kind: "linkTeam", teamId: "team-7", saveAsAlias: true },
+      });
+    });
+
     it("a string that is another team's LOCATION starts with 'Remember' unticked", async () => {
       queryResults["teams.nearMatches"] = [
         { _id: "team-1", name: "Padres", confidence: "close", locationMatch: true },

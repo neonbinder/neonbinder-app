@@ -238,8 +238,7 @@ function UnansweredTeamName({
 
   const matches = nearMatches;
   const exactRows = (matches ?? []).filter((m) => m.confidence === "exact");
-  const exactSingle =
-    !candidateStep && exactRows.length === 1 && !exactRows[0].matchedAlias ? exactRows[0] : null;
+  const exactSingle = !candidateStep && exactRows.length === 1 ? exactRows[0] : null;
   // Collector review: a string equal to some team's LOCATION is a place, not a
   // name for the team linked here, so it starts unticked.
   const nameIsAPlace =
