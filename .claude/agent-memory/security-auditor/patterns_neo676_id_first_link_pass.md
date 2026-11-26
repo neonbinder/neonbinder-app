@@ -1,6 +1,6 @@
 ---
 name: patterns-neo676-id-first-link-pass
-description: id-first matching added to an armed bulk loader — check every decision-replay branch runs the id step too; take(N) before a sport filter; in-call duplicate ids
+description: id-first matching in an armed bulk loader — id step before every decision-replay branch; take(N) before a sport filter; in-call duplicate ids; narrowing several->one must re-run single-candidate guards
 metadata:
   type: project
 ---
@@ -27,3 +27,16 @@ take**, is a saturated-take "exactly one" (see [[patterns-neo591-prospect-claims
 
 **Rule 4 — re-finding a row by name after an id match** (`findOrCreate(name:
 before.name)`) can land on a same-named sibling; patch the row you found.
+
+**Rule 5 (delta round) — narrowing a "several" down to "one" skips the guards
+the one-candidate branch applies.** `eraMatch` holds a lone UNDATED overlap
+when the incoming era is closed (order-dependent adopt). A later name/alias
+narrowing of an id-matched "several" built `{kind:"one"}` directly, so an
+undated row picked by name got a closed era's years gap-filled. Any code that
+synthesises a match kind outside the matcher must re-run the matcher's
+single-candidate checks (or call the matcher on the narrowed list).
+
+Conditions that held in the delta: team `{adopt}`/`{create:true}` replay reads
+the id step first and holds; per-call repeated-id refusal on leagues and
+players (preview and write share the loader); preview query shares the loader
+and validators, writes gated on a MutationCtx handle.
