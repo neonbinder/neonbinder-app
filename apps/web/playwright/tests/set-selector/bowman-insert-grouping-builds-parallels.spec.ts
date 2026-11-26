@@ -56,7 +56,10 @@
 // the walk nothing is pink and only the lookup holds the build: no "Building parallels of Anime"
 // line while the status line shows. The fault is then cleared (the build's own BSC reads need the
 // gate shut) and the operator settles the card ("No Team for this card" in its drawer), so no card
-// awaits a lookup and the build starts with no click.
+// awaits a lookup and the build starts with no click. NEO-562: the save is proved by what it causes
+// (the hold releases, the build starts, the drawer comes back with No Team pressed), not by the
+// "Saved No Team" toast: the build closes the drawer about 80 ms after the save (NEO-312) and the
+// toast goes with it, so the toast is on screen only for that instant.
 //   WHY THE OPERATOR AND NOT THE LANE ends the wait: Anime is uploaded whole as a publisher's
 // checklist, so no spec asks BSC for an Anime card's team and none of those card-listing answers
 // is known to be recorded; an unrecorded read 501s, is retried after 60 s and 5 min, then handed
@@ -372,16 +375,25 @@ test(
     const drawerCardName = page.getByRole("textbox", { name: "Card name", exact: true });
     await expect(drawerCardName).toBeVisible();
     await page.getByRole("button", { name: "No Team for this card", pressed: false }).click();
-    await expect(page.getByText("Saved No Team", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Done editing card" }).click();
-    await expect(drawerCardName).toBeHidden();
-    await searchCards.clear();
+    // NEO-562: the save is proved by what it causes (header), never by the "Saved No Team" toast.
     await expect(lookupLine).toHaveCount(0);
 
     // The build of Kanji's cards from Anime reports itself, then lands.
     await expect(
       page.getByText(/Building parallels of Anime — [0-9]+ of [0-9]+|Anime parallels — [^.]+/).first(),
     ).toBeVisible();
+    // The build holds Anime, so the drawer is closed while it runs (NEO-312) and comes back when it
+    // ends, still on the card, read from the stored card: No Team stuck. The build reads BSC per
+    // parallel, so this waits by the marketplace rule (GUIDE R5; measured on the fake: 3.9 s desktop,
+    // 4.1 s mobile, none of it BSC's).
+    const drawer = page.getByRole("dialog", { name: `Card #${LOOKUP_CARD}`, exact: true });
+    await expectAfterMarketplace(page, drawer.getByRole("button", { name: "No Team for this card", pressed: true }), {
+      platform: "BuySportsCards",
+      what: `card #${LOOKUP_CARD}'s drawer, back after the Anime parallels build`,
+    });
+    await page.getByRole("button", { name: "Done editing card" }).click();
+    await expect(drawerCardName).toBeHidden();
+    await searchCards.clear();
 
     // ── NEO-535: the build ends with titles to fix, and Card titles opens by itself ──
     // The build fetches each parallel's checklist from BSC before writing it, and
@@ -392,6 +404,8 @@ test(
     // NEO-645: the build starts the moment the walk answers Anime's last name, so it can end
     // while the walk is still open. The dialog never opens over another one: the door then says
     // the titles are waiting, and its button opens them. Either way the dialog opens (R2).
+    // NEO-562: card #98's drawer comes back as the build ends, so the door says "waiting" here
+    // (seen locally, desktop and mobile); it is closed above, so the door's button is free.
     const titlesWaiting = page.getByText(/^Card titles are waiting\. Press Fix [1-9][0-9]* card titles? when you're ready\.$/).first();
     await expectAfterMarketplace(page, titlesDialog.or(titlesWaiting).first(), {
       platform: "BuySportsCards",

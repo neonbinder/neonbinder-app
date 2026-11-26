@@ -105,7 +105,16 @@ const PLAYER_CARDS_CAP = 200;
 
 /** One career stint, in the shape `savePlayerFields` takes. */
 /** NEO-285 — `fromYear` absent is an undated stint (a college, years unknown). */
-type Stint = { teamId: Id<"teams">; fromYear?: number; toYear?: number };
+/**
+ * NEO-676 — `role` is absent on a playing stint and "manager" on a managing one.
+ * The editor never sets it; it round-trips what the row holds, unchanged.
+ */
+type Stint = {
+  teamId: Id<"teams">;
+  fromYear?: number;
+  toYear?: number;
+  role?: "manager";
+};
 
 type Status = { text: string; isError: boolean } | null;
 
@@ -192,7 +201,12 @@ function sortStints(stints: Stint[]): Stint[] {
 function stintsEqual(a: Stint[], b: Stint[]): boolean {
   const key = (s: Stint[]) =>
     JSON.stringify(
-      sortStints(s).map((x) => [x.teamId, x.fromYear ?? null, x.toYear ?? null]),
+      sortStints(s).map((x) => [
+        x.teamId,
+        x.fromYear ?? null,
+        x.toYear ?? null,
+        x.role ?? null,
+      ]),
     );
   return key(a) === key(b);
 }
@@ -290,6 +304,7 @@ function fieldSignature(fields: {
       s.teamId,
       s.fromYear ?? null,
       s.toYear ?? null,
+      s.role ?? null,
     ]),
   ]);
 }
@@ -1731,7 +1746,12 @@ function PlayerDetail({
     // — traded away, re-signed later — and the server keeps both. Only a
     // literal repeat is refused, and it is refused HERE so nothing is sent.
     if (
-      stints.some((s) => s.teamId === pendingTeam && s.fromYear === from)
+      // NEO-676: a pending stint is a playing one, so a managing stint on the
+      // same team-year is not a repeat of it.
+      stints.some(
+        (s) =>
+          s.teamId === pendingTeam && s.fromYear === from && s.role === undefined,
+      )
     ) {
       return {
         problem: `${teamName(pendingTeam)} already has a stint starting in ${from}.`,
@@ -2098,7 +2118,7 @@ function PlayerDetail({
           >
             {stints.map((stint, index) => (
               <li
-                key={`${stint.teamId}-${stint.fromYear}`}
+                key={`${stint.teamId}-${stint.fromYear}-${stint.role ?? "player"}`}
                 className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-1 text-sm text-ink-2"
               >
                 {/* NEO-235 — the stint row is a way INTO the team.
