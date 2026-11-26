@@ -27,3 +27,17 @@ metadata:
   open (`tidyCards.linkOnOpen`, waiting names). The commit path already counted aliases before.
 
 Related: [[patterns-player-alias-read-back-and-remember-box]]
+
+## Link on open, live (the same spec's step 3b)
+- **The alias must arrive AFTER the commit:** the commit already links a lone alias match, so a
+  holder saved before the fetch leaves nothing waiting. Once `settleWalkAfterCommit` is true, open a
+  second tab (`page.context().newPage()`, `/admin/players`, `expectPlayersLoaded(admin, LAUNCH_GATE)`,
+  `addPlayerByHand`, Aliases, Save) and assert the walk did not open on the target card first.
+- **Proof it was waiting:** the walk's sr-only status `Linked <printed> to <holder>.` is said only
+  for a waiting name linked on open: `page.getByRole("status").filter({ hasText }).toHaveText(line)`.
+- **Edit holds on revisit is racy in-walk:** after Edit, Skip, Back, a re-link on re-open lands a
+  moment AFTER the card renders, so "still pink / no Edit / no Linked line" pass before it. The
+  real proof is reading the card's title back after the walk (holder surname absent). Planted
+  (drop `skip` in `useLinkOnOpen`): red at the read-back, not in the walk.
+- Plants: `useLinkOnOpen(memory, undefined, onAnswered)` → red at `Edit <holder>`. Fresh-only:
+  `seed` before each `plant --expect`.

@@ -45,6 +45,19 @@
 //      tile's row "Player <typo>" reads "Edit <him>" with ONE purple note "Linked
 //      by alias" under it, the tile is not pink, and nothing asks ("Link to …"
 //      offers no lead, no "is new to NeonBinder"). Axe runs on that tile.
+//   3b. NEO-680 link on open (Jason, 2026-11-25, Q1: "Link when card opens"; Edit
+//      on it un-links and it stays un-linked): a name the commit left WAITING
+//      (#16, no player answered to it then) links by itself when the walk opens
+//      its card. The alias can only arrive after the commit (the commit links a
+//      lone alias match itself), so once the walk is open on another card a
+//      second tab gives a second per-attempt Hockey player that one alias. When
+//      the walk reaches #16, with no click: its row "Player <name>" reads "Edit
+//      <him>" with the "Linked by alias" note, no Player tile is pink, and the
+//      walk's status line says exactly "Linked <name> to <him>." (only a waiting
+//      name links on open, so the line is the proof the commit left it waiting).
+//      Axe on that tile. Then Edit takes it back: the row waits again (pink), and
+//      after Skip and the browser's Back to #16 (same sitting, no reload) it
+//      still waits, with no "Linked" line; Forward returns to where Skip went.
 //   4. D2 (Jason, 2026-11-10): card #6, which no row could be pinned to, is
 //      looked up on BSC for just that card. Proof from the user's side:
 //      the "17 of 18" line (the other 17 took the checklist's answer, so BSC was
@@ -85,11 +98,15 @@
 // no-match (GUIDE "Enrichment fixtures"): every recorded Hockey no-match is a
 // name some fixture checklist prints, and a holder sharing one would link that
 // spec's card. Under the recording his lookup is refused (no live call), and
-// the row stays bare.
+// the row stays bare. The second holder (`Kip Late<token>`, alias = #16's
+// printed name, which no other spec prints) is added the same way in a second
+// tab once the walk is open; his link on #16 is taken back with Edit, so #16
+// ends waiting on its printed name (step 4 reads that back from its title).
 //
 // Desktop and mobile: one spec, no branch (role and label locators; click()
 // scrolls). Axe runs in light and dark on the dialog's preview, Match Cards and
-// the walk's pink Sources disagree tile.
+// the walk's pink Sources disagree tile, and on the Player tile of #2 (linked
+// by the pick) and #16 (linked on open).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton, escapeRe } from "../../support/cards";
 import { addPlayerByHand, expectPlayersLoaded } from "../../support/players";
@@ -155,6 +172,10 @@ test(
     // NEO-680: the one Hockey player who answers to #2's checklist spelling, by a saved alias.
     const holderSurname = `Okc${env.ATTEMPT_TOKEN}`;
     const holder = `Kip ${holderSurname}`;
+    // NEO-680 link on open: #16's printed name, waiting after the commit, and the player given it as an alias later.
+    const late = at(16);
+    const lateHolderSurname = `Late${env.ATTEMPT_TOKEN}`;
+    const lateHolder = `Kip ${lateHolderSurname}`;
 
     // The paste: the published line format, one line per card, with the changes above.
     const lines = rows.map((r) => {
@@ -372,6 +393,27 @@ test(
     await expect(saved).toBeVisible();
     expect(await settleWalkAfterCommit(page, saved), "two cards disagree with the checklist, so the walk opens").toBe(true);
     const walk = tidyWalk(page);
+
+    // ── 3b. NEO-680: the walk is open on another card; a second tab gives #16's waiting name to one player, by alias ──
+    await expectCardSettled(page);
+    const firstCard = /^#(\S+)/.exec((await tidyCardIdentity(page).allTextContents())[0] ?? "")?.[1];
+    expect(firstCard, "the walk opened on another card, so #16 opens after its alias exists").not.toBe(late.number);
+    const admin = await page.context().newPage();
+    await admin.goto("/admin/players");
+    // A fresh app load in the new tab: the launch gate (R4).
+    await expectPlayersLoaded(admin, LAUNCH_GATE);
+    await addPlayerByHand(admin, lateHolder, "Hockey");
+    const lateAliases = admin.getByRole("textbox", { name: "Aliases", exact: true });
+    await expect(lateAliases).toHaveValue("");
+    await lateAliases.fill(late.player);
+    await admin.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(admin.getByRole("status").filter({ hasText: `Saved ${lateHolder}.` })).toBeVisible();
+    await expect(lateAliases).toHaveValue(late.player);
+    // He is the only one who answers to it by alias.
+    await expect(admin.getByText(/also answers to that name/)).toHaveCount(0);
+    await admin.close();
+    await expect(walk).toBeVisible();
+
     const disagree = tidyTile(page, "Sources disagree");
     const says = disagree.getByRole("list", { name: "What each source says: Player name", exact: true });
     // Each source's column: its label, then its value (the differing letters underlined).
@@ -392,6 +434,46 @@ test(
       const number = /^#(\S+)/.exec(identity[0] ?? "")?.[1] ?? "";
       expect(number, `the open card reads its number (${identity.join(" | ")})`).not.toBe("");
       seen.push(number);
+      if (number === late.number) {
+        // NEO-680, link on open: nothing is clicked. #16's name waited after the commit and one player
+        // now answers to it by alias, so opening the card linked him: his Edit line, the purple note,
+        // a plain tile, and the walk says what it did (the line only a waiting name's link makes).
+        const playerTile = tidyTile(page, "Player");
+        const lateRow = playerTile.getByRole("group", { name: `Player ${late.player}`, exact: true });
+        const lateEdit = lateRow.getByRole("button", { name: `Edit ${lateHolder}`, exact: true });
+        const linkedLine = `Linked ${late.player} to ${lateHolder}.`;
+        const said = page.getByRole("status").filter({ hasText: linkedLine });
+        await expect(lateEdit).toBeVisible();
+        await expect(lateRow.getByRole("note")).toHaveText(["Linked by alias"]);
+        await expect(pinkTile(page, "Player")).toHaveCount(0);
+        await expect(said).toHaveText(linkedLine);
+        await expectAccessible(page, { within: playerTile, label: "Tidy Up walk, a waiting name linked by alias when its card opened" });
+        // Edit takes the link back: the name waits again, pink, with no Edit line and no note.
+        await lateEdit.click();
+        await expect(pinkTile(page, "Player")).toHaveCount(1);
+        await expect(lateRow).toBeVisible();
+        await expect(lateEdit).toHaveCount(0);
+        await expect(lateRow.getByRole("note")).toHaveCount(0);
+        // The walk moves on, and the browser's Back returns to #16 in the same sitting: opening it
+        // again does not link it again. These reads show the re-opened card, but a link made on
+        // re-open lands a moment later, so they can pass before it: the proof that it held is
+        // step 4's read-back of #16's title after the walk (planted: dropping the walk's held-back
+        // names re-links #16 here and turns step 4 red on "Kip Late<token> #16").
+        await skipCard(page);
+        const afterLate = await tidyCardIdentity(page).allTextContents();
+        await page.goBack();
+        await expect(tidyCardIdentity(page)).toHaveText(identity);
+        await expectCardSettled(page);
+        await expect(pinkTile(page, "Player")).toHaveCount(1);
+        await expect(lateRow).toBeVisible();
+        await expect(lateEdit).toHaveCount(0);
+        await expect(said).toHaveCount(0);
+        // Forward is where Skip went (the next card, or the end screen when #16 was the last).
+        await page.goForward();
+        if (afterLate.length > 0) await expect(tidyCardIdentity(page)).toHaveText(afterLate);
+        else await expect(tidyFooterButton(page, "done")).toBeVisible();
+        continue;
+      }
       const pick = picks[number];
       if (pick) {
         // Pink: the tile asks, with both spellings side by side.
@@ -445,7 +527,7 @@ test(
       // Its names are not this spec's: skipped, nothing written.
       await skipCard(page);
     }
-    expect(seen, "the walk showed both disagreeing cards").toEqual(expect.arrayContaining(["2", "4"]));
+    expect(seen, "the walk showed both disagreeing cards and #16").toEqual(expect.arrayContaining(["2", "4", late.number]));
     // Every card shown was skipped, and the end screen counts them.
     await expect(
       walk.getByText(`${seen.length} ${seen.length === 1 ? "card" : "cards"} skipped, not ready to list`, { exact: true }),
@@ -468,10 +550,12 @@ test(
     // A pick writes the card's PLAYER (and regenerates its generated title), never the other
     // source's spelling: read back from the title's own chips and the stored title. #2's spelling
     // linked the alias holder (NEO-680), so his NB name is the title's player; #4's waits as BSC
-    // printed it. The search finds #2 by the name it printed, as the row shows it.
+    // printed it. The search finds #2 by the name it printed, as the row shows it. #16's link on
+    // open was taken back with Edit and never made again, so it waits on its printed name.
     for (const [n, picked, titled, other] of [
       ["2", typoTwo, holderSurname, two.player],
       ["4", four.player, four.player, typoFour],
+      [late.number, late.player, late.player, lateHolderSurname],
     ] as const) {
       await search.fill(picked);
       await editCardButton(page, n).click();
