@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import NeonButton from "@/components/modules/NeonButton";
+import { Checkbox } from "@/components/primitives/Checkbox";
 import { ScanImage } from "./scan-image";
 
 /**
@@ -402,15 +403,9 @@ export function ReviewGrid({
                 </div>
 
                 <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
-                  <label className="flex items-center gap-2 text-sm text-ink-2">
-                    <input
-                      type="checkbox"
-                      checked={!isExcluded}
-                      onChange={() => onToggleExcluded(key)}
-                      className="accent-neon-green-text"
-                    />
+                  <Checkbox className="text-sm text-ink-2" checked={!isExcluded} onChange={() => onToggleExcluded(key)}>
                     Print
-                  </label>
+                  </Checkbox>
                   <NeonButton
                     variant="secondary"
                     outline
@@ -518,16 +513,14 @@ export function ReviewGrid({
 
                   {/* Separate from the side, because they answer different
                       questions: what IS this, and do I want to pair it now. */}
-                  <label className="flex min-h-6 items-center gap-1 text-xs text-ink-2">
-                    <input
-                      type="checkbox"
-                      checked={isPicked}
-                      disabled={busy !== null}
-                      onChange={() => toggleSelected(image.entryIndex)}
-                      className="accent-neon-green-text"
-                    />
+                  <Checkbox
+                    className="text-xs text-ink-2"
+                    checked={isPicked}
+                    disabled={busy !== null}
+                    onChange={() => toggleSelected(image.entryIndex)}
+                  >
                     Pair this
-                  </label>
+                  </Checkbox>
                 </li>
               );
             })}

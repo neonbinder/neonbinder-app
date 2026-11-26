@@ -1,5 +1,6 @@
 import { useId, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import NeonButton from "@/components/modules/NeonButton";
+import { Checkbox } from "@/components/primitives/Checkbox";
 import { Input } from "@/components/primitives/Input";
 import { Textarea } from "@/components/primitives/Textarea";
 import type { Card as ModelCard } from "../../final/data/types";
@@ -416,9 +417,7 @@ export default function CopyDetailsForm({
                 const checked = value.binderIds.includes(b.id);
                 return (
                   <label key={b.id} className={CHOICE}>
-                    <input
-                      type="checkbox"
-                      className={CHECK}
+                    <Checkbox
                       checked={checked}
                       onChange={() =>
                         set({

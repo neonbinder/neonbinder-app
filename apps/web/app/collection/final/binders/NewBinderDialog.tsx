@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Autocomplete } from "@/components/primitives/Autocomplete";
+import { Checkbox } from "@/components/primitives/Checkbox";
 import { Input } from "@/components/primitives/Input";
 import { spineFontById, spineFontFamilyCss } from "@/lib/print/spine-fonts";
 import Modal from "../../prototypes/p2/Modal";
@@ -284,9 +285,8 @@ export default function NewBinderDialog({
                   jersey.
                 </p>
                 <label className={CHOICE}>
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 h-4 w-4 accent-selection"
+                  <Checkbox
+                    className="mt-0.5"
                     checked={alumni}
                     onChange={(e) => setAlumni(e.target.checked)}
                   />

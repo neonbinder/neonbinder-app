@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import NeonButton from "@/components/modules/NeonButton";
+import { Checkbox } from "@/components/primitives/Checkbox";
 import { PlaceholderSheet } from "@/components/modules/PlaceholderSheet";
 import {
   DEFAULT_SHEET_FORMAT,
@@ -222,12 +223,7 @@ export function PrintRun({
           Two-sided printing
         </legend>
         <label className="flex items-start gap-3 rounded-lg border border-rule p-3 cursor-pointer hover:bg-field/60 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus">
-          <input
-            type="checkbox"
-            checked={duplex}
-            onChange={(e) => setDuplex(e.target.checked)}
-            className="mt-1 accent-neon-purple"
-          />
+          <Checkbox className="mt-0.5" checked={duplex} onChange={(e) => setDuplex(e.target.checked)} />
           <span className="text-sm text-ink-2">
             Print the backs too
             <span className="block text-xs text-ink-3">
@@ -276,12 +272,7 @@ export function PrintRun({
       {/* Guides default OFF for a card run — see the `guides` prop. On is the
           calibration mode you reach for when checking the duplex alignment. */}
       <label className="flex items-start gap-3 rounded-lg border border-rule p-3 cursor-pointer hover:bg-field/60 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus">
-        <input
-          type="checkbox"
-          checked={guides}
-          onChange={(e) => setGuides(e.target.checked)}
-          className="mt-1 accent-neon-purple"
-        />
+        <Checkbox className="mt-0.5" checked={guides} onChange={(e) => setGuides(e.target.checked)} />
         <span className="text-sm text-ink-2">
           Show cutting guides
           <span className="block text-xs text-ink-3">

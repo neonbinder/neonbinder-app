@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import { Checkbox } from "@/components/primitives/Checkbox";
 import { writeErrorMessage, type ListingExtension } from "../data/store";
 import type { Container } from "../data/types";
 
@@ -62,9 +63,8 @@ export default function BoxListedToggle({
 
   return (
     <label className={`${CHOICE} mb-3 max-w-xl max-sm:min-h-11`}>
-      <input
-        type="checkbox"
-        className="mt-0.5 h-4 w-4 cursor-pointer accent-selection"
+      <Checkbox
+        className="mt-0.5"
         checked={shown}
         aria-disabled={saving !== null || undefined}
         aria-busy={saving !== null || undefined}
