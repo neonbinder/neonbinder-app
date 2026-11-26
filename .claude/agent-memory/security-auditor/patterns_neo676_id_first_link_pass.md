@@ -61,3 +61,8 @@ replayed `create:true` that was held on the holder now proceeds, guarded only by
 `create`'s alias-holder check (which misses the holder answering through the
 INCOMING alias leg). And an exact-name row holding a DIFFERENT id still counts
 as "own row", turning a correct id adopt into a hold (fail-closed, but noisy).
+
+Both closed in round 4: the downgrade records the set-aside holder and a replayed
+`create` holds on it; exact-name rows carrying a different id are excluded from
+"own row". Pattern: when a step downgrades a match kind, carry the downgraded
+candidate forward so non-idempotent replays can still hold on it.
