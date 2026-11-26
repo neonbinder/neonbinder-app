@@ -564,10 +564,8 @@ export default function CopyTable({ store, pile }: { store: PrototypeStore; pile
               <thead className="border-b border-slate-800 bg-slate-900 text-slate-300">
                 <tr>
                   <th scope="col" className="w-8 px-2 py-1.5">
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       aria-label={`Select all ${rows.length} shown`}
-                      className={`h-4 w-4 accent-[#00C2FF] ${RING}`}
                       checked={rows.length > 0 && rows.every((r) => selSet.has(r.copy.id))}
                       ref={(el) => {
                         if (el) el.indeterminate = visibleSelected > 0 && visibleSelected < rows.length;

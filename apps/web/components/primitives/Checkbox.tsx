@@ -17,7 +17,8 @@ export interface CheckboxProps
 
 /**
  * The box: 16px, `peer` so the tick and the rest of the row read the input's
- * own state (`peer-checked`), whether it is controlled or not.
+ * own state (`peer-checked`, `peer-indeterminate`), whether it is controlled
+ * or not.
  */
 function Box({
   inputRef,
@@ -32,11 +33,13 @@ function Box({
         ref={inputRef}
         type="checkbox"
         {...inputProps}
-        className="peer h-4 w-4 cursor-pointer appearance-none rounded border border-control bg-field checked:border-selection checked:bg-selection focus-outline disabled:cursor-not-allowed aria-disabled:cursor-not-allowed"
+        className="peer h-4 w-4 cursor-pointer appearance-none rounded border border-control bg-field checked:border-selection checked:bg-selection indeterminate:border-selection indeterminate:bg-selection focus-outline disabled:cursor-not-allowed aria-disabled:cursor-not-allowed"
       />
+      {/* The tick shows when checked and not indeterminate; the dash shows
+          when `el.indeterminate` is set, whatever `checked` says (native). */}
       <svg
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 h-4 w-4 text-surface opacity-0 peer-checked:opacity-100"
+        className="pointer-events-none absolute inset-0 h-4 w-4 text-surface opacity-0 peer-[:checked:not(:indeterminate)]:opacity-100"
         fill="currentColor"
         viewBox="0 0 20 20"
       >
@@ -46,6 +49,14 @@ function Box({
           clipRule="evenodd"
         />
       </svg>
+      <svg
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 h-4 w-4 text-surface opacity-0 peer-indeterminate:opacity-100"
+        fill="currentColor"
+        viewBox="0 0 20 20"
+      >
+        <rect x="4" y="9" width="12" height="2" rx="1" />
+      </svg>
     </span>
   );
 }
@@ -53,7 +64,9 @@ function Box({
 /**
  * The one checkbox. The whole row (box plus text) is a `<label>` at least 24px
  * tall, so clicking the text toggles the box, while the box itself stays 16px.
- * The tick shows for controlled and uncontrolled use alike.
+ * The tick shows for controlled and uncontrolled use alike. A caller sets
+ * `indeterminate` natively through the ref (`el.indeterminate = true`) and the
+ * box draws a dash in place of the tick.
  *
  * Disabled: pass `disabled` (native) or `aria-disabled` (the box stays
  * focusable; the caller's `onChange` must ignore the change). Both dim the

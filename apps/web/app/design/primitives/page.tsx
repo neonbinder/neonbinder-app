@@ -201,6 +201,12 @@ export default function PrimitivesPage() {
                   variant="withText"
                 />
                 <Checkbox label="Checked and uncontrolled" defaultChecked />
+                <Checkbox
+                  label="Indeterminate (set through the ref)"
+                  ref={(el) => {
+                    if (el) el.indeterminate = true;
+                  }}
+                />
                 <Checkbox label="Unchecked, disabled" disabled />
                 <Checkbox label="Checked, disabled" defaultChecked disabled />
                 <Checkbox label="Checked, aria-disabled" defaultChecked aria-disabled />
