@@ -1,6 +1,8 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 import { rejectedSummaryValidator } from "./lib/extractRejections";
+import { minorLeagueClassesValidator } from "./lib/leagueClass";
+import { parentClubsValidator } from "./lib/parentClubs";
 
 /**
  * NEO-356 — the collector's saved theme preference, shared by the schema and
@@ -2744,6 +2746,11 @@ export default defineSchema({
       teamId: v.id("teams"),
       fromYear: v.optional(v.number()),
       toYear: v.optional(v.number()),
+      // NEO-676: absent = a playing stint. "manager" marks a managing stint.
+      // Stint identity is (teamId, fromYear, role ?? "player"), so a
+      // player-manager can hold both in one season. Readers that treat every
+      // stint as playing are NEO-678's to change.
+      role: v.optional(v.literal("manager")),
     }))),
     isHallOfFame: v.optional(v.boolean()),
     /**
@@ -2782,6 +2789,11 @@ export default defineSchema({
     // are real). Written by the bulk preload from the source dataset; optional
     // because every hand-created and Wikidata-enriched row predates it.
     birthYear: v.optional(v.number()),
+    // NEO-676: the full ISO birth date, `YYYY-MM-DD`, written through
+    // `assertBirthDate` (convex/lib/birthDate.ts). Beside `birthYear`, never in
+    // place of it; an admin edit that makes the two disagree keeps both and
+    // is left for an operator to review.
+    birthDate: v.optional(v.string()),
     /**
      * NEO-318: a DERIVED copy of this player's `playerSports` sport ids, in
      * that table's `by_player_id` order, so the Players admin list renders its
@@ -2801,6 +2813,8 @@ export default defineSchema({
     alsoSportIds: v.optional(v.array(v.id("selectorOptions"))),
     externalIds: v.optional(v.object({
       wikidataId: v.optional(v.string()), // e.g. "Q123456"
+      // NEO-676: MLB's own person id, a link only (guard: lib/mlbamId.ts).
+      mlbamId: v.optional(v.number()),
     })),
     createdByUserId: v.optional(v.string()),
     /**
@@ -2839,7 +2853,10 @@ export default defineSchema({
     .searchIndex("search_name", {
       searchField: "name",
       filterFields: ["sportId"],
-    }),
+    })
+    // NEO-676: route an MLB person id to the NB player it is linked to. Not
+    // enforced unique by the index; the writers check with `.take(2)`.
+    .index("by_mlbam_id", ["externalIds.mlbamId"]),
 
   // NEO-156: leagues as a first-class entity.
   //
@@ -2912,8 +2929,15 @@ export default defineSchema({
     externalIds: v.optional(
       v.object({
         wikidataId: v.optional(v.string()), // e.g. "Q1163715"
+        // NEO-676: MLB's own league id, a link only (guard: lib/mlbamId.ts).
+        // No index: a sport holds a couple of dozen leagues.
+        mlbamId: v.optional(v.number()),
       }),
     ),
+    // NEO-676: the minor-league class this league held, as year ranges
+    // (convex/lib/leagueClass.ts). Meaningful only while `level === "minor"`;
+    // `saveLeagueFields` clears it when the level moves off "minor".
+    minorLeagueClasses: v.optional(minorLeagueClassesValidator),
     // NEO-240: other names the SAME league answers to.
     //
     // Two independent sources of them. (1) Operators: "MLB", "the American
@@ -3004,6 +3028,11 @@ export default defineSchema({
     // has said. Optional and staying that way — see the `franchises` table for
     // why nothing may require one, and why it is never inferred from a name.
     franchiseId: v.optional(v.id("franchises")),
+    // NEO-676: which MLB club this (minor-league) team was affiliated with,
+    // and when. The parent is an NB team row, never an MLB id; `toYear` absent
+    // = still affiliated; capped at MAX_PARENT_CLUBS (convex/lib/parentClubs.ts).
+    // A reader must tolerate a parent row that is gone.
+    parentClubs: v.optional(parentClubsValidator),
     // NEO-236: the place part of the franchise name — "San Diego" in "San
     // Diego Padres". Location, not city: wherever the team is FROM, so a bay
     // (Tampa Bay), a region (New England), a state (Wisconsin / Badgers) and a
@@ -3097,6 +3126,10 @@ export default defineSchema({
     externalIds: v.optional(v.object({
       wikidataId: v.optional(v.string()),
       espnId: v.optional(v.string()),
+      // NEO-676: MLB's own club id, a link only (guard: lib/mlbamId.ts). NOT
+      // unique: one MLB club spans several NB era rows (renames, moves), so
+      // `by_mlbam_id` can return more than one and the caller picks by year.
+      mlbamId: v.optional(v.number()),
     })),
     lastUpdated: v.number(),
   })
@@ -3114,6 +3147,8 @@ export default defineSchema({
     // "every team on this thread" list — the same shape, and the same reason,
     // as `by_league_id` above.
     .index("by_franchise_id", ["franchiseId"])
+    // NEO-676: every NB era row carrying one MLB club id.
+    .index("by_mlbam_id", ["externalIds.mlbamId"])
     // NEO-212: mirrors players.search_name. The entity-review wizard's team
     // pickers (and the team editor's) were the same 500-row fetch + client-side
     // `.includes()` filter that NEO-147 removed from the player typeahead —

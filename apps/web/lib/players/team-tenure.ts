@@ -41,6 +41,8 @@ export interface StoredTeamYear {
   teamId: string;
   fromYear?: number;
   toYear?: number;
+  /** NEO-676: absent = a playing stint; "manager" = a managing stint. */
+  role?: "manager";
 }
 
 /** NEO-285 — narrows a stored stint to one that carries a start year. */

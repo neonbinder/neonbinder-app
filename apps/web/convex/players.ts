@@ -120,6 +120,8 @@ export type PlayerTeamYear = {
   teamId: Id<"teams">;
   fromYear?: number;
   toYear?: number;
+  /** NEO-676: absent = a playing stint; "manager" = a managing stint. */
+  role?: "manager";
 };
 
 /**
@@ -149,6 +151,8 @@ const playerDocPublicValidator = v.object({
     // NEO-285 — absent on an undated stint; see schema.ts.
     fromYear: v.optional(v.number()),
     toYear: v.optional(v.number()),
+    // NEO-676 — absent on a playing stint; see schema.ts.
+    role: v.optional(v.literal("manager")),
   }))),
   isHallOfFame: v.optional(v.boolean()),
   // NEO-254 — the other names this player's cards carry. Public because the
@@ -159,8 +163,12 @@ const playerDocPublicValidator = v.object({
   // so it is public: the review wizard's candidate list and the Players page
   // both put it in front of an operator choosing between them. See schema.ts.
   birthYear: v.optional(v.number()),
+  // NEO-676 — the ISO birth date beside `birthYear`; see schema.ts.
+  birthDate: v.optional(v.string()),
   externalIds: v.optional(v.object({
     wikidataId: v.optional(v.string()),
+    // NEO-676 — MLB's own person id; linkage only.
+    mlbamId: v.optional(v.number()),
   })),
   lastUpdated: v.number(),
 });
@@ -218,15 +226,20 @@ const playerDocValidator = v.object({
     // NEO-285 — absent on an undated stint; see schema.ts.
     fromYear: v.optional(v.number()),
     toYear: v.optional(v.number()),
+    // NEO-676 — absent on a playing stint; see schema.ts.
+    role: v.optional(v.literal("manager")),
   }))),
   isHallOfFame: v.optional(v.boolean()),
   aliases: v.optional(v.array(v.string())),
   birthYear: v.optional(v.number()),
+  // NEO-676 — see `playerDocPublicValidator`.
+  birthDate: v.optional(v.string()),
   // NEO-318: the raw doc reaches `getInternal`'s caller (wikidata enrichment)
   // unstripped, so the internal validator must admit the derived copy.
   alsoSportIds: v.optional(v.array(v.id("selectorOptions"))),
   externalIds: v.optional(v.object({
     wikidataId: v.optional(v.string()),
+    mlbamId: v.optional(v.number()),
   })),
   createdByUserId: v.optional(v.string()),
   // NEO-591: the raw doc reaches `getInternal`'s caller unstripped.
@@ -3328,7 +3341,7 @@ export const applyEnrichmentInternal = internalMutation({
     const patch: {
       teamYears?: PlayerTeamYear[];
       isHallOfFame?: boolean;
-      externalIds?: { wikidataId?: string };
+      externalIds?: { wikidataId?: string; mlbamId?: number };
       lastUpdated: number;
     } = { lastUpdated: Date.now() };
 
@@ -3342,8 +3355,13 @@ export const applyEnrichmentInternal = internalMutation({
        * career already has a stint on that team.
        */
       const incomingTeams = new Set<string>(args.teamYears.map((s) => s.teamId));
+      // NEO-676: a managing stint is never Wikidata's answer about a player's
+      // career (`enrichPlayer` produces playing stints only), so a forced
+      // re-enrich keeps every one.
       const keptUndated = (existing.teamYears ?? []).filter(
-        (s) => s.fromYear === undefined && !incomingTeams.has(s.teamId),
+        (s) =>
+          s.role === "manager" ||
+          (s.fromYear === undefined && !incomingTeams.has(s.teamId)),
       );
       patch.teamYears = sortTeamYears([...args.teamYears, ...keptUndated]);
     }
@@ -3754,6 +3772,9 @@ export const savePlayerFields = mutation({
           // save that touches any stint must not refuse them.
           fromYear: v.optional(v.number()),
           toYear: v.optional(v.number()),
+          // NEO-676 — absent on a playing stint. The editor round-trips it
+          // unchanged; a save that touches any stint must not drop or refuse it.
+          role: v.optional(v.literal("manager")),
         }),
       ),
     ),
@@ -3786,7 +3807,7 @@ export const savePlayerFields = mutation({
       name?: string;
       nameNormalized?: string;
       isHallOfFame?: boolean;
-      externalIds?: { wikidataId?: string };
+      externalIds?: { wikidataId?: string; mlbamId?: number };
       teamYears?: PlayerTeamYear[];
       birthYear?: number;
       aliases?: string[];
@@ -3844,7 +3865,7 @@ export const savePlayerFields = mutation({
     }
 
     if (args.wikidataId !== undefined) {
-      const rest: { wikidataId?: string } = { ...(existing.externalIds ?? {}) };
+      const rest: { wikidataId?: string; mlbamId?: number } = { ...(existing.externalIds ?? {}) };
       if (args.wikidataId === null) {
         delete rest.wikidataId;
       } else {
@@ -3906,7 +3927,8 @@ export const savePlayerFields = mutation({
           if (stint.toYear !== undefined) {
             throw new ConvexError("A career stint with an end year needs a start year.");
           }
-          const key = `${stint.teamId}:undated`;
+          // NEO-676: a managing stint is a different stint from a playing one.
+          const key = `${stint.teamId}:undated${stint.role === "manager" ? ":manager" : ""}`;
           if (seen.has(key)) {
             throw new ConvexError(`${team.name} is listed twice without years.`);
           }
@@ -3933,7 +3955,9 @@ export const savePlayerFields = mutation({
         // stints at one franchise are real history — traded away, re-signed
         // later — and collapsing them is data loss. Only a literal repeat of
         // the same stint is refused. See `sortTeamYears`.
-        const key = `${stint.teamId}:${stint.fromYear}`;
+        // NEO-676: the role is part of the identity, so a player-manager can
+        // hold a playing stint and a managing stint in the same season.
+        const key = `${stint.teamId}:${stint.fromYear}${stint.role === "manager" ? ":manager" : ""}`;
         if (seen.has(key)) {
           throw new ConvexError(
             `${team.name} is listed twice starting in ${stint.fromYear}.`,
@@ -4281,9 +4305,11 @@ export async function appendCareerStintsImpl(
       ...(await additionalSportIds(ctx, player._id)),
     ]);
     const current = player.teamYears ?? [];
+    // NEO-676: the incoming stints are playing stints, so a managing stint on
+    // the same team-year is not a duplicate of one.
     const seen = new Set(
       current
-        .filter((s) => s.fromYear !== undefined)
+        .filter((s) => s.fromYear !== undefined && s.role !== "manager")
         .map((s) => `${s.teamId}|${s.fromYear}`),
     );
     const next = [...current];
@@ -4530,9 +4556,10 @@ export const createCareerNewPlayers = internalMutation({
       // The stints this call may write: team still there and in this sport,
       // one per (team, fromYear), within the career cap.
       const held = adopted?.teamYears ?? [];
+      // NEO-676: a managing stint is not a duplicate of a playing one.
       const seen = new Set(
         held
-          .filter((s) => s.fromYear !== undefined)
+          .filter((s) => s.fromYear !== undefined && s.role !== "manager")
           .map((s) => `${s.teamId}|${s.fromYear}`),
       );
       const next = [...held];

@@ -16,6 +16,7 @@
 
 import { ConvexError, v } from "convex/values";
 import { sportOfSelectorOption } from "./lib/selectorLeagues";
+import { minorLeagueClassesValidator } from "./lib/leagueClass";
 import {
   action,
   internalMutation,
@@ -90,7 +91,16 @@ export const leagueDocValidator = v.object({
   // NEO-331: required, with the schema — see `leagues.level` there.
   level: leagueLevelValidator,
   yearsActive: v.optional(leagueYearsActiveValidator),
-  externalIds: v.optional(v.object({ wikidataId: v.optional(v.string()) })),
+  externalIds: v.optional(
+    v.object({
+      wikidataId: v.optional(v.string()),
+      // NEO-676: MLB's own league id; linkage only.
+      mlbamId: v.optional(v.number()),
+    }),
+  ),
+  // NEO-676: minor-league class as year ranges. STRICT validator: a row
+  // carrying one must be named here or every league screen throws.
+  minorLeagueClasses: v.optional(minorLeagueClassesValidator),
   aliases: v.optional(v.array(v.string())),
   lastUpdated: v.number(),
 });
@@ -278,7 +288,7 @@ export async function findOrCreateLeague(
     const patch: {
       abbreviation?: string;
       yearsActive?: { from: number; to?: number };
-      externalIds?: { wikidataId?: string };
+      externalIds?: { wikidataId?: string; mlbamId?: number };
       lastUpdated: number;
     } = { lastUpdated: Date.now() };
     let changed = false;
@@ -1235,7 +1245,8 @@ export const saveLeagueFields = mutation({
       level?: LeagueLevel;
       yearsActive?: { from: number; to?: number };
       aliases?: string[];
-      externalIds?: { wikidataId?: string };
+      minorLeagueClasses?: undefined;
+      externalIds?: { wikidataId?: string; mlbamId?: number };
       lastUpdated: number;
     } = { lastUpdated: Date.now() };
 
@@ -1307,6 +1318,11 @@ export const saveLeagueFields = mutation({
 
     if (args.level !== undefined) {
       patch.level = args.level;
+      // NEO-676 (Jason, 2026-11-25): a class is meaningful only while the
+      // league is minor, so moving it off "minor" clears the list.
+      if (args.level !== "minor" && existing.minorLeagueClasses !== undefined) {
+        patch.minorLeagueClasses = undefined;
+      }
     }
 
     if (args.yearsActive !== undefined) {
@@ -1315,7 +1331,7 @@ export const saveLeagueFields = mutation({
     }
 
     if (args.wikidataId !== undefined) {
-      const rest: { wikidataId?: string } = { ...(existing.externalIds ?? {}) };
+      const rest: { wikidataId?: string; mlbamId?: number } = { ...(existing.externalIds ?? {}) };
       if (args.wikidataId === null) {
         delete rest.wikidataId;
       } else {
@@ -1526,7 +1542,7 @@ export const applyEnrichmentInternal = internalMutation({
     const patch: {
       abbreviation?: string;
       yearsActive?: { from: number; to?: number };
-      externalIds?: { wikidataId?: string };
+      externalIds?: { wikidataId?: string; mlbamId?: number };
       lastUpdated: number;
     } = { lastUpdated: Date.now() };
 
