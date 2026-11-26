@@ -53,3 +53,6 @@ Related: [[patterns-player-alias-read-back-and-remember-box]]
   it (setup.spec asserts `players === 0` on the Future Stars insert).
 - Residual window: a row seen offering an answer can still be linked between the check and the
   click (ms). No perceivable "link on open done" signal exists to close it.
+- Plant proof (2026-11-26): a throw in `answerPinkPlayerTiles`' answered (Edit up) branch reds
+  bowman-insert-grouping-builds-parallels on a fresh seed (row "Player Ezekiel Elliott" read Edit
+  on a pink Player tile), so that branch is exercised there; `--expect` after a standalone `seed`.

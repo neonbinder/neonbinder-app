@@ -564,9 +564,9 @@ function UnansweredPlayerName({
             candidates={sameNameCandidates}
             scanCapped={scanCapped}
             setSportValue={setSportValue}
-            disabled={write.busy}
+            disabled={disabled}
             onPick={(playerId) => {
-              if (write.busy) return;
+              if (disabled) return;
               void link(playerId);
             }}
           />
@@ -603,16 +603,24 @@ function UnansweredPlayerName({
         <NameFragmentPanel
           name={queryName}
           matches={fragmentMatches}
-          disabled={write.busy}
+          disabled={disabled}
           onPick={(id) => {
-            if (write.busy) return;
+            if (disabled) return;
             void link(id);
           }}
         />
       )}
 
       {!linkOpen && (
-        <NearMatchPanel kind="player" matches={panelMatches} busy={write.busy} onPick={(id) => void link(id, true)}>
+        <NearMatchPanel
+          kind="player"
+          matches={panelMatches}
+          busy={disabled}
+          onPick={(id) => {
+            if (disabled) return;
+            void link(id, true);
+          }}
+        >
           {aliasBox}
         </NearMatchPanel>
       )}
@@ -680,7 +688,10 @@ function UnansweredPlayerName({
               outline
               aria-label={`Add as new player anyway${suffix}`}
               aria-disabled={disabled}
-              onClick={addAnyway}
+              onClick={() => {
+                if (disabled) return;
+                addAnyway();
+              }}
             >
               Add as new player anyway
             </NeonButton>
@@ -704,7 +715,10 @@ function UnansweredPlayerName({
             outline
             aria-label={`Link to existing…${suffix}`}
             aria-disabled={disabled}
-            onClick={() => setLinkOpen(true)}
+            onClick={() => {
+              if (disabled) return;
+              setLinkOpen(true);
+            }}
           >
             Link to existing…
           </NeonButton>
@@ -726,7 +740,10 @@ function UnansweredPlayerName({
               outline
               aria-label={`Try again${suffix}`}
               aria-disabled={disabled}
-              onClick={retry}
+              onClick={() => {
+                if (disabled) return;
+                retry();
+              }}
             >
               Try again
             </NeonButton>

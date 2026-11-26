@@ -8,6 +8,7 @@
  * you" note, and "Not a player" is held in memory only while the card is open.
  */
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useLayoutEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../../convex/_generated/api", () => ({
@@ -68,7 +69,7 @@ vi.mock("../../EntityLinkSearch", () => ({
 }));
 
 import { AnsweredProvider } from "../answered";
-import { WalkMemory, WalkMemoryProvider, lookupKeyOf, nameKeyOf } from "../walk-memory";
+import { WalkMemory, WalkMemoryProvider, lookupKeyOf, nameKeyOf, useLinkOnOpen } from "../walk-memory";
 import { normalizeEntityName } from "@/lib/entities/normalize-name";
 import PlayerTile from "./PlayerTile";
 import { WRAP_LABEL_CLASS } from "../TidyTile";
@@ -158,6 +159,10 @@ function renderTile(
     leafCards?: TidyRow[];
     /** Name keys to leave unseeded: their lookup is still pending. */
     unseeded?: boolean;
+    /** Leave the walk's sport out: the row has no sport to ask in. */
+    noSport?: boolean;
+    /** Render under the walk's own `useLinkOnOpen`, with a probe after it (NEO-680). */
+    walk?: { seen: string[] };
   } = {},
 ) {
   const ctx = "ctx" in opts ? opts.ctx : context({ names: [printedName()] });
@@ -176,17 +181,45 @@ function renderTile(
     context: ctx,
     attention: { level: "fix", items: opts.items ?? [fixItem] },
     leafId: "leaf-1" as never,
-    sportId: SPORT as never,
+    sportId: (opts.noSport ? undefined : SPORT) as never,
     leafCards: opts.leafCards ?? [],
     setName: "Set",
   };
+  const walk = opts.walk;
   return render(
     <WalkMemoryProvider value={memory}>
       <AnsweredProvider value={opts.onAnswered ?? (() => {})}>
-        <PlayerTile {...props} />
+        {walk ? (
+          <>
+            <WalkHost card={props.row as never}>
+              <PlayerTile {...props} />
+            </WalkHost>
+            <FirstCommitProbe seen={walk.seen} />
+          </>
+        ) : (
+          <PlayerTile {...props} />
+        )}
       </AnsweredProvider>
     </WalkMemoryProvider>,
   );
+}
+
+/** The walk's side of link-on-open, above the tile (as TidyUpWalk holds it). */
+function WalkHost({ card, children }: { card: { _id: string; pendingPlayerNames?: string[] }; children: React.ReactNode }) {
+  useLinkOnOpen(memory, card as never, () => {});
+  return <>{children}</>;
+}
+
+/**
+ * A sibling AFTER the walk: its layout effect runs in the first commit, after
+ * the tile's DOM is in the page and before any passive effect or re-render, so
+ * what it reads is the first committed DOM.
+ */
+function FirstCommitProbe({ seen }: { seen: string[] }) {
+  useLayoutEffect(() => {
+    seen.push(document.body.textContent ?? "");
+  });
+  return null;
 }
 
 beforeEach(() => {
@@ -1553,5 +1586,149 @@ describe("PlayerTile: accessibility (T2, T5, T6)", () => {
       unmount();
     }
     document.documentElement.removeAttribute("data-theme");
+  });
+});
+
+describe("PlayerTile: a held row is inert as a whole (NEO-680)", () => {
+  const close = { _id: "player-7", name: "Jackson Merrill Jr.", confidence: "close" as const };
+  const exact = (id: string, birthYear: number) => ({ _id: id, name: "Jackson Merrill", confidence: "exact" as const, birthYear });
+  const noMutation = () => {
+    expect(mutation("tidyNames.answerName")).not.toHaveBeenCalled();
+    expect(mutation("tidyNames.createPlayer")).not.toHaveBeenCalled();
+    expect(action("tidyNames.answerOfferedName")).not.toHaveBeenCalled();
+  };
+
+  it("a Possible matches pick is aria-disabled and swallowed, then goes through once the call settles", async () => {
+    queryResults["players.nearMatches"] = [close];
+    memory.beginLinkOnOpen(CARD);
+    renderTile();
+    const pick = screen.getByRole("button", { name: /^Link to Jackson Merrill Jr\./ });
+    expect(pick.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => fireEvent.click(pick));
+    noMutation();
+
+    act(() => memory.endLinkOnOpen(CARD));
+    const freed = screen.getByRole("button", { name: /^Link to Jackson Merrill Jr\./ });
+    expect(freed.getAttribute("aria-disabled")).toBeNull();
+    await act(async () => fireEvent.click(freed));
+    expect(mutation("tidyNames.answerName")).toHaveBeenCalledTimes(1);
+  });
+
+  it("a same-name pick is aria-disabled and swallowed, then goes through once the call settles", async () => {
+    queryResults["players.nearMatches"] = [exact("player-1", 1970), exact("player-2", 2003)];
+    memory.beginLinkOnOpen(CARD);
+    renderTile();
+    expect(screen.getByText("Which Jackson Merrill is this?")).toBeTruthy();
+    const picks = screen.getAllByRole("button", { name: /^Link to Jackson Merrill/ });
+    expect(picks.length).toBe(2);
+    for (const pick of picks) expect(pick.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => fireEvent.click(picks[0]));
+    noMutation();
+
+    act(() => memory.endLinkOnOpen(CARD));
+    const freed = screen.getAllByRole("button", { name: /^Link to Jackson Merrill/ });
+    for (const pick of freed) expect(pick.getAttribute("aria-disabled")).toBeNull();
+    await act(async () => fireEvent.click(freed[0]));
+    expect(mutation("tidyNames.answerName")).toHaveBeenCalledTimes(1);
+  });
+
+  it("a one-name pick (the fragment question) is aria-disabled and swallowed, then goes through", async () => {
+    queryResults["players.nearMatches"] = [];
+    queryResults["players.nameFragmentCheck"] = {
+      isFragment: true,
+      matches: [{ _id: "player-3", name: "Jackson Merrill Sr.", birthYear: 1970 }],
+    };
+    memory.beginLinkOnOpen(CARD);
+    renderTile();
+    const pick = screen.getByRole("button", { name: /Jackson Merrill Sr\./ });
+    expect(pick.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => fireEvent.click(pick));
+    noMutation();
+
+    act(() => memory.endLinkOnOpen(CARD));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: /Jackson Merrill Sr\./ })));
+    expect(mutation("tidyNames.answerName")).toHaveBeenCalledTimes(1);
+  });
+
+  it("'Link to existing…' opens no search while held, and opens it after", async () => {
+    queryResults["players.nearMatches"] = [];
+    memory.beginLinkOnOpen(CARD);
+    renderTile();
+    const open = screen.getByRole("button", { name: "Link to existing…" });
+    expect(open.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => fireEvent.click(open));
+    expect(linkSearchProps.length).toBe(0);
+    expect(screen.queryByRole("button", { name: "Pick a player" })).toBeNull();
+
+    act(() => memory.endLinkOnOpen(CARD));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Link to existing…" })));
+    expect(screen.getByRole("button", { name: "Pick a player" })).toBeTruthy();
+  });
+
+  it("'Add as new player anyway' does nothing while held, and works after", async () => {
+    queryResults["players.nearMatches"] = [exact("player-1", 2003)];
+    memory.beginLinkOnOpen(CARD);
+    renderTile();
+    const anyway = screen.getByRole("button", { name: "Add as new player anyway" });
+    expect(anyway.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => fireEvent.click(anyway));
+    act(() => memory.endLinkOnOpen(CARD));
+    // Had the press gone through, the exact link would be gone.
+    expect(screen.getByRole("button", { name: "Link to Jackson Merrill" })).toBeTruthy();
+
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Add as new player anyway" })));
+    expect(screen.queryByRole("button", { name: "Link to Jackson Merrill" })).toBeNull();
+  });
+
+  it("'Try again' asks nothing while held, and asks once after", async () => {
+    queryResults["players.nearMatches"] = [];
+    memory.beginLinkOnOpen(CARD);
+    renderTile({ ctx: context({ names: [printedName({ row: nameRow({ status: "error" }) })] }) });
+    const retry = screen.getByRole("button", { name: "Try again" });
+    expect(retry.getAttribute("aria-disabled")).toBe("true");
+    const lookup = action("adapters.wikidata.lookupTidyName");
+    await act(async () => fireEvent.click(retry));
+    expect(lookup).not.toHaveBeenCalled();
+
+    act(() => memory.endLinkOnOpen(CARD));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Try again" })));
+    expect(lookup).toHaveBeenCalledTimes(1);
+  });
+
+  it("with the search open, the hold line stays hidden and a pick from the search is swallowed", async () => {
+    queryResults["players.nearMatches"] = [];
+    renderTile();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Link to existing…" })));
+    act(() => memory.beginLinkOnOpen(CARD));
+    expect(screen.queryByText("Checking for players by that name…")).toBeNull();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pick a player" })));
+    noMutation();
+
+    act(() => memory.endLinkOnOpen(CARD));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pick a player" })));
+    expect(mutation("tidyNames.answerName")).toHaveBeenCalledTimes(1);
+  });
+
+  it("a row with no sport to ask in is still held through the link-on-open call", async () => {
+    queryResults["players.nearMatches"] = [];
+    renderTile({ noSport: true });
+    expect(screen.queryByText("Checking for players by that name…")).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as new player" }).getAttribute("aria-disabled")).toBeNull();
+
+    act(() => memory.beginLinkOnOpen(CARD));
+    expect(screen.getByText("Checking for players by that name…")).toBeTruthy();
+    const add = screen.getByRole("button", { name: "Add as new player" });
+    expect(add.getAttribute("aria-disabled")).toBe("true");
+    await act(async () => fireEvent.click(add));
+    noMutation();
+  });
+
+  it("the first committed DOM of a card with waiting names is already held (no flush in between)", () => {
+    queryResults["players.nearMatches"] = [];
+    const seen: string[] = [];
+    renderTile({ walk: { seen } });
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[0]).toContain("Checking for players by that name…");
+    expect(seen[0]).not.toContain("is new to NeonBinder");
   });
 });

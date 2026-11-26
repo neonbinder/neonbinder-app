@@ -138,6 +138,24 @@ export class WalkMemory {
     this.linkingOnOpen.add(cardId);
     this.bump();
   }
+  /**
+   * The same hold, taken while the walk renders a card it is about to ask
+   * about: the card's rows render later in that pass, so their first committed
+   * DOM is already held (an effect would only hold them a frame later). It
+   * only adds to the set, never notifies, and the call's effect (or its
+   * settling) is what releases it.
+   */
+  holdForLinkOnOpen(cardId: string): void {
+    if (this.linkOpenedCard !== cardId) this.linkingOnOpen.add(cardId);
+  }
+  /** The card the walk last asked link-on-open about (null when none is open). */
+  private linkOpenedCard: string | null = null;
+  linkOnOpenCard(): string | null {
+    return this.linkOpenedCard;
+  }
+  setLinkOnOpenCard(cardId: string | null): void {
+    this.linkOpenedCard = cardId;
+  }
   /** Called when the call settles, whatever the outcome: a failure releases the hold. */
   endLinkOnOpen(cardId: string): void {
     if (this.linkingOnOpen.delete(cardId)) this.bump();
@@ -461,15 +479,17 @@ export function useLinkOnOpen(
   useEffect(() => {
     latest.current = { linkOnOpen, waiting, onLinked };
   });
-  const openedRef = useRef<string | null>(null);
   const cardId = card?._id;
+  // NEO-680: held from the first render of a card the effect below will ask
+  // about, so no row of it ever shows an unheld frame.
+  if (cardId && (waiting?.length ?? 0) > 0) memory.holdForLinkOnOpen(cardId);
   useEffect(() => {
     if (!cardId) {
-      openedRef.current = null;
+      memory.setLinkOnOpenCard(null);
       return;
     }
-    if (openedRef.current === cardId) return;
-    openedRef.current = cardId;
+    if (memory.linkOnOpenCard() === cardId) return;
+    memory.setLinkOnOpenCard(cardId);
     const names = latest.current.waiting ?? [];
     if (names.length === 0) return;
     const waitingKeys = new Set(names.map((n) => normalizeEntityName(n.trim())));
@@ -481,7 +501,7 @@ export function useLinkOnOpen(
     latest.current
       .linkOnOpen({ cardId, ...(skip.length > 0 ? { skip } : {}) })
       .then((linked) => {
-        if (!linked || linked.length === 0 || openedRef.current !== cardId) return;
+        if (!linked || linked.length === 0 || memory.linkOnOpenCard() !== cardId) return;
         latest.current.onLinked(
           linked.map((l) => `Linked ${l.printed} to ${l.player}.`).join(" "),
         );

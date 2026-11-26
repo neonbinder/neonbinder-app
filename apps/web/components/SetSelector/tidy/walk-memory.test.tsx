@@ -631,6 +631,23 @@ describe("useLinkOnOpen (NEO-680)", () => {
     expect(m.isLinkingOnOpen("c1")).toBe(false);
   });
 
+  it("holds a card from its very first render, before any effect runs (NEO-680)", () => {
+    const m = new WalkMemory();
+    mutations["tidyCards.linkOnOpen"] = vi.fn(() => new Promise(() => {}));
+    const seen: boolean[] = [];
+    function Host({ card }: { card: Card }) {
+      useLinkOnOpen(m, card, onLinked);
+      return <Row />;
+    }
+    // Stands for a row below the walk: it reads the hold while it renders.
+    function Row() {
+      seen.push(m.isLinkingOnOpen("c1"));
+      return null;
+    }
+    render(<Host card={row("c1", ["Hyeseong Kim"])} />);
+    expect(seen[0]).toBe(true);
+  });
+
   it("lets go after the call rejects (NEO-680)", async () => {
     const m = new WalkMemory();
     let fail: (e: unknown) => void = () => {};
