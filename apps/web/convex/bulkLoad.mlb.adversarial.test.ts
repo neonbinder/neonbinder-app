@@ -453,6 +453,49 @@ describe("teams: id stealing and era routing", () => {
     expect((await allTeams(t)).filter((x) => x.externalIds?.mlbamId === 119)).toHaveLength(2);
   });
 
+  test("a replayed {create:true} after step 0 set aside an id-holder for an overlapping exact-name row is held, nothing written", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    // Rays shape: the incoming row lists the holder's name as an alias, and a
+    // bare row already answers to the incoming exact name.
+    const holder = await seedTeam(t, sportId, {
+      location: "Tampa Bay", name: "Devil Rays", years: { from: 1998 }, mlbamId: 139,
+    });
+    await seedTeam(t, sportId, { location: "Tampa Bay", name: "Rays", years: { from: 2008 } });
+    const before = await snap(t);
+    const out = await teams(t, [
+      {
+        key: "k", location: "Tampa Bay", name: "Rays", aliases: ["Tampa Bay Devil Rays"],
+        yearsActive: { from: 2008 }, mlbamId: 139, decision: { create: true },
+      },
+    ]);
+    expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
+    expect(out.results[0].candidates?.map((c) => c.id)).toEqual([holder]);
+    expect(out.results[0].disagreements?.[0].field).toBe("mlbamId");
+    expect(await snap(t)).toEqual(before);
+  });
+
+  test("an exact-name row holding a different id is not this team's row: it never displaces the id match", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const holder = await seedTeam(t, sportId, {
+      location: "California", name: "Angels", years: { from: 1965, to: 1996 }, mlbamId: 108,
+      aliases: ["Los Angeles Angels"],
+    });
+    const other = await seedTeam(t, sportId, {
+      location: "Los Angeles", name: "Angels", years: { from: 1961 }, mlbamId: 999,
+    });
+    const otherBefore = await team(t, other);
+    const out = await teams(t, [
+      { key: "k", location: "Los Angeles", name: "Angels", yearsActive: { from: 1961 }, mlbamId: 108 },
+    ]);
+    expect(out.results[0]).toMatchObject({ id: holder, status: "adopted", matchedBy: "mlbamId" });
+    expect(await team(t, other)).toEqual(otherBefore);
+    expect(await allTeams(t)).toHaveLength(2);
+  });
+
   test("an id scan that comes back full is a tie: held, never a pick over a window", async () => {
     const t = convexTest(schema, modules);
     armed();

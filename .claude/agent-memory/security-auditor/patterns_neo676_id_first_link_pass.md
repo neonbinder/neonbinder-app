@@ -51,3 +51,13 @@ the id first, then the other era's dataset row adopts it by id, and a pinned
 exact-name row without the id plus an alias-answering holder, run both rows in
 one call, then pin the right answer. Ask for an exact-name lookup before an
 alias-only id match is accepted.
+
+**Rule 7 (delta round 3) — a downgrade of an id match to "none" re-opens every
+branch that keyed on "one".** The fix (alias-only holder yields to an
+overlapping exact-name row) is safe on the auto path because the name step
+re-reads the same exact-name list through `eraMatch` (two exact rows or an
+undated rival vs a closed era = held). But check the replay branches: a
+replayed `create:true` that was held on the holder now proceeds, guarded only by
+`create`'s alias-holder check (which misses the holder answering through the
+INCOMING alias leg). And an exact-name row holding a DIFFERENT id still counts
+as "own row", turning a correct id adopt into a hold (fail-closed, but noisy).

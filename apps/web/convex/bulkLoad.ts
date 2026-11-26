@@ -2020,6 +2020,9 @@ async function loadTeams(
     // The scan came back full: more rows may hold this id than were read, so
     // it is a tie — never a pick over a window.
     let idScanFull = false;
+    // The single id-holder step 0 set aside because an exact-name row of its
+    // own overlaps; a replayed `create` must still hold on it.
+    let downgradedHolder: Doc<"teams"> | undefined;
     if (mlbamId !== undefined) {
       const scanned = await ctx.db
         .query("teams")
@@ -2087,11 +2090,21 @@ async function loadTeams(
         if (holder.nameNormalized !== fields.nameNormalized) {
           const exact = await findTeamsByExactName(ctx, sportId, fullName);
           ops += 1;
+          // An exact-name row carrying a different MLB id is another club's
+          // row, not this team's: it never displaces the id match.
           const ownRow = exact.some(
             (team) =>
-              team._id !== holder._id && erasOverlap(team.yearsActive, row.yearsActive),
+              team._id !== holder._id &&
+              !(
+                team.externalIds?.mlbamId !== undefined &&
+                team.externalIds.mlbamId !== mlbamId
+              ) &&
+              erasOverlap(team.yearsActive, row.yearsActive),
           );
-          if (ownRow) idMatch = { kind: "none" };
+          if (ownRow) {
+            downgradedHolder = holder;
+            idMatch = { kind: "none" };
+          }
         }
       }
     }
@@ -2172,6 +2185,12 @@ async function loadTeams(
       }
       if (idMatch.kind === "one") {
         results.push(heldOnId([idMatch.team]));
+        continue;
+      }
+      // Step 0 downgraded a lone holder to "none" for an overlapping
+      // exact-name row: creating would put the id on a second row.
+      if (downgradedHolder) {
+        results.push(heldOnId([downgradedHolder]));
         continue;
       }
       results.push(await create(ownersExcept(null), true));
