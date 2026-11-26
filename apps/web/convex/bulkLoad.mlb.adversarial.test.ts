@@ -493,11 +493,79 @@ describe("teams: id stealing and era routing", () => {
     await seedTeam(t, sportId, { location: "Los Angeles", name: "Dodgers", years: { from: 1958 }, mlbamId: 119 });
     const before = await snap(t);
     const out = await teams(t, [
-      { key: "k", location: "Los Angeles", name: "Dodgers", yearsActive: { from: 1950, to: 1970 }, mlbamId: 119 },
+      // A name that is neither era's: the years straddle both and the name cannot pick.
+      { key: "k", location: "Chavez Ravine", name: "Dodgers", yearsActive: { from: 1950, to: 1970 }, mlbamId: 119 },
     ]);
     expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
     expect(out.results[0].disagreements?.[0].field).toBe("mlbamId");
     expect(await snap(t)).toEqual(before);
+  });
+
+  describe("one id returning to an earlier name (Angels, id 108)", () => {
+    async function angels(t: T) {
+      const sportId = await seedSport(t);
+      const california = await seedTeam(t, sportId, {
+        location: "California", name: "Angels", years: { from: 1965, to: 1996 }, mlbamId: 108,
+        // Lets a decision for the LA row name this row without the "different team" refusal.
+        aliases: ["Los Angeles Angels"],
+      });
+      const anaheim = await seedTeam(t, sportId, {
+        location: "Anaheim", name: "Angels", years: { from: 1997, to: 2004 }, mlbamId: 108,
+      });
+      const la = await seedTeam(t, sportId, {
+        location: "Los Angeles", name: "Angels", years: { from: 1961 }, mlbamId: 108,
+      });
+      return { california, anaheim, la };
+    }
+
+    test("a California Angels row adopts California", async () => {
+      const t = convexTest(schema, modules);
+      armed();
+      const { california } = await angels(t);
+      const out = await teams(t, [
+        { key: "k", location: "California", name: "Angels", yearsActive: { from: 1965, to: 1996 }, mlbamId: 108 },
+      ]);
+      expect(out.results[0]).toMatchObject({ id: california, status: "adopted", matchedBy: "mlbamId" });
+    });
+
+    test("a Los Angeles Angels row adopts LA, though its years overlap all three", async () => {
+      const t = convexTest(schema, modules);
+      armed();
+      const { la } = await angels(t);
+      const out = await teams(t, [
+        { key: "k", location: "Los Angeles", name: "Angels", yearsActive: { from: 1961 }, mlbamId: 108 },
+      ]);
+      expect(out.results[0]).toMatchObject({ id: la, status: "adopted", matchedBy: "mlbamId" });
+    });
+
+    test("a decision adopt of California for the LA row is held, nothing written", async () => {
+      const t = convexTest(schema, modules);
+      armed();
+      const { california } = await angels(t);
+      const before = await snap(t);
+      const out = await teams(t, [
+        {
+          key: "k", location: "Los Angeles", name: "Angels", yearsActive: { from: 1961 }, mlbamId: 108,
+          decision: { adopt: california },
+        },
+      ]);
+      expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
+      expect(out.results[0].disagreements?.[0].field).toBe("mlbamId");
+      expect(await snap(t)).toEqual(before);
+    });
+
+    test("a row whose name matches none of the overlapping eras is held", async () => {
+      const t = convexTest(schema, modules);
+      armed();
+      await angels(t);
+      const before = await snap(t);
+      const out = await teams(t, [
+        { key: "k", location: "Orange County", name: "Angels", yearsActive: { from: 1961 }, mlbamId: 108 },
+      ]);
+      expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
+      expect(out.results[0].disagreements?.[0].field).toBe("mlbamId");
+      expect(await snap(t)).toEqual(before);
+    });
   });
 
   test("MLB seasons outside NB's span are reported and NB's years are not widened", async () => {

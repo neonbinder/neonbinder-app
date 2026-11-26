@@ -1939,6 +1939,32 @@ async function loadTeams(
       idMatch = idScanFull
         ? { kind: "several", teams: byId }
         : eraMatch(byId, row.yearsActive);
+      /*
+       * One MLB id can return to an earlier name (id 108 is "Los Angeles
+       * Angels" 1961-64 and 2005-, so NB's one row for that name, dated to its
+       * earliest year, overlaps the California and Anaheim rows holding the
+       * same id). Overlapping eras are then not a tie when the row's own name
+       * picks exactly one of them: exact name first, then alias, the same
+       * legs the name steps below use. Zero or still several stays held. A
+       * full scan stays held, and so does the undated-rival guard in
+       * `eraMatch` (one candidate, not several).
+       */
+      if (idMatch.kind === "several" && !idScanFull && idMatch.teams.length > 1) {
+        const byPrimary = idMatch.teams.filter(
+          (team) => team.nameNormalized === fields.nameNormalized,
+        );
+        const byAliasLeg =
+          byPrimary.length > 0
+            ? []
+            : idMatch.teams.filter(
+                (team) =>
+                  (team.aliases ?? []).some(
+                    (alias) => normalizeTeamName(alias) === fields.nameNormalized,
+                  ) || aliases.some((alias) => normalizeTeamName(alias) === team.nameNormalized),
+              );
+        const narrowed = byPrimary.length > 0 ? byPrimary : byAliasLeg;
+        if (narrowed.length === 1) idMatch = { kind: "one", team: narrowed[0] };
+      }
     }
     const heldOnId = (teamsOnId: Doc<"teams">[]): TeamResult => ({
       key,
