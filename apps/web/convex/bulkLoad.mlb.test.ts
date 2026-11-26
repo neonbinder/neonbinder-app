@@ -56,7 +56,8 @@ async function seedLeague(
   sportId: Id<"selectorOptions">,
   name: string,
   extra: {
-    level?: "major" | "minor" | "other";
+    level?: "major" | "minor" | "independent" | "other";
+    years?: { from: number; to?: number };
     aliases?: string[];
     mlbamId?: number;
     classes?: Array<{
@@ -72,6 +73,7 @@ async function seedLeague(
       nameNormalized: name.trim().toLowerCase(),
       sportId,
       level: extra.level ?? "major",
+      ...(extra.years ? { yearsActive: extra.years } : {}),
       ...(extra.aliases ? { aliases: extra.aliases } : {}),
       ...(extra.mlbamId !== undefined ? { externalIds: { mlbamId: extra.mlbamId } } : {}),
       ...(extra.classes ? { minorLeagueClasses: extra.classes } : {}),
@@ -355,7 +357,7 @@ describe("leagues", () => {
     const t = convexTest(schema, modules);
     armed();
     const sportId = await seedSport(t);
-    const id = await seedLeague(t, sportId, "Major League Baseball", { level: "major" });
+    const id = await seedLeague(t, sportId, "Major League Baseball", { level: "major", mlbamId: 1 });
     const out = await leagues(t, [
       {
         name: "Major League Baseball",
@@ -364,7 +366,7 @@ describe("leagues", () => {
         minorLeagueClasses: [{ class: "aaa", fromYear: 1995 }],
       },
     ]);
-    expect(out.results[0].filled).toEqual(["mlbamId"]);
+    expect(out.results[0].filled).toBeUndefined();
     expect((await league(t, id))?.minorLeagueClasses).toBeUndefined();
   });
 
@@ -457,6 +459,87 @@ describe("leagues", () => {
     expect((await league(t, adopted))?.externalIds?.mlbamId).toBe(5);
     expect((await league(t, held))?.externalIds?.mlbamId).toBe(104);
     expect(await allLeagues(t)).toHaveLength(3);
+  });
+
+  test("a name match that is another league (level or span) is held; a hit by id still links", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const aa = await seedLeague(t, sportId, "American Association", {
+      level: "major",
+      years: { from: 1882, to: 1891 },
+    });
+    const rows: LeagueIn[] = [
+      { name: "American Association", level: "major", mlbamId: 100, yearsActive: { from: 1882, to: 1891 } },
+      { name: "American Association", level: "minor", mlbamId: 139, yearsActive: { from: 1902, to: 1997 } },
+      { name: "American Association", level: "independent", mlbamId: 6045, yearsActive: { from: 2006 } },
+    ];
+    const preview = await previewLeagues(t, rows);
+    expect(preview.results[0]).toMatchObject({ id: aa, created: false, nbName: "American Association" });
+    for (const held of preview.results.slice(1)) {
+      expect(held).toMatchObject({ id: null, created: false, nbName: null });
+      expect(held.disagreements?.map((d) => d.field)).toEqual(["level", "yearsActive"]);
+    }
+
+    // The write run, without the one that would claim the row first: both held, nothing written.
+    const out = await leagues(t, rows.slice(1));
+    expect(out.results.every((r) => r.id === null && r.nbName === null)).toBe(true);
+    const all = await allLeagues(t);
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ _id: aa, level: "major" });
+    expect(all[0].externalIds?.mlbamId).toBeUndefined();
+  });
+
+  test("a hold needs a different level or spans that never meet: same level and overlapping years adopt", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const id = await seedLeague(t, sportId, "Mexican League", { level: "independent" });
+    // NB undated: years are unknown, so a name match on the same level adopts.
+    const out = await leagues(t, [
+      { name: "Mexican League", level: "independent", mlbamId: 174, yearsActive: { from: 1955 } },
+    ]);
+    expect(out.results[0]).toMatchObject({ id, created: false, nbName: "Mexican League" });
+    expect((await league(t, id))?.externalIds?.mlbamId).toBe(174);
+  });
+
+  test("a Mexican-League-like name match whose level is major against independent is held", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const id = await seedLeague(t, sportId, "Mexican League", { level: "independent" });
+    const out = await leagues(t, [
+      { name: "Mexican League", level: "major", mlbamId: 174 },
+    ]);
+    expect(out.results).toEqual([
+      {
+        name: "Mexican League",
+        id: null,
+        created: false,
+        nbName: null,
+        disagreements: [{ field: "level", nb: "independent", mlb: "major" }],
+      },
+    ]);
+    const row = await league(t, id);
+    expect(row?.externalIds?.mlbamId).toBeUndefined();
+    expect(await allLeagues(t)).toHaveLength(1);
+  });
+
+  test("a hit by id with a different level still links, with the disagreement", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const id = await seedLeague(t, sportId, "Mexican League", {
+      level: "independent",
+      years: { from: 1955 },
+      mlbamId: 174,
+    });
+    const out = await leagues(t, [
+      { name: "Mexican League", level: "major", mlbamId: 174, yearsActive: { from: 1990 } },
+    ]);
+    expect(out.results[0]).toMatchObject({ id, created: false, nbName: "Mexican League" });
+    expect(out.results[0].disagreements).toEqual([{ field: "level", nb: "independent", mlb: "major" }]);
+    expect(await allLeagues(t)).toHaveLength(1);
   });
 
   test("nbName is NB's name when MLB's differs, on a hit by id and by name", async () => {
@@ -580,6 +663,29 @@ describe("teams", () => {
     expect(out.results[0].disagreements?.[0].field).toBe("mlbamId");
     expect(out.results[0].candidates?.map((c) => c.id).sort()).toEqual([a, b].sort());
     expect(await allTeams(t)).toHaveLength(2);
+  });
+
+  test("narrowing several id-matched eras by name keeps the undated-rival guard: an undated one is held for a closed row", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const sportId = await seedSport(t);
+    const undated = await seedTeam(t, sportId, { location: "Foo", name: "Cats", mlbamId: 77 });
+    const dated = await seedTeam(t, sportId, {
+      location: "Bar",
+      name: "Dogs",
+      years: { from: 1985, to: 1995 },
+      mlbamId: 77,
+    });
+    const out = await teams(t, [
+      { key: "k", location: "Foo", name: "Cats", yearsActive: { from: 1990, to: 1999 }, mlbamId: 77 },
+    ]);
+    expect(out.results[0]).toMatchObject({ id: null, status: "ambiguous" });
+    expect(out.results[0].disagreements?.[0].field).toBe("mlbamId");
+    expect(out.results[0].candidates?.map((c) => c.id)).toEqual([undated]);
+    const rows = await allTeams(t);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r._id === undated)?.yearsActive).toBeUndefined();
+    expect(rows.find((r) => r._id === dated)?.yearsActive).toEqual({ from: 1985, to: 1995 });
   });
 
   test("a different id on the row the name found holds the row", async () => {

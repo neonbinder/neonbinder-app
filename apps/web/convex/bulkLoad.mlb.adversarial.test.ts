@@ -218,9 +218,12 @@ describe("leagues: never overwrite, always converge", () => {
     const t = convexTest(schema, modules);
     armed();
     const sportId = await seedSport(t);
+    // Found by its id (a name match at another level is held, see the NEO-676
+    // name-match tests), so the link proceeds with the disagreements reported.
     const id = await seedLeague(t, sportId, "Texas League", {
       level: "minor",
       aliases: ["TL"],
+      mlbamId: 104,
       classes: [{ class: "aa", fromYear: 1995 }],
     });
     const before = await league(t, id);
@@ -236,11 +239,7 @@ describe("leagues: never overwrite, always converge", () => {
     expect(out.results[0].id).toBe(id);
     const after = await league(t, id);
     expect(after?.externalIds).toEqual({ mlbamId: 104 });
-    expect({ ...after, externalIds: undefined, lastUpdated: 0 }).toEqual({
-      ...before,
-      externalIds: undefined,
-      lastUpdated: 0,
-    });
+    expect({ ...after, lastUpdated: 0 }).toEqual({ ...before, lastUpdated: 0 });
   });
 
   test("a rerun of a create lands on the same row and writes nothing", async () => {
@@ -290,7 +289,8 @@ describe("leagues: found by id stays found by id", () => {
     const t = convexTest(schema, modules);
     armed();
     const sportId = await seedSport(t);
-    const id = await seedLeague(t, sportId, "Texas League", { level: "minor" });
+    // Found by id, so the level difference is a field conflict, not a hold.
+    const id = await seedLeague(t, sportId, "Texas League", { level: "minor", mlbamId: 104 });
     const out = await leagues(t, [{ name: "Texas League", level: "major", mlbamId: 104 }]);
     expect(out.results[0].id).toBe(id);
     expect(out.results[0].disagreements).toEqual([{ field: "level", nb: "minor", mlb: "major" }]);

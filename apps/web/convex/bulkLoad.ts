@@ -1010,13 +1010,15 @@ async function loadLeagues(
         .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
         .collect();
       const byId = rows.filter((r) => r.externalIds?.mlbamId === mlbamId);
-      let hold: Disagreement | null = null;
+      let hold: Disagreement[] | null = null;
       if (byId.length > 1) {
-        hold = {
-          field: "mlbamId",
-          nb: byId.map((r) => `${r.name} (${r._id})`).join("; "),
-          mlb: String(mlbamId),
-        };
+        hold = [
+          {
+            field: "mlbamId",
+            nb: byId.map((r) => `${r.name} (${r._id})`).join("; "),
+            mlb: String(mlbamId),
+          },
+        ];
         before = null;
       } else if (byId.length === 1) {
         before = byId[0];
@@ -1024,18 +1026,54 @@ async function loadLeagues(
         const nameKey = normalizeLeagueName(name);
         const hits = rows.filter((r) => leagueAnswersTo(r, nameKey));
         if (hits.length > 1) {
-          hold = {
-            field: "name",
-            nb: hits.map((r) => `${r.name} (${r._id})`).join("; "),
-            mlb: name,
-          };
+          hold = [
+            {
+              field: "name",
+              nb: hits.map((r) => `${r.name} (${r._id})`).join("; "),
+              mlb: name,
+            },
+          ];
           before = null;
         } else {
           before = hits[0] ?? null;
           const held = before?.externalIds?.mlbamId;
           if (before && held !== undefined) {
             // A different id already sits on the row the name found.
-            hold = { field: "mlbamId", nb: String(held), mlb: String(mlbamId) };
+            hold = [{ field: "mlbamId", nb: String(held), mlb: String(mlbamId) }];
+          } else if (before) {
+            /*
+             * Found by NAME, not by id, so nothing says it is the same
+             * league: MLB has three "American Association"s (a major
+             * 1882-91, a minor AAA, an independent) and NB one. A different
+             * level, or spans that never overlap, is a different league
+             * answering to the same name: hold the whole row, with the
+             * level / span entries so the operator sees why. (A match by id
+             * keeps its field disagreements and links.)
+             */
+            const levelDiffers = before.level !== row.level;
+            const spansApart =
+              before.yearsActive !== undefined &&
+              row.yearsActive !== undefined &&
+              !erasOverlap(before.yearsActive, row.yearsActive);
+            if (levelDiffers || spansApart) {
+              const why: Disagreement[] = [];
+              if (levelDiffers) {
+                why.push({ field: "level", nb: before.level, mlb: row.level });
+              }
+              if (
+                before.yearsActive !== undefined &&
+                row.yearsActive &&
+                !yearsWithin(row.yearsActive, before.yearsActive)
+              ) {
+                why.push({
+                  field: "yearsActive",
+                  nb: describeYears(before.yearsActive),
+                  mlb: describeYears(row.yearsActive),
+                });
+              }
+              hold = why;
+              before = null;
+            }
           }
         }
       }
@@ -1045,7 +1083,7 @@ async function loadLeagues(
           id: null,
           created: false,
           nbName: null,
-          disagreements: [hold],
+          disagreements: hold,
         });
         continue;
       }
@@ -2012,7 +2050,9 @@ async function loadTeams(
                   ) || aliases.some((alias) => normalizeTeamName(alias) === team.nameNormalized),
               );
         const narrowed = byPrimary.length > 0 ? byPrimary : byAliasLeg;
-        if (narrowed.length === 1) idMatch = { kind: "one", team: narrowed[0] };
+        // Through `eraMatch`, not built by hand, so its undated-rival guard
+        // still holds the one that overlaps only because it is undated.
+        if (narrowed.length === 1) idMatch = eraMatch(narrowed, row.yearsActive);
       }
     }
     const heldOnId = (teamsOnId: Doc<"teams">[]): TeamResult => ({

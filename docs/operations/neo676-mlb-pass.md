@@ -42,7 +42,10 @@ Nothing in this document names a deployment, an account or a URL.
   lands. An *identity* conflict holds the whole row (status `ambiguous`, nothing
   written): a different id already on the row, the id held by another row, a
   birth year that contradicts an id match, two rows answering to one league
-  name, two rows covering one season (or an id held by sixteen or more teams,
+  name, a league found only by name whose level differs from MLB's or whose
+  span never overlaps it (MLB's three "American Association"s are different
+  leagues: the one that matches adopts, the others are held with the `level` /
+  `yearsActive` entries; a league found by id links and reports them), two rows covering one season (or an id held by sixteen or more teams,
   which is more than one read returns), a team found only under another label,
   or a probable duplicate.
 - **Schedules nothing.** No enrichment, no lookups.
