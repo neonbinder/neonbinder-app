@@ -651,6 +651,25 @@ jobs:
           fi
           echo "Convex preview NEONBINDER_FAKE_BSC_KEY set (read-back ok)"
 
+      # NEO-686: wake the fake early. It runs at zero instances and a cold start
+      # takes about 52 s (Cloud Run starts an instance, the fake loads its
+      # recordings, then it listens), so the capture check below used to be the
+      # first request and waited out the whole boot. Ask it now through the
+      # same internal action, in the background, so the boot overlaps the steps
+      # in between. Same preview deploy key and caller key as the check; no new
+      # access. Best-effort: its result is never read and it never fails the job
+      # (the check below is the one that judges).
+      - name: Wake the fake BSC (best-effort)
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          ( npx --yes convex@1.39.1 run fakeBsc:writeCaptureStatus '{}' --deployment "$CONVEX_NAME" || true ) \
+            > "${RUNNER_TEMP}/fake-bsc-wake.log" 2>&1 < /dev/null &
+          disown
+          echo "Asked the fake BSC to wake (background, best-effort)"
+
       # NEO-555: ask the preview which eBay it will talk to (an internal action,
       # deploy key only). Anything but fake fails here, before a spec can reach
       # sandbox or production eBay.
@@ -736,7 +755,14 @@ jobs:
               exit 1
             fi
             err=$(jq -r '"status=\(.status // "n/a") error=\(.error // "unknown")"' "$out" | head -c 300)
-            echo "::error::Could not read the fake BSC's write-capture status (${err}). An older fake without writeCaptures in /__fake/health needs redeploying."
+            case "$(jq -r '.error // ""' "$out")" in
+              TimeoutError|AbortError)
+                echo "::error::The fake BSC did not answer its health check within the 120 s cold-start budget (${err}). Re-run the workflow; if it repeats, check the fake's Cloud Run boot log (its recordings load before it listens)."
+                ;;
+              *)
+                echo "::error::Could not read the fake BSC's write-capture status (${err}). If the error is 'health answer has no writeCaptures', an older fake without writeCaptures in /__fake/health needs redeploying."
+                ;;
+            esac
             exit 1
           fi
           if [ "$(jq -r '.skipped' "$out")" = "true" ]; then
