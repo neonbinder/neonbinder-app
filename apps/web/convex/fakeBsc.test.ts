@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import {
+  CONTROL_TIMEOUT_MS,
+  HEALTH_COLD_START_BUDGET_MS,
   HEALTH_LOADING_PAUSES_MS,
   fakeBscControlClock,
   healthIsLoading,
@@ -323,5 +325,100 @@ describe("writeCaptureStatus while the fake is still loading", () => {
     expect(await result).toEqual({ ok: false, error: "fake still loading" });
     expect(spy).toHaveBeenCalledTimes(2);
     expect(pauses).toEqual([HEALTH_LOADING_PAUSES_MS[0]]);
+  });
+});
+
+// NEO-686: a cold fake has not started listening when the first read goes out, so the read
+// times out (30 s) while Cloud Run boots it (about 52 s in all). The check reads again.
+describe("writeCaptureStatus waits out a cold start", () => {
+  const warm = (missing: string[]) => Response.json({ ok: true, loading: false, writeCaptures: { missing } });
+  const loadingNow = () => Response.json({ ok: true, loading: true, writeCaptures: { loading: true } });
+  const named = (name: string) => {
+    const e = new Error("timed out");
+    e.name = name;
+    return e;
+  };
+
+  let pauses: number[];
+  let clock: number;
+  /** Each reply is one read; an Error is a read that hangs CONTROL_TIMEOUT_MS and then throws it. */
+  const run = (...replies: Array<Response | Error>) => {
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
+    vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+    vi.stubEnv("TESTING_RESET_SECRET", "armed");
+    vi.stubEnv("CONVEX_CLOUD_URL", "https://happy-otter-123.convex.cloud");
+    pauses = [];
+    clock = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => clock);
+    vi.spyOn(fakeBscControlClock, "sleep").mockImplementation(async (ms: number) => {
+      pauses.push(ms);
+      clock += ms;
+    });
+    const spy = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => {
+      const next = replies.shift();
+      if (!next) throw new Error("unexpected extra call");
+      if (next instanceof Error) {
+        clock += CONTROL_TIMEOUT_MS;
+        throw next;
+      }
+      return next;
+    });
+    vi.stubGlobal("fetch", spy);
+    return { spy, result: convexTest(schema, modules).action(internal.fakeBsc.writeCaptureStatus, {}) };
+  };
+
+  test("the budget covers the measured cold start (about 52 s) with margin, in whole reads", () => {
+    expect(HEALTH_COLD_START_BUDGET_MS).toBe(120_000);
+    expect(HEALTH_COLD_START_BUDGET_MS).toBeGreaterThanOrEqual(2 * 52_000);
+    expect(HEALTH_COLD_START_BUDGET_MS % CONTROL_TIMEOUT_MS).toBe(0);
+  });
+
+  test("a timeout, then the fake answers: reads again and reports the real list", async () => {
+    const { spy, result } = run(named("TimeoutError"), warm(["PUT seller/bulk-upload"]));
+    expect(await result).toEqual({ ok: true, skipped: false, missing: ["PUT seller/bulk-upload"] });
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(pauses).toEqual([]);
+  });
+
+  test("an AbortError is waited out the same way", async () => {
+    const { spy, result } = run(named("AbortError"), named("TimeoutError"), warm([]));
+    expect(await result).toEqual({ ok: true, skipped: false, missing: [] });
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+
+  test("timeouts past the budget: TimeoutError, after exactly the budget's worth of reads", async () => {
+    const { spy, result } = run(...Array.from({ length: 6 }, () => named("TimeoutError")));
+    expect(await result).toEqual({ ok: false, error: "TimeoutError" });
+    expect(spy).toHaveBeenCalledTimes(HEALTH_COLD_START_BUDGET_MS / CONTROL_TIMEOUT_MS);
+    expect(clock - 1_000_000).toBe(HEALTH_COLD_START_BUDGET_MS);
+  });
+
+  test("timeouts past the budget, ending in an AbortError: AbortError", async () => {
+    const { result } = run(named("TimeoutError"), named("TimeoutError"), named("TimeoutError"), named("AbortError"));
+    expect(await result).toEqual({ ok: false, error: "AbortError" });
+  });
+
+  test("loading, then a timeout, then loaded: the loading wait starts over after the timeout", async () => {
+    const { spy, result } = run(loadingNow(), named("TimeoutError"), loadingNow(), warm(["PUT seller/bulk-upload"]));
+    expect(await result).toEqual({ ok: true, skipped: false, missing: ["PUT seller/bulk-upload"] });
+    expect(spy).toHaveBeenCalledTimes(4);
+    expect(pauses).toEqual([HEALTH_LOADING_PAUSES_MS[0], HEALTH_LOADING_PAUSES_MS[0]]);
+  });
+
+  test("timeouts do not spend the loading budget: loading after two timeouts still waits", async () => {
+    const { result } = run(named("TimeoutError"), named("TimeoutError"), loadingNow(), warm([]));
+    expect(await result).toEqual({ ok: true, skipped: false, missing: [] });
+    expect(pauses).toEqual([HEALTH_LOADING_PAUSES_MS[0]]);
+  });
+
+  test("a network error is not a timeout: the control retry, then the failure", async () => {
+    const { spy, result } = run(new TypeError("fetch failed"), new TypeError("fetch failed"));
+    expect(await result).toEqual({ ok: false, error: "TypeError" });
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  test("a refusal after a timeout is reported with its status", async () => {
+    const { result } = run(named("TimeoutError"), new Response("", { status: 403 }));
+    expect(await result).toEqual({ ok: false, status: 403, error: "http" });
   });
 });

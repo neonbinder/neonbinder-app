@@ -387,6 +387,23 @@ export const HEALTH_LOADING_PAUSES_MS: readonly number[] = [1_000, 2_000, 4_000,
 const HEALTH_LOADING_BUDGET_MS = HEALTH_LOADING_PAUSES_MS.reduce((a, b) => a + b, 0);
 
 /**
+ * The overall wall-clock a health read may spend waiting out a cold start: a
+ * read that times out (`CONTROL_TIMEOUT_MS`) is asked again until this much
+ * time has passed since the check began. A cold fake measured about 52 s from
+ * the request to the first answer (Cloud Run starts an instance in about 16 s,
+ * the fake loads its recordings for about 34 s, then listens), against the 30 s
+ * a single read waits. 120 s is two and a half times that, and is four reads of
+ * 30 s, so a read that is still hanging at the end is given a fair last chance.
+ */
+export const HEALTH_COLD_START_BUDGET_MS = 120_000;
+
+/** A read that ended in the per-attempt timeout (our own abort, never a refusal). */
+function isTimeout(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : "";
+  return name === "TimeoutError" || name === "AbortError";
+}
+
+/**
  * Which required write endpoints (BSC's two and the eBay writes) the fake has no real capture for
  * (`/__fake/health` `writeCaptures.missing`; CONTRACT.md, "Write capture"). CI runs
  * it with the preview deploy key before seeding (`npx convex run
@@ -395,17 +412,35 @@ const HEALTH_LOADING_BUDGET_MS = HEALTH_LOADING_PAUSES_MS.reduce((a, b) => a + b
  * While the fake answers `loading: true` its list means nothing (the captures
  * are not read yet), so this asks again on `HEALTH_LOADING_PAUSES_MS`; still
  * loading after that is `fake still loading`, never a missing list.
+ * A read that times out (the fake is cold and has not started listening, NEO-686)
+ * is asked again, up to `HEALTH_COLD_START_BUDGET_MS` since the check began; after
+ * that the answer is `{ ok: false, error: "TimeoutError" }` (or `AbortError`).
+ * Other callers of `controlFetch` still never retry a timeout.
  */
 export const writeCaptureStatus = internalAction({
   args: {},
   returns: writeCapturesResult,
   handler: async (): Promise<WriteCapturesResult> => {
     const startedAt = Date.now();
-    for (let read = 0; ; read += 1) {
+    // The loading wait is counted from the fake's first sign of life after any
+    // timeouts, so a cold start spent timing out does not eat it.
+    let loadingStartedAt = startedAt;
+    let loadingReads = 0;
+    for (let read = 1; ; read += 1) {
       let res: Response | null;
       try {
         res = await controlFetch("__fake/health", "health", () => ({ method: "GET" }));
       } catch (error) {
+        if (isTimeout(error)) {
+          const elapsed = Date.now() - startedAt;
+          const gaveUp = elapsed >= HEALTH_COLD_START_BUDGET_MS;
+          logHealthTimeout(read, elapsed, gaveUp);
+          if (!gaveUp) {
+            loadingStartedAt = Date.now();
+            loadingReads = 0;
+            continue;
+          }
+        }
         return { ok: false, error: error instanceof Error ? error.name : "unknown" };
       }
       if (res === null) return { ok: true, skipped: true, missing: [] };
@@ -415,13 +450,14 @@ export const writeCaptureStatus = internalAction({
       }
       const body: unknown = await res.json().catch(() => null);
       if (healthIsLoading(body)) {
-        const elapsed = Date.now() - startedAt;
-        const pause = HEALTH_LOADING_PAUSES_MS[read];
+        const elapsed = Date.now() - loadingStartedAt;
+        const pause = HEALTH_LOADING_PAUSES_MS[loadingReads];
+        loadingReads += 1;
         if (pause === undefined || elapsed >= HEALTH_LOADING_BUDGET_MS) {
-          logHealthLoading(read + 1, elapsed, true);
+          logHealthLoading(loadingReads, elapsed, true);
           return { ok: false, error: "fake still loading" };
         }
-        logHealthLoading(read + 1, elapsed, false);
+        logHealthLoading(loadingReads, elapsed, false);
         await fakeBscControlClock.sleep(Math.min(pause, HEALTH_LOADING_BUDGET_MS - elapsed));
         continue;
       }
@@ -431,6 +467,20 @@ export const writeCaptureStatus = internalAction({
     }
   },
 });
+
+/** A health read that timed out; `gaveUp` when the cold-start budget is spent. Route, count and timing only. */
+function logHealthTimeout(read: number, elapsedMs: number, gaveUp: boolean): void {
+  console.log(
+    JSON.stringify({
+      msg: "fake_bsc_health_timeout",
+      platform: "bsc",
+      operation: "health",
+      read,
+      gaveUp,
+      ms: elapsedMs,
+    }),
+  );
+}
 
 function logHealthLoading(read: number, elapsedMs: number, gaveUp: boolean): void {
   console.log(

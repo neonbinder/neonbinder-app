@@ -88,6 +88,25 @@ describe("fake control calls retry once", () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
+  test("the miss read does not retry a timeout either (only the capture check waits out a cold start)", async () => {
+    const timeout = new Error("timed out");
+    timeout.name = "TimeoutError";
+    const spy = answers(timeout);
+    expect(await convexTest(schema, modules).action(internal.fakeBsc.misses, { ns: NS })).toEqual({
+      ok: false,
+      error: "TimeoutError",
+    });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  test("an abort is not retried by the other controls", async () => {
+    const abort = new Error("aborted");
+    abort.name = "AbortError";
+    const spy = answers(abort);
+    expect(await reset()).toEqual({ ok: false, error: "AbortError" });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
   test("any other refusal (403) is not retried", async () => {
     const spy = answers(new Response("", { status: 403 }));
     expect(await reset()).toEqual({ ok: false, status: 403, error: "http" });
