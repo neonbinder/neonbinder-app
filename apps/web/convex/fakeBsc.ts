@@ -396,6 +396,10 @@ const HEALTH_LOADING_BUDGET_MS = HEALTH_LOADING_PAUSES_MS.reduce((a, b) => a + b
  * 30 s, so a read that is still hanging at the end is given a fair last chance.
  */
 export const HEALTH_COLD_START_BUDGET_MS = 120_000;
+/** A timed-out read that came back sooner than this did not wait out the 30 s limit (it threw at once). */
+export const HEALTH_FAST_TIMEOUT_MS = 5_000;
+/** The pause before reading again after such a fast timeout, so reads are never back to back. */
+export const HEALTH_FAST_TIMEOUT_PAUSE_MS = 1_000;
 
 /** A read that ended in the per-attempt timeout (our own abort, never a refusal). */
 function isTimeout(error: unknown): boolean {
@@ -428,6 +432,7 @@ export const writeCaptureStatus = internalAction({
     let loadingReads = 0;
     for (let read = 1; ; read += 1) {
       let res: Response | null;
+      const readStartedAt = Date.now();
       try {
         res = await controlFetch("__fake/health", "health", () => ({ method: "GET" }));
       } catch (error) {
@@ -436,6 +441,13 @@ export const writeCaptureStatus = internalAction({
           const gaveUp = elapsed >= HEALTH_COLD_START_BUDGET_MS;
           logHealthTimeout(read, elapsed, gaveUp);
           if (!gaveUp) {
+            // A real timeout spaces reads 30 s apart; one thrown at once (e.g. before the request
+            // went out) would otherwise send reads back to back until the budget ends.
+            if (Date.now() - readStartedAt < HEALTH_FAST_TIMEOUT_MS) {
+              await fakeBscControlClock.sleep(
+                Math.min(HEALTH_FAST_TIMEOUT_PAUSE_MS, HEALTH_COLD_START_BUDGET_MS - elapsed),
+              );
+            }
             loadingStartedAt = Date.now();
             loadingReads = 0;
             continue;

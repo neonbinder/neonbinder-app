@@ -11,6 +11,7 @@ import schema from "./schema";
 import {
   CONTROL_TIMEOUT_MS,
   HEALTH_COLD_START_BUDGET_MS,
+  HEALTH_FAST_TIMEOUT_PAUSE_MS,
   HEALTH_LOADING_PAUSES_MS,
   fakeBscControlClock,
   healthIsLoading,
@@ -409,6 +410,41 @@ describe("writeCaptureStatus waits out a cold start", () => {
     const { result } = run(named("TimeoutError"), named("TimeoutError"), loadingNow(), warm([]));
     expect(await result).toEqual({ ok: true, skipped: false, missing: [] });
     expect(pauses).toEqual([HEALTH_LOADING_PAUSES_MS[0]]);
+  });
+
+  test("two timeouts, then loading until the pause ladder runs out: still loading, the full ladder paused", async () => {
+    const { result } = run(
+      named("TimeoutError"),
+      named("TimeoutError"),
+      ...Array.from({ length: HEALTH_LOADING_PAUSES_MS.length + 1 }, () => loadingNow()),
+    );
+    expect(await result).toEqual({ ok: false, error: "fake still loading" });
+    expect(pauses).toEqual([...HEALTH_LOADING_PAUSES_MS]);
+  });
+
+  test("a timeout thrown at once is paced: a pause before each read, ending at the budget", async () => {
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
+    vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+    vi.stubEnv("TESTING_RESET_SECRET", "armed");
+    vi.stubEnv("CONVEX_CLOUD_URL", "https://happy-otter-123.convex.cloud");
+    const fastPauses: number[] = [];
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    vi.spyOn(fakeBscControlClock, "sleep").mockImplementation(async (ms: number) => {
+      fastPauses.push(ms);
+      now += ms;
+    });
+    const spy = vi.fn(async () => {
+      throw named("TimeoutError");
+    });
+    vi.stubGlobal("fetch", spy);
+    const result = await convexTest(schema, modules).action(internal.fakeBsc.writeCaptureStatus, {});
+    expect(result).toEqual({ ok: false, error: "TimeoutError" });
+    expect(fastPauses.length).toBeGreaterThan(0);
+    expect(fastPauses.every((ms) => ms === HEALTH_FAST_TIMEOUT_PAUSE_MS)).toBe(true);
+    // One pause between consecutive reads, and the last read is the one that finds the budget spent.
+    expect(spy).toHaveBeenCalledTimes(fastPauses.length + 1);
+    expect(now - 1_000_000).toBe(HEALTH_COLD_START_BUDGET_MS);
   });
 
   test("a network error is not a timeout: the control retry, then the failure", async () => {
