@@ -47,6 +47,7 @@ import {
   pendingNamesOf,
   useCardNameLookups,
   useLeafFacts,
+  useLinkOnOpen,
   useWalkMemory,
   useWalkMemoryStore,
   WalkMemoryProvider,
@@ -640,6 +641,10 @@ function WalkDialog({
     setAnswerTick((t) => t + 1);
     if (message) setAnnouncement(message);
   }, []);
+  // NEO-680: a waiting name that exactly one player answers to links by itself.
+  // It is said through the same line an answer is, and focus is placed by the
+  // same rule, since the row the operator was on may have just been replaced.
+  useLinkOnOpen(memory, current, onAnswered);
   // A sentence belongs to the card it was said on: a new card starts with
   // nothing said, so the same sentence can be said again.
   const [saidOnCard, setSaidOnCard] = useState(currentId);

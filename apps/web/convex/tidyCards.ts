@@ -39,7 +39,7 @@ import { internalMutation, mutation, query, type MutationCtx } from "./_generate
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
-import { tidyNameKindValidator } from "./tidyNames";
+import { MAX_TIDY_NAME_LENGTH, tidyNameKindValidator } from "./tidyNames";
 import {
   MAX_CARD_PLAYERS,
   MAX_CARD_TEAMS,
@@ -52,6 +52,7 @@ import {
   cleanPickNames,
   entryFor,
   entryFromOffered,
+  linkWaitingPlayerNames,
   sameDisagreement,
   sameValue,
   sameValueSets,
@@ -67,7 +68,7 @@ import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { hasTeamLine, isTeamlessOnLine, teamLineKey } from "./lib/teamLine";
 import { defaultGapStint } from "./lib/careerGapStint";
 import { computeCoverage } from "./lib/careerCoverageFacts";
-import { appendCareerStintsImpl } from "./players";
+import { appendCareerStintsImpl, matchedAliasFor } from "./players";
 import { assertCareerStintYears, maxCareerYear } from "../lib/players/career-years";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import { cameoOfferFor, cameoOfferValidator } from "./tidyCameo";
@@ -129,6 +130,12 @@ export const contextPlayerValidator = v.object({
   ),
   /** The player has more stints than `stints` holds. */
   stintsMore: v.boolean(),
+  /**
+   * NEO-680: the saved alias this card's printed name matched, when the link
+   * was made through an alias rather than the player's own name. Derived live
+   * from the card and the player; nothing is stored.
+   */
+  linkedByAlias: v.optional(v.string()),
 });
 
 export const contextTeamValidator = v.object({
@@ -237,6 +244,9 @@ export const cardContext = query({
       const player = await ctx.db.get(playerId);
       if (!player) continue;
       const nameOnCard = card.playerLinks?.find((l) => l.playerId === playerId)?.nameOnCard;
+      const linkedByAlias = nameOnCard
+        ? matchedAliasFor(player, normalizeEntityName(nameOnCard))
+        : undefined;
       const stints = [];
       for (const s of (player.teamYears ?? []).slice(0, CONTEXT_MAX_STINTS_PER_PLAYER)) {
         const name = await teamName(s.teamId);
@@ -252,6 +262,7 @@ export const cardContext = query({
         playerId,
         name: player.name,
         ...(nameOnCard && nameOnCard !== player.name ? { nameOnCard } : {}),
+        ...(linkedByAlias ? { linkedByAlias } : {}),
         ...(player.birthYear !== undefined ? { birthYear: player.birthYear } : {}),
         ...(player.isHallOfFame !== undefined ? { isHallOfFame: player.isHallOfFame } : {}),
         sportId: player.sportId,
@@ -476,6 +487,55 @@ export const pickSourceValue = mutation({
       });
     }
     return { applied: 1, scheduled: accepted.length, refused };
+  },
+});
+
+/** Most names the walk may hold back in one `linkOnOpen` call (a card carries at most `MAX_CARD_PLAYERS`). */
+const LINK_ON_OPEN_MAX_SKIP = MAX_CARD_PLAYERS;
+
+/**
+ * NEO-680 — the walk opened a card: each player name still waiting on it that
+ * exactly one player answers to (own name or alias) links by itself. REAL.
+ *
+ * ## Contract
+ *
+ * - `requireAdmin`, like every tidy mutation.
+ * - The card is re-read here: the names come from its own `pendingPlayerNames`,
+ *   never from the client. `skip` is the names (as printed) the operator took
+ *   back with Edit this sitting; it can only narrow what is linked. Nothing is
+ *   stored about it (CLAUDE.md invariant 9): the walk holds it in memory.
+ * - Resolved by `tidyPickSource.resolveName`, written by the one name writer:
+ *   one player in the card's sport answering to the name links; none, or two or
+ *   more, leaves the name waiting.
+ * - Returns the names it linked (`printed` as the card has it, `player` as NB
+ *   names him), so the walk can say so; null when nothing was linked.
+ * - Idempotent: a card with nothing waiting, or nothing that resolves, is not
+ *   written, and a second call finds the names already linked.
+ * - A card that is gone is a no-op.
+ */
+export const linkOnOpen = mutation({
+  args: {
+    cardId: v.id("cardChecklist"),
+    skip: v.optional(v.array(v.string())),
+  },
+  returns: v.union(v.null(), v.array(v.object({ printed: v.string(), player: v.string() }))),
+  handler: async (ctx, args) => {
+    const userId = await requireAdmin(ctx);
+    const skip = args.skip ?? [];
+    if (skip.length > LINK_ON_OPEN_MAX_SKIP) {
+      throw new ConvexError(`At most ${LINK_ON_OPEN_MAX_SKIP} names can be held back.`);
+    }
+    if (skip.some((name) => name.length > MAX_TIDY_NAME_LENGTH)) {
+      throw new ConvexError(`A name is at most ${MAX_TIDY_NAME_LENGTH} characters.`);
+    }
+    const card = await ctx.db.get(args.cardId);
+    if (!card || (card.pendingPlayerNames ?? []).length === 0) return null;
+    const linked = await linkWaitingPlayerNames(ctx, card, {
+      userId,
+      cache: newNameWriteCache(ctx),
+      skip: new Set(skip.map((name) => normalizeEntityName(name))),
+    });
+    return linked.length > 0 ? linked : null;
   },
 });
 

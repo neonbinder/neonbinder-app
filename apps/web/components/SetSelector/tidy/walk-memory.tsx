@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useAction } from "convex/react";
+import { useAction, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
@@ -93,6 +93,20 @@ export class WalkMemory {
   /** Keys the operator asked to look up in full ("Add anyway"). */
   private fullKeys = new Set<string>();
   private answers = new Map<string, OpenAnswer>();
+  /**
+   * NEO-680: `cardId|kind|key` -> printed spelling, for each linked name the
+   * operator took back with Edit. The walk links a waiting name by itself when
+   * it opens a card; these are sent along so it never links one of them again
+   * in this sitting. Kept past `leaveCard` (a card opened again is still this
+   * sitting); in memory only, nothing stored.
+   */
+  private heldBack = new Map<string, string>();
+  /**
+   * NEO-680: the cards whose link-on-open call is in flight. A waiting Player
+   * row holds ("Checking for players by that name…") until it settles, so no
+   * answer can be given a moment before the name links by itself.
+   */
+  private linkingOnOpen = new Set<string>();
   private picks = new Map<string, KeptPick>();
   /** `cardId|playerId` for each player made on an open card (NEO-657's prefilled stint). */
   private madePlayers = new Set<string>();
@@ -116,6 +130,38 @@ export class WalkMemory {
   private bump() {
     this.version += 1;
     for (const listener of [...this.listeners]) listener();
+  }
+
+  // ── link on open ─────────────────────────────────────────────────────────
+  beginLinkOnOpen(cardId: string): void {
+    if (this.linkingOnOpen.has(cardId)) return;
+    this.linkingOnOpen.add(cardId);
+    this.bump();
+  }
+  /**
+   * The same hold, taken while the walk renders a card it is about to ask
+   * about: the card's rows render later in that pass, so their first committed
+   * DOM is already held (an effect would only hold them a frame later). It
+   * only adds to the set, never notifies, and the call's effect (or its
+   * settling) is what releases it.
+   */
+  holdForLinkOnOpen(cardId: string): void {
+    if (this.linkOpenedCard !== cardId) this.linkingOnOpen.add(cardId);
+  }
+  /** The card the walk last asked link-on-open about (null when none is open). */
+  private linkOpenedCard: string | null = null;
+  linkOnOpenCard(): string | null {
+    return this.linkOpenedCard;
+  }
+  setLinkOnOpenCard(cardId: string | null): void {
+    this.linkOpenedCard = cardId;
+  }
+  /** Called when the call settles, whatever the outcome: a failure releases the hold. */
+  endLinkOnOpen(cardId: string): void {
+    if (this.linkingOnOpen.delete(cardId)) this.bump();
+  }
+  isLinkingOnOpen(cardId: string): boolean {
+    return this.linkingOnOpen.has(cardId);
   }
 
   // ── leaf facts ────────────────────────────────────────────────────────────
@@ -291,6 +337,15 @@ export class WalkMemory {
   forgetAnswer(cardId: string, kind: "player" | "team", printed: string): void {
     if (this.answers.delete(`${cardId}|${nameKeyOf(kind, printed)}`)) this.bump();
   }
+  /** Edit on a linked player name: it is not linked by itself again this sitting. */
+  holdBackFromLink(cardId: string, kind: "player" | "team", printed: string): void {
+    this.heldBack.set(`${cardId}|${nameKeyOf(kind, printed)}`, printed);
+  }
+  /** The names (as printed) of `cardId` held back from linking. */
+  heldBackNames(cardId: string, kind: "player" | "team"): string[] {
+    const prefix = `${cardId}|${kind}|`;
+    return [...this.heldBack.entries()].filter(([key]) => key.startsWith(prefix)).map(([, name]) => name);
+  }
   /** What was answered on this card, in the order it was answered. */
   answersOn(cardId: string, kind: "player" | "team"): OpenAnswer[] {
     const prefix = `${cardId}|${kind}|`;
@@ -398,6 +453,62 @@ export function useLeafFacts(memory: WalkMemory, leafId: Id<"selectorOptions">) 
   useEffect(() => {
     memory.loadFacts(() => ref.current({ selectorOptionId: leafId }));
   }, [memory, leafId]);
+}
+
+/**
+ * NEO-680: when the walk opens a card, each player name still waiting on it
+ * that exactly one player answers to links by itself (`tidyCards.linkOnOpen`).
+ * One call per open of a card, however often the card re-renders; the server
+ * re-reads the card and does nothing when nothing waits or nothing resolves.
+ * The names the operator took back with Edit this sitting go along as `skip`,
+ * so an Edit is never undone. A failed call holds nothing back (missing data is
+ * not a claim): the names simply stay waiting. While the call is in flight the
+ * card's Player rows hold (`memory.isLinkingOnOpen`), and any outcome releases
+ * them. When names did link, `onLinked`
+ * says so (one sentence for a screen reader) while the walk still sits on that
+ * card: the row the operator may be on has just been replaced by its answer.
+ */
+export function useLinkOnOpen(
+  memory: WalkMemory,
+  card: { _id: Id<"cardChecklist">; pendingPlayerNames?: readonly string[] } | undefined,
+  onLinked: (message: string) => void,
+) {
+  const linkOnOpen = useMutation(api.tidyCards.linkOnOpen);
+  const waiting = card?.pendingPlayerNames;
+  const latest = useRef({ linkOnOpen, waiting, onLinked });
+  useEffect(() => {
+    latest.current = { linkOnOpen, waiting, onLinked };
+  });
+  const cardId = card?._id;
+  // NEO-680: held from the first render of a card the effect below will ask
+  // about, so no row of it ever shows an unheld frame.
+  if (cardId && (waiting?.length ?? 0) > 0) memory.holdForLinkOnOpen(cardId);
+  useEffect(() => {
+    if (!cardId) {
+      memory.setLinkOnOpenCard(null);
+      return;
+    }
+    if (memory.linkOnOpenCard() === cardId) return;
+    memory.setLinkOnOpenCard(cardId);
+    const names = latest.current.waiting ?? [];
+    if (names.length === 0) return;
+    const waitingKeys = new Set(names.map((n) => normalizeEntityName(n.trim())));
+    const skip = memory
+      .heldBackNames(cardId, "player")
+      .filter((n) => waitingKeys.has(normalizeEntityName(n.trim())));
+    // The rows hold while the call is in flight; any outcome releases them.
+    memory.beginLinkOnOpen(cardId);
+    latest.current
+      .linkOnOpen({ cardId, ...(skip.length > 0 ? { skip } : {}) })
+      .then((linked) => {
+        if (!linked || linked.length === 0 || memory.linkOnOpenCard() !== cardId) return;
+        latest.current.onLinked(
+          linked.map((l) => `Linked ${l.printed} to ${l.player}.`).join(" "),
+        );
+      })
+      .catch(() => {})
+      .finally(() => memory.endLinkOnOpen(cardId));
+  }, [memory, cardId]);
 }
 
 /** A pending name on a card, as the lookup hooks take it. */

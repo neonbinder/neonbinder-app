@@ -15,7 +15,7 @@ import NameFragmentPanel, {
 } from "../../NameFragmentPanel";
 import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../../../../lib/players/name-limits";
 import type { TidyCardContext, TidyRow } from "../tile-types";
-import { WRAP_LABEL_CLASS } from "../TidyTile";
+import { TidyNote, WRAP_LABEL_CLASS } from "../TidyTile";
 import { useAnswered } from "../answered";
 import { useInlinePart } from "../inline-stack";
 import { useNameLookup, useWalkMemory } from "../walk-memory";
@@ -117,8 +117,10 @@ export default function PlayerNameRow({
   if (!name.pending) {
     // The re-opened name gets the facts a pending one has (its own sport, its
     // set-history pick): `reopenName` asks for them once the write has landed.
-    const clear = () =>
-      memory.reopenName("player", name.printed, () =>
+    const clear = () => {
+      // NEO-680: taken back by the operator, so opening the card never links it again.
+      memory.holdBackFromLink(row._id, "player", name.printed);
+      return memory.reopenName("player", name.printed, () =>
         write.run(
           () =>
             answerName({
@@ -131,6 +133,7 @@ export default function PlayerNameRow({
           "Couldn't change that answer. Try again.",
         ),
       );
+    };
     return (
       <div ref={wrapRef} role="group" aria-label={`Player ${name.printed}`} className="grid gap-1.5">
         <EditLine
@@ -140,6 +143,8 @@ export default function PlayerNameRow({
         >
           <PlayerSummary player={linked} fallbackName={name.printed} />
         </EditLine>
+        {/* NEO-680: informational only; a purple note never makes a stop. */}
+        {linked?.linkedByAlias && <TidyNote>Linked by alias</TidyNote>}
         {name.playerId && (
           <NameApplyToAll
             cardId={row._id}
@@ -189,6 +194,8 @@ export function RuledOutPlayerRow({
   const memory = useWalkMemory();
   const answerName = useMutation(api.tidyNames.answerName);
   const clear = async () => {
+    // NEO-680: an Edit is never undone by the link on open.
+    memory.holdBackFromLink(row._id, "player", printed);
     memory.oweFocus(row._id, "player", printed);
     const ok = await write.run(
       () =>
@@ -255,9 +262,13 @@ function UnansweredPlayerName({
   const memory = useWalkMemory();
   // Edit on a ruled-out name re-opens this row: focus lands on its first control.
   useReopenedFocus(memory, row._id, "player", name.printed, wrapRef);
+  // NEO-680: the card's link-on-open call is still in flight, so this name may
+  // be about to link by itself: no answer is offered until it settles.
+  const linking = memory.isLinkingOnOpen(row._id);
 
   /** A write that ANSWERS the name: on success the walk moves focus on. */
   const answer = async (fn: () => Promise<unknown>, fallback: string): Promise<boolean> => {
+    if (linking) return false;
     const ok = await write.run(fn, fallback);
     if (ok) answered();
     return ok;
@@ -366,8 +377,9 @@ function UnansweredPlayerName({
   // history picks, so it is one of them (a failed one is not: Try again is
   // offered and the rest still decide).
   const checking =
-    rowSportId !== undefined &&
-    (nearMatches === undefined || fragmentCheck === undefined || lookupStatus === "pending");
+    linking ||
+    (rowSportId !== undefined &&
+      (nearMatches === undefined || fragmentCheck === undefined || lookupStatus === "pending"));
 
   // A player the lookup itself offered may be in another sport: the server
   // takes the link without the sport check only for those (`offered`).
@@ -473,7 +485,7 @@ function UnansweredPlayerName({
   };
 
   const printedOn = printedOnText(printedOnOf(leafCards, "player", name.printed));
-  const disabled = write.busy ? true : undefined;
+  const disabled = write.busy || linking ? true : undefined;
   // The reason line under the suggestion, and the id the suggestion's button
   // is described by while that line is on screen.
   const reasonId = useId();
@@ -551,9 +563,9 @@ function UnansweredPlayerName({
             candidates={sameNameCandidates}
             scanCapped={scanCapped}
             setSportValue={setSportValue}
-            disabled={write.busy}
+            disabled={disabled}
             onPick={(playerId) => {
-              if (write.busy) return;
+              if (disabled) return;
               void link(playerId);
             }}
           />
@@ -563,7 +575,7 @@ function UnansweredPlayerName({
       {/* Mounted for the whole life of the row, so the sentence is a change to a
           live region that is already in the page. */}
       <p role="status" className="text-xs italic text-ink-3 empty:hidden">
-        {creating && !linkOpen && checking
+        {(creating || linking) && !linkOpen && checking
           ? "Checking for players by that name…"
           : lookupFailed && !linkOpen
             ? "Couldn't look this one up."
@@ -590,16 +602,24 @@ function UnansweredPlayerName({
         <NameFragmentPanel
           name={queryName}
           matches={fragmentMatches}
-          disabled={write.busy}
+          disabled={disabled}
           onPick={(id) => {
-            if (write.busy) return;
+            if (disabled) return;
             void link(id);
           }}
         />
       )}
 
       {!linkOpen && (
-        <NearMatchPanel kind="player" matches={panelMatches} busy={write.busy} onPick={(id) => void link(id, true)}>
+        <NearMatchPanel
+          kind="player"
+          matches={panelMatches}
+          busy={disabled}
+          onPick={(id) => {
+            if (disabled) return;
+            void link(id, true);
+          }}
+        >
           {aliasBox}
         </NearMatchPanel>
       )}
@@ -665,7 +685,10 @@ function UnansweredPlayerName({
               outline
               aria-label={`Add as new player anyway${suffix}`}
               aria-disabled={disabled}
-              onClick={addAnyway}
+              onClick={() => {
+                if (disabled) return;
+                addAnyway();
+              }}
             >
               Add as new player anyway
             </NeonButton>
@@ -689,7 +712,10 @@ function UnansweredPlayerName({
             outline
             aria-label={`Link to existing…${suffix}`}
             aria-disabled={disabled}
-            onClick={() => setLinkOpen(true)}
+            onClick={() => {
+              if (disabled) return;
+              setLinkOpen(true);
+            }}
           >
             Link to existing…
           </NeonButton>
@@ -711,7 +737,10 @@ function UnansweredPlayerName({
               outline
               aria-label={`Try again${suffix}`}
               aria-disabled={disabled}
-              onClick={retry}
+              onClick={() => {
+                if (disabled) return;
+                retry();
+              }}
             >
               Try again
             </NeonButton>

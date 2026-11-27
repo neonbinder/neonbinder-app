@@ -10,9 +10,9 @@
  * pending names), which is what keeps the losing side out of the walk. Choosing
  * resolves each name of the value the same way the commit does:
  *
- *   1. exactly ONE NB match links (a player whose own name is the name, one team
- *      the set's year allows; an alias-only or tied match is a question, never
- *      an adoption);
+ *   1. exactly ONE NB match links (the one player who answers to the name, by
+ *      its own name or an alias, or one team the set's year allows; a tied
+ *      match is a question, never an adoption);
  *   2. otherwise the name stays pending and the card carries the printed name.
  *
  * NEO-656 (Jason: "Once you pick a source, the card keeps only the result"): a
@@ -32,6 +32,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
   nameFieldsOf,
+  planNameChange,
+  printedRefOf,
   writeNameChange,
   type NameFields,
   type NameWriteCache,
@@ -182,7 +184,7 @@ type Resolved =
  * else stays pending for the operator. NEO-656 (B10): nothing stored is read,
  * so a name a card once had answered is matched like any other.
  */
-async function resolveName(
+export async function resolveName(
   ctx: MutationCtx,
   card: Doc<"cardChecklist">,
   kind: "player" | "team",
@@ -192,8 +194,9 @@ async function resolveName(
   const key = normalizeEntityName(name);
   if (kind === "player") {
     const same = await sameNamePlayers(ctx, key, card.sportId);
-    // The PRIMARY name must be the name: a shared alias is a question.
-    if (same.length === 1 && same[0].nameNormalized === key) {
+    // NEO-680: one player who answers to the name links, by its own name or an
+    // alias alike; two holders are a question.
+    if (same.length === 1) {
       return { state: "playerLink", playerId: same[0]._id };
     }
   } else {
@@ -203,6 +206,47 @@ async function resolveName(
     if (found.teamId) return { state: "teamLink", teamId: found.teamId };
   }
   return { state: "pending" };
+}
+
+/**
+ * NEO-680 (Jason: a lone alias match "should be automatic"): when the walk opens
+ * a card, each name still WAITING on it that exactly one player answers to
+ * links by itself. Same resolver as the pick (`resolveName`), same writer as an
+ * answer (`planNameChange` + `writeNameChange`), so the title, description and
+ * team fill follow as for any link. `skip` holds name keys the operator has
+ * taken back this sitting (Edit); it only narrows what is linked. A name no one
+ * answers to, or two players do, stays waiting, and a card with nothing to link
+ * is not written. Returns the names it linked (the name as printed, and the
+ * player it now links to); empty when the card was not written.
+ */
+export async function linkWaitingPlayerNames(
+  ctx: MutationCtx,
+  card: Doc<"cardChecklist">,
+  args: { userId: string; cache: NameWriteCache; skip: ReadonlySet<string> },
+): Promise<{ printed: string; player: string }[]> {
+  let fields = nameFieldsOf(card);
+  const linked: { printed: string; player: string }[] = [];
+  for (const printed of card.pendingPlayerNames ?? []) {
+    const key = normalizeEntityName(printed);
+    if (args.skip.has(key)) continue;
+    const resolved = await resolveName(ctx, card, "player", printed, undefined);
+    if (resolved.state !== "playerLink") continue;
+    const { ref, unlinkedBefore } = printedRefOf(fields, "player", key, printed);
+    const plan = planNameChange(
+      fields,
+      ref,
+      { kind: "linkPlayer", playerId: resolved.playerId },
+      "any",
+      { unlinkedBefore },
+    );
+    if (plan.status === "changed") {
+      fields = plan.fields;
+      const player = await ctx.db.get(resolved.playerId);
+      linked.push({ printed, player: player?.name ?? printed });
+    }
+  }
+  if (linked.length > 0) await writeNameChange(ctx, card, fields, args.cache, args.userId);
+  return linked;
 }
 
 /**

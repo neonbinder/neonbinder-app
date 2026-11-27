@@ -54,3 +54,4 @@ Entity-review, Tidy Up and walk flows, team/player resolution, card titles and d
 - [Walk lookups in a keyed ref store](reference_walk_lookups_live_in_a_keyed_ref_store.md) — per-sitting results in a ref Map store keyed by the whole request; stale drops by key; root tsc filter
 - [Card number prefix/remainder helper](reference_card_number_prefix_remainder_helper.md) — splitCardNumberPrefix reads "89B-1"/"T88-12"; stripLetterPrefix does not
 - [New-player prefill rides walk memory](pattern_new_player_prefill_rides_walk_memory_not_a_stored_marker.md) — "made on this card" lives in WalkMemory, not a stored check; live-gap side effects
+- [Alias seed needs playerAliases rows](reference_convex_test_alias_seed_needs_player_alias_rows.md) — addPlayer({aliases}) alone is invisible to sameNamePlayers; syncPlayerAliases; hyphen strips; link-on-open skip pattern (NEO-680)

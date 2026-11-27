@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../convex/_generated/api", () => ({
   api: {
-    tidyCards: { cardContext: "cardContext", saveCard: "saveCard" },
+    tidyCards: { cardContext: "cardContext", saveCard: "saveCard", linkOnOpen: "linkOnOpen" },
     selectorOptions: { updateCard: "updateCard", tidyLeafFacts: "tidyLeafFacts" },
     adapters: { wikidata: { lookupTidyName: "lookupTidyName" } },
     drillPath: { resolveDrillPath: "resolveDrillPath" },
@@ -24,6 +24,8 @@ const { convexQuery } = vi.hoisted(() => ({ convexQuery: vi.fn(async (): Promise
 
 const saveCard = vi.fn();
 const updateCard = vi.fn();
+type Linked = { printed: string; player: string }[] | null;
+const linkOnOpen = vi.fn(async (_args: unknown): Promise<Linked> => null);
 const tidyLeafFacts = vi.fn(async (): Promise<unknown> => ({ gateItems: [] }));
 const lookupTidyName = vi.fn(async (): Promise<unknown> => ({ status: "ready" }));
 
@@ -46,7 +48,13 @@ vi.mock("convex/react", () => ({
     return undefined;
   },
   useMutation: (ref: string) =>
-    ref === "saveCard" ? saveCard : ref === "updateCard" ? updateCard : vi.fn(),
+    ref === "saveCard"
+      ? saveCard
+      : ref === "updateCard"
+        ? updateCard
+        : ref === "linkOnOpen"
+          ? linkOnOpen
+          : vi.fn(),
   useAction: (ref: string) =>
     ref === "tidyLeafFacts" ? tidyLeafFacts : ref === "lookupTidyName" ? lookupTidyName : vi.fn(),
   useConvex: () => ({ query: convexQuery }),
@@ -58,7 +66,7 @@ vi.mock("./tiles/SourcesDisagreeTile", () => ({ default: () => <div data-testid=
 let playerLevel: "fix" | "plain" = "plain";
 // What the pink tile's first control is, and when it arrives: `late` mounts it
 // after the card is shown (a tile whose controls wait for the card's context).
-let playerControl: "button" | "combobox" = "button";
+let playerControl: "button" | "combobox" | "gone" = "button";
 let playerControlLate = false;
 const comboboxFocus = { quiet: null as boolean | null };
 // Off, the stub team tile answers without telling the walk: the focus repair for
@@ -75,6 +83,7 @@ vi.mock("./tiles/PlayerTile", () => ({
     return (
       <section data-testid="tile-player" data-tidy-level={playerLevel}>
         {ready &&
+          playerControl !== "gone" &&
           (playerControl === "combobox" ? (
             createElement("input", {
               role: "combobox",
@@ -224,7 +233,7 @@ function mount(
   } = {},
 ) {
   const onClose = opts.onClose ?? vi.fn();
-  const tree = (o: typeof opts) => (
+  const tree = (o: typeof opts, rows: CardChecklistRow[] = cards) => (
     <MemoryRouter initialEntries={[`/${opts.search ?? "?tidy=first"}`]}>
       <UrlProbe />
       <TidyUpWalk
@@ -232,7 +241,7 @@ function mount(
         {...(opts.sportId ? { sportId: opts.sportId as never } : {})}
         setName="2024 Topps Chrome"
         title="Tidy up 2024 Topps Chrome"
-        cards={cards}
+        cards={rows}
         onClose={onClose}
         {...(o.careerGaps ? { careerGaps: o.careerGaps } : {})}
         {...(o.careerGapsReady !== undefined ? { careerGapsReady: o.careerGapsReady } : {})}
@@ -241,7 +250,12 @@ function mount(
     </MemoryRouter>
   );
   const view = render(tree(opts));
-  return { onClose, ...view, rerenderWith: (o: typeof opts) => view.rerender(tree({ ...opts, ...o })) };
+  return {
+    onClose,
+    ...view,
+    rerenderWith: (o: typeof opts) => view.rerender(tree({ ...opts, ...o })),
+    rerenderCards: (rows: CardChecklistRow[]) => view.rerender(tree(opts, rows)),
+  };
 }
 
 /** One animation frame, inside act, so the walk's focus repair has run. */
@@ -261,6 +275,7 @@ beforeEach(() => {
   saveCard.mockResolvedValue({ keys: [] });
   tidyLeafFacts.mockClear();
   lookupTidyName.mockClear();
+  linkOnOpen.mockClear();
   playerLevel = "plain";
   playerControl = "button";
   playerControlLate = false;
@@ -1347,6 +1362,37 @@ describe("NEO-656: the walk reads live data and keeps nothing", () => {
       "a|team|Angels",
       "b|player|Shohei Ohtani",
     ]);
+  });
+
+  it("link on open (NEO-680): the open card's waiting player names go to the server once, the next card's do not", async () => {
+    mount([pink("a", "1", { pendingPlayerNames: ["Mike Trout"] }), pink("b", "2", { pendingPlayerNames: ["Shohei Ohtani"] })]);
+    await screen.findByTestId("tile-player");
+    await waitFor(() => expect(linkOnOpen).toHaveBeenCalledTimes(1));
+    expect(linkOnOpen).toHaveBeenCalledWith({ cardId: "a" });
+  });
+
+  it("link on open (NEO-680): says what it linked, and focus stays in the dialog when the row it was on is replaced", async () => {
+    playerLevel = "fix";
+    let resolveLink: (linked: Linked) => void = () => {};
+    linkOnOpen.mockImplementationOnce(() => new Promise<Linked>((resolve) => (resolveLink = resolve)));
+    const view = mount([pink("a", "1", { pendingPlayerNames: ["Hyeseong Kim"] })]);
+    const control = await screen.findByRole("button", { name: "Player control" });
+    await nextFrame();
+    act(() => control.focus());
+    expect(document.activeElement).toBe(control);
+
+    // The data re-renders with the name linked: the question row is gone.
+    playerControl = "gone";
+    view.rerenderCards([pink("a", "1")]);
+    expect(screen.queryByRole("button", { name: "Player control" })).toBeNull();
+    await act(async () => resolveLink([{ printed: "Hyeseong Kim", player: "Hye-Seong Kim" }]));
+    await nextFrame();
+
+    const dialog = screen.getByRole("dialog");
+    expect(document.activeElement).not.toBe(document.body);
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    const line = screen.getAllByRole("status").find((el) => el.className.includes("sr-only"));
+    expect(line?.textContent).toBe("Linked Hyeseong Kim to Hye-Seong Kim.");
   });
 
   it("a lookup that errors never blocks the walk or Skip", async () => {

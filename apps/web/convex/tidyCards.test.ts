@@ -282,6 +282,40 @@ describe("tidyCards.cardContext — reads", () => {
     expect(plain!.teams.map((x) => [x.teamId, x.onCard, x.candidate])).toEqual([[padres, true, false]]);
   });
 
+  describe("linkedByAlias (NEO-680)", () => {
+    // One linked player, `merrill`, who answers to "Hye-Seong Kim" as a saved alias.
+    const linkedAs = async (printed: string) => {
+      const t = convexTest(schema, modules);
+      const id = await t.run(async (ctx) => {
+        const s = await seedBase(ctx);
+        await ctx.db.patch(s.merrill, { aliases: ["Hye-Seong Kim"] });
+        return s.card("1", {
+          playerIds: [s.merrill],
+          playerLinks: [{ playerId: s.merrill, nameOnCard: printed }],
+        });
+      });
+      const view = await t.withIdentity(ADMIN).query(api.tidyCards.cardContext, { cardId: id });
+      return view!.players[0];
+    };
+
+    test("a name linked through a saved alias says which alias", async () => {
+      expect((await linkedAs("Hye-Seong Kim")).linkedByAlias).toBe("Hye-Seong Kim");
+    });
+
+    test("the alias match is read through the shared matcher, so case and punctuation still find it", async () => {
+      expect((await linkedAs("HYE-SEONG KIM.")).linkedByAlias).toBe("Hye-Seong Kim");
+    });
+
+    test("the player's own name is not an alias link, whatever its case or punctuation", async () => {
+      expect((await linkedAs("Jackson Merrill")).linkedByAlias).toBeUndefined();
+      expect((await linkedAs("JACKSON  MERRILL.")).linkedByAlias).toBeUndefined();
+    });
+
+    test("a hand link whose printed name is no alias of the player is not an alias link", async () => {
+      expect((await linkedAs("Jackson Merril")).linkedByAlias).toBeUndefined();
+    });
+  });
+
   test("refuses a signed-out caller and a non-admin", async () => {
     const t = convexTest(schema, modules);
     const id = await t.run(async (ctx) => {

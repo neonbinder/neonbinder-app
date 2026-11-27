@@ -516,6 +516,34 @@ function openPlayerRows(page: Page): Locator {
     .filter({ has: page.getByRole("button", { name: NOT_A_PLAYER }) });
 }
 
+/** Most Player rows a card can show: the product's cap on players per card (`MAX_CARD_PLAYERS`). */
+const MAX_PLAYER_ROWS = 20;
+
+/** Every row of the open card's Player tile, answered or not ("Player <printed>"). */
+function playerRows(page: Page): Locator {
+  return tidyTile(page, "Player").getByRole("group", { name: /^Player / });
+}
+
+/** The Player row named `rowName` ("Player <printed>"), answered or not. */
+function playerRow(page: Page, rowName: string): Locator {
+  return tidyTile(page, "Player").getByRole("group", { name: rowName, exact: true });
+}
+
+/**
+ * The name of the open card's first Player row not in `seen`, read off EVERY
+ * row (`playerRows`), never off the open ones: NEO-680's link on open answers a
+ * row in the background as the card opens, so a row read through the "Not a
+ * player" filter can drop out between the count and the read. A row keeps its
+ * group, named the same, when it is answered.
+ */
+async function nextPlayerRowName(page: Page, seen: ReadonlySet<string>): Promise<string | undefined> {
+  for (const row of await playerRows(page).all()) {
+    const name = (await row.getAttribute("aria-label")) ?? "";
+    if (!seen.has(name)) return name;
+  }
+  return undefined;
+}
+
 /** The answered row named `Player <printed>`: its Edit is up and its "Not a player" is gone. */
 async function expectPlayerRowAnswered(page: Page, rowName: string): Promise<void> {
   const row = tidyTile(page, "Player").getByRole("group", { name: rowName, exact: true });
@@ -570,8 +598,10 @@ const CREATE_ANYWAY = /^Add as new player anyway( .+)?$/;
  *
  * Contract: ENTRY a settled card. EXIT no Player row is waiting for an answer
  * and the tile is not pink (a tile still pink after the last row fails here,
- * by name). Returns how many rows were answered (0 when the tile was not
- * pink). `maxRows` is a runaway guard.
+ * by name). Returns how many rows this helper answered (0 when the tile was
+ * not pink); a row that already reads answered, or that the link on open
+ * (NEO-680) answers while it is read, is left alone and not counted.
+ * `maxRows` is a runaway guard on answers.
  */
 export async function answerPinkPlayerTiles(
   page: Page,
@@ -579,20 +609,31 @@ export async function answerPinkPlayerTiles(
 ): Promise<number> {
   if ((await pinkTile(page, "Player").count()) === 0) return 0;
   let answered = 0;
-  for (let i = 0; i < maxRows; i++) {
-    const rows = openPlayerRows(page);
-    if ((await rows.count()) === 0) break;
-    const row = rows.first();
-    const rowName = (await row.getAttribute("aria-label")) ?? "";
+  const seen = new Set<string>();
+  for (let i = 0; i < MAX_PLAYER_ROWS && answered < maxRows; i++) {
+    const rowName = await nextPlayerRowName(page, seen);
+    if (rowName === undefined) break;
+    seen.add(rowName);
+    // By its exact name, never through the "Not a player" filter: the link on open (NEO-680) can
+    // answer this row while it is read, and a filtered locator would then match nothing.
+    const row = playerRow(page, rowName);
     // Settle the row into ONE state before reading it: the lookups have answered (the hold
-    // line is gone) and a usable answer is up (R2: the positive under the negative).
+    // line is gone) and either a usable answer is up or the row already reads answered (R2:
+    // the positive under the negative).
     await expect(row.getByText("Checking for players by that name…"), `"${rowName}" is still checking`).toHaveCount(0);
     const pick = row
       .getByRole("list", { name: "Players already filed under this name" })
       .getByRole("button", { disabled: false });
     const create = row.getByRole("button", { name: CREATE_PLAYER, disabled: false });
     const anyway = row.getByRole("button", { name: CREATE_ANYWAY, disabled: false });
-    await expect(pick.or(create).or(anyway).first(), `"${rowName}" offers an answer`).toBeVisible();
+    const edit = row.getByRole("button", { name: EDIT });
+    await expect(edit.or(pick).or(create).or(anyway).first(), `"${rowName}" offers an answer or reads answered`).toBeVisible();
+    if ((await edit.count()) > 0) {
+      // Answered already (on file, or linked on open, NEO-680): nothing to press, and not
+      // counted, since this walk answered nothing on it.
+      await expectPlayerRowAnswered(page, rowName);
+      continue;
+    }
     if ((await pick.count()) > 0) {
       // NEO-332: never mint one more same-name player; the top candidate is the seed's answer.
       await pick.first().click();
@@ -631,11 +672,19 @@ export function creatablePlayerRow(page: Page): Locator {
  * Returns the row's name ("Player <printed>").
  */
 export async function createPlayerOnOpenRow(page: Page): Promise<string> {
-  const row = creatablePlayerRow(page).first();
-  await expect(row, "the card has a Player row offering Add as new player").toBeVisible();
-  const rowName = (await row.getAttribute("aria-label")) ?? "";
+  const first = creatablePlayerRow(page).first();
+  await expect(first, "the card has a Player row offering Add as new player").toBeVisible();
+  const rowName = (await first.getAttribute("aria-label")) ?? "";
+  // By its exact name from here: the filtered locator would match another row, or none, once
+  // this one is answered.
+  const row = playerRow(page, rowName);
   await expect(row.getByText("Checking for players by that name…"), "the row is still checking").toHaveCount(0);
-  await row.getByRole("button", { name: CREATE_PLAYER, disabled: false }).click();
+  const create = row.getByRole("button", { name: CREATE_PLAYER, disabled: false });
+  // ONE settled state (R2): the create is usable, or the link on open (NEO-680) answered the row
+  // because a player answers to the name, which breaks this helper's premise ("the name is new").
+  await expect(create.or(row.getByRole("button", { name: EDIT })).first(), `"${rowName}" settled`).toBeVisible();
+  await expect(create, `"${rowName}" is new: nothing answers to it, so opening the card linked nothing`).toBeVisible();
+  await create.click();
   await expectPlayerRowAnswered(page, rowName);
   return rowName;
 }
@@ -1036,28 +1085,34 @@ export async function tidyForTheParallelBuild(
  * Answer every open row of the open card's Player tile "Not a player" (a
  * storyline caption, a team card's title), except the printed names in
  * `keep`. Each answer reaches every card in the scope that prints the name.
+ * A row that already reads answered (on file, or linked on open, NEO-680) is
+ * left as it is and not returned.
  * Contract: ENTRY a settled card. EXIT every row not kept reads answered (its
  * Edit is up). Returns the printed names it ruled out, in order. `maxRows` is
- * a runaway guard.
+ * a runaway guard on answers.
  */
 export async function ruleOutOpenPlayerRows(
   page: Page,
   { keep = [], maxRows = 8 }: { keep?: readonly string[]; maxRows?: number } = {},
 ): Promise<string[]> {
-  const kept = new Set(keep.map((n) => `Player ${n}`));
+  // Kept rows are never visited; every other row is visited once, by its exact name (the link on
+  // open, NEO-680, can answer a row while it is read: see `nextPlayerRowName`).
+  const seen = new Set(keep.map((n) => `Player ${n}`));
   const ruledOut: string[] = [];
-  for (let i = 0; i < maxRows; i++) {
-    let rowName: string | undefined;
-    for (const row of await openPlayerRows(page).all()) {
-      const name = (await row.getAttribute("aria-label")) ?? "";
-      if (!kept.has(name)) {
-        rowName = name;
-        break;
-      }
-    }
+  for (let i = 0; i < MAX_PLAYER_ROWS && ruledOut.length < maxRows; i++) {
+    const rowName = await nextPlayerRowName(page, seen);
     if (rowName === undefined) break;
-    const row = tidyTile(page, "Player").getByRole("group", { name: rowName, exact: true });
-    await row.getByRole("button", { name: NOT_A_PLAYER, disabled: false }).click();
+    seen.add(rowName);
+    const row = playerRow(page, rowName);
+    const notAPlayer = row.getByRole("button", { name: NOT_A_PLAYER, disabled: false });
+    // ONE settled state (R2): the row offers "Not a player", or it already reads answered (on
+    // file, or linked on open), and then it is left as it is.
+    await expect(notAPlayer.or(row.getByRole("button", { name: EDIT })).first(), `"${rowName}" settled`).toBeVisible();
+    if ((await notAPlayer.count()) === 0) {
+      await expectPlayerRowAnswered(page, rowName);
+      continue;
+    }
+    await notAPlayer.click();
     await expectPlayerRowAnswered(page, rowName);
     await expect(row.getByText(/ is not a player\.$/), `"${rowName}" reads not a player`).toBeVisible();
     ruledOut.push(rowName.replace(/^Player /, ""));
