@@ -3,6 +3,7 @@ import type { RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import NeonButton from "../modules/NeonButton";
+import { Checkbox } from "../primitives/Checkbox";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import type { Id } from "../../convex/_generated/dataModel";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
@@ -259,16 +260,13 @@ function CardDiffRow({
       </div>
       <ul className="flex flex-col gap-2">
         {card.fields.map((f) => {
-          const id = `sync-field-${card.index}-${f.name}`;
           const isChecked = checked[fieldKey(card.index, f.name)] ?? false;
           return (
-            <li key={f.name} className="flex items-start gap-3">
-              <input
-                id={id}
-                type="checkbox"
+            <li key={f.name}>
+              <Checkbox
+                className="text-xs text-ink-2"
                 checked={isChecked}
                 onChange={() => onToggleField(card.index, f.name)}
-                className="mt-0.5 h-4 w-4 shrink-0 accent-neon-green"
                 // The visible label is the field name; the accessible name has
                 // to carry the card too, or a screen-reader user hears "Card
                 // name" nine times with nothing to tell them apart (WCAG 2.4.6).
@@ -277,12 +275,8 @@ function CardDiffRow({
                 } to #${card.cardNumber} ${card.cardName}: ${
                   f.oldValue || "empty"
                 } becomes ${f.newValue || "empty"}`}
-              />
-              <div className="min-w-0 flex-1">
-                <label
-                  htmlFor={id}
-                  className="flex flex-wrap items-center gap-2 text-xs text-ink-2 cursor-pointer"
-                >
+              >
+                <span className="flex flex-wrap items-center gap-2">
                   <span className="font-semibold">
                     {FIELD_LABEL[f.name] ?? f.name}
                   </span>
@@ -313,7 +307,9 @@ function CardDiffRow({
                       {SOURCE_LABEL[f.source]}
                     </span>
                   )}
-                </label>
+                </span>
+              </Checkbox>
+              <div className="pl-6">
                 <FieldDiff field={f} />
               </div>
             </li>
@@ -987,12 +983,10 @@ export default function SyncReviewModal({
                 )}
                 <ul className="flex flex-col gap-1">
                   {orphans.map((r) => {
-                    const id = `sync-delete-${r.id}`;
                     return (
-                      <li key={r.id as string} className="flex items-center gap-3">
-                        <input
-                          id={id}
-                          type="checkbox"
+                      <li key={r.id as string}>
+                        <Checkbox
+                          className="text-xs text-ink-2"
                           // ALWAYS unchecked to begin with. Not a style choice:
                           // deletion is the one irreversible action on this
                           // screen.
@@ -1022,12 +1016,7 @@ export default function SyncReviewModal({
                           aria-describedby={
                             orphansOverCap ? "sync-delete-cap" : undefined
                           }
-                          className="h-4 w-4 shrink-0 accent-neon-pink aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                           aria-label={`Delete #${r.cardNumber} ${r.cardName}`}
-                        />
-                        <label
-                          htmlFor={id}
-                          className="text-xs text-ink-2 cursor-pointer"
                         >
                           #{r.cardNumber} {r.cardName}
                           <span className="text-ink-3">
@@ -1037,7 +1026,7 @@ export default function SyncReviewModal({
                               .map((s) => (s === "bsc" ? "BSC" : "SportLots"))
                               .join(" + ")}
                           </span>
-                        </label>
+                        </Checkbox>
                       </li>
                     );
                   })}

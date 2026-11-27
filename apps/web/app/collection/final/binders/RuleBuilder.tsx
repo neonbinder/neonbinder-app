@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import { Autocomplete } from "@/components/primitives/Autocomplete";
 import NeonButton from "@/components/modules/NeonButton";
+import { Checkbox } from "@/components/primitives/Checkbox";
 import { Input } from "@/components/primitives/Input";
 import {
   MAX_RULE_TERMS,
@@ -235,9 +236,8 @@ export default function RuleBuilder({
       )}
       {cameosApply && (
         <label className={CHOICE_WITH_HINT}>
-          <input
-            type="checkbox"
-            className="mt-0.5 h-4 w-4 shrink-0 accent-selection"
+          <Checkbox
+            className="mt-0.5"
             checked={rule.secondaryPlayers === true}
             onChange={(e) => setCameos(e.target.checked)}
             // Named by its title alone; the line under it is its description.
@@ -303,9 +303,7 @@ function RuleLine({
           </select>
         </label>
         <label className={CHOICE}>
-          <input
-            type="checkbox"
-            className="h-4 w-4 accent-selection"
+          <Checkbox
             checked={!!term.negate}
             onChange={(e) => onChange(e.target.checked ? { negate: true, test: leaf } : { test: leaf })}
           />

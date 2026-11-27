@@ -46,7 +46,12 @@ test(
     );
 
     // Calibration mode draws the pocket numbers the mirroring is read from.
-    await print.getByRole("checkbox", { name: /Show cutting guides/ }).check();
+    // NEO-682: the switch is turned on by clicking its visible title, not the
+    // 16px box: the whole card is the box's label, so its text is the target.
+    const guides = print.getByRole("checkbox", { name: /Show cutting guides/ });
+    await expect(guides).not.toBeChecked(); // off by default for a real run
+    await print.getByText("Show cutting guides").click();
+    await expect(guides).toBeChecked();
 
     const preview = print.getByRole("list", { name: "Preview" });
     const front = preview.getByRole("listitem").filter({ hasText: "Sheet 1 — front" });
@@ -71,8 +76,12 @@ test(
       .poll(async () => (await box(pocket(back, 2))).x - (await box(pocket(back, 1))).x)
       .toBeGreaterThan(40);
 
-    // Backs off: the summary says front only, and the back sheet is gone.
-    await print.getByRole("checkbox", { name: /Print the backs too/ }).uncheck();
+    // Backs off, again by the label's own text (NEO-682): the summary says
+    // front only, and the back sheet is gone.
+    const backs = print.getByRole("checkbox", { name: /Print the backs too/ });
+    await expect(backs).toBeChecked();
+    await print.getByText("Print the backs too").click();
+    await expect(backs).not.toBeChecked();
     await expect(print.getByRole("status")).toContainText("3 cards on 1 sheet of Letter, front only.");
     await expect(preview.getByRole("listitem").filter({ hasText: "Sheet 1 — front" })).toBeVisible();
     await expect(preview.getByRole("listitem").filter({ hasText: "Sheet 1 — back" })).toHaveCount(0);

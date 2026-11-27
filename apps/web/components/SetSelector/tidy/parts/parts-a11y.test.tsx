@@ -66,8 +66,8 @@ describe("WikidataBlock career-team boxes", () => {
     const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
     expect(boxes).toHaveLength(2);
     for (const box of boxes) {
-      expect(box.className).toContain("h-6");
-      expect(box.className).toContain("w-6");
+      expect(box.className).toContain("h-4");
+      expect(box.className).toContain("w-4");
       expect(box.closest("label")?.className).toContain("min-h-6");
     }
     expect(boxes[0].closest("ul")?.className).toContain("gap-1");

@@ -25,6 +25,7 @@ import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { keyboardAwareCollision } from "@/lib/dnd/keyboard-aware-collision";
 import { countReconciliationEdits } from "./reconciliation-edits";
 import { Input } from "../primitives/Input";
+import { Checkbox } from "../primitives/Checkbox";
 import type { Id } from "../../convex/_generated/dataModel";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
 import HeldElsewhereNote from "./HeldElsewhereNote";
@@ -2742,50 +2743,42 @@ function ReconciliationDialog({
           checklistScope === "all" ? (
             <div className="mb-2 h-6" aria-hidden="true" />
           ) : (
-            <label className="flex min-h-6 items-center gap-2 mb-2 text-xs text-ink-3 select-none cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showAllChecklist}
-                onChange={(e) => setShowAllChecklist(e.target.checked)}
-                aria-label="Show all checklist sections"
-                className="h-3.5 w-3.5 rounded border-control bg-raised text-neon-teal-text focus-outline"
-              />
+            <Checkbox
+              className="mb-2 text-xs text-ink-3 select-none"
+              checked={showAllChecklist}
+              onChange={(e) => setShowAllChecklist(e.target.checked)}
+              aria-label="Show all checklist sections"
+            >
               Show all checklist sections
-            </label>
+            </Checkbox>
           )
         ) : key !== "sportlots" ? (
           // Spacer keeps the lists' tops aligned; only SL has a prefix
           // filter worth toggling.
           <div className="mb-2 h-6" aria-hidden="true" />
         ) : (
-          <label className="flex min-h-6 items-center gap-2 mb-2 text-xs text-ink-3 select-none cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showAllSl}
-              onChange={(e) => setShowAllSl(e.target.checked)}
-              aria-label="Show all SportLots items"
-              className="h-3.5 w-3.5 rounded border-control bg-raised text-neon-purple-text focus-outline"
-            />
+          <Checkbox
+            className="mb-2 text-xs text-ink-3 select-none"
+            checked={showAllSl}
+            onChange={(e) => setShowAllSl(e.target.checked)}
+            aria-label="Show all SportLots items"
+          >
             Show all SportLots items
-          </label>
+          </Checkbox>
         )}
         {/* Each label is the box's 24px target (A-N8); the spacers above
             match it so the columns' lists still start level. */}
-        <label className="flex min-h-6 items-center gap-2 mb-2 text-xs text-ink-3 select-none cursor-pointer">
-          <input
-            type="checkbox"
-            checked={showMapped[key]}
-            onChange={(e) => {
-              const checked = e.target.checked;
-              setShowMapped((prev) => ({ ...prev, [key]: checked }));
-            }}
-            aria-label={`Show ${source.sentenceLabel} ${itemWord(2)} already mapped`}
-            className={`h-3.5 w-3.5 rounded border-control bg-raised focus-outline ${
-              TONE_CLASSES[source.tone].heading
-            }`}
-          />
+        <Checkbox
+          className="mb-2 text-xs text-ink-3 select-none"
+          checked={showMapped[key]}
+          onChange={(e) => {
+            const checked = e.target.checked;
+            setShowMapped((prev) => ({ ...prev, [key]: checked }));
+          }}
+          aria-label={`Show ${source.sentenceLabel} ${itemWord(2)} already mapped`}
+        >
           {`Show ${itemWord(2)} already mapped`}
-        </label>
+        </Checkbox>
         {checksOn && probeSide && columnMismatched.length > 0 && (
           // NEO-325 — the sets the Base check set aside, never silently gone.
           // A disclosure: its words (constant) say how many, and its state is

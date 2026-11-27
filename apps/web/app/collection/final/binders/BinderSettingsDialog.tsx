@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 import NeonButton from "@/components/modules/NeonButton";
+import { Checkbox } from "@/components/primitives/Checkbox";
 import { ruleProblem } from "@/lib/collection/binder-rule";
 import Modal from "../../prototypes/p2/Modal";
 import { useCapabilities } from "../data/store";
@@ -166,9 +167,8 @@ export default function BinderSettingsDialog({
           <legend className={HEADING}>Empty slots</legend>
           <div className="mt-2 grid gap-2">
             <label className={CHOICE}>
-              <input
-                type="checkbox"
-                className="mt-0.5 h-4 w-4 accent-selection"
+              <Checkbox
+                className="mt-0.5"
                 checked={layout.emptySlots}
                 onChange={(e) => onSettings({ emptySlots: e.target.checked })}
               />
@@ -185,9 +185,8 @@ export default function BinderSettingsDialog({
               </span>
             </label>
             <label className={CHOICE}>
-              <input
-                type="checkbox"
-                className="mt-0.5 h-4 w-4 accent-selection"
+              <Checkbox
+                className="mt-0.5"
                 checked={!!container.settings?.publicEmptySlots}
                 disabled={container.system === "main"}
                 onChange={(e) => onSettings({ publicEmptySlots: e.target.checked ? true : null })}

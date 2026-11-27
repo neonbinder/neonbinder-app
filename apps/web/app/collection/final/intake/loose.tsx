@@ -1,5 +1,6 @@
 import { useState } from "react";
 import NeonButton from "@/components/modules/NeonButton";
+import { Checkbox } from "@/components/primitives/Checkbox";
 import CardFace from "../../prototypes/_shared/CardFace";
 import { getCard } from "../../prototypes/_shared/data";
 import type { IntakeSim, Loose } from "./sim";
@@ -37,7 +38,7 @@ export default function LoosePile({ sim, dense = false }: { sim: IntakeSim; dens
                   checked ? "border-neon-blue-text bg-pick-blue text-pick-blue-ink" : "border-rule text-ink-2"
                 }`}
               >
-                <input type="checkbox" className="focus-outline" checked={checked} onChange={() => pick(l)} />
+                <Checkbox checked={checked} onChange={() => pick(l)} />
                 {l.as === "front" && card ? (
                   <CardFace card={card} size="sm" />
                 ) : (

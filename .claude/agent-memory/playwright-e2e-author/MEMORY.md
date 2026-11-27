@@ -152,6 +152,15 @@
 - [Pick a wizard name from BSC facets + th…](patterns_pick_a_wizard_name_from_bsc_facets_and_the_gate_resolver.md) — no-login card…
 
 ## From the NEO-552 consolidation
+- [Local run backend, Vite, previews](patterns_local_run_backend_and_vite.md) — function-spec check, one Vite per worktree, CI seed resets
+- [BSC budget rules and the SportLots helper](patterns_bsc_budget_rules_and_sportlots_helper.md) — rules 1-3, expectStepWithSportLots, TSV mis-match trap
+- [Set League and card League specs](patterns_set_league_and_card_league_specs.md) — NEO-569 handles, born-with-MLB needs real sport, noLeague dashboard Report scoping
+- [Near-match absence proved by the same locator](patterns_near_match_absence_proved_by_the_same_locator.md) — NEO-578: pin row count, flip query so the locator matches; admin add form = minted route
+- [Set-level No Team spec shape](patterns_set_no_team_spec_shape.md) — NEO-556: pressed-role toggles, cascade replaces the save toast, run ledger handles, badge proves teamless
+- [Leaf Vivid: a real unlicensed set](patterns_leaf_vivid_real_unlicensed_set.md) — NEO-556: find a set via year-wide sync, Proof type, held cards, parallel copies
+- [Stale batch masks a lookup loss](patterns_dialog_seed_from_stale_batch_masks_a_lookup_loss.md) — Match Cards drops lookup outcomes of pending rows; local green, CI 35 on the lane
+- [Attributes panel header needs the open panel](patterns_attributes_panel_header_controls_need_the_open_panel.md) — NEO-569: shut = title+toggle only; open before Rename/Delete/breadcrumb/Set actions
+- [External links: read, never followed](patterns_external_links_read_never_followed.md) — regex family + nth toHaveAccessibleName for order; href/target/rel; hard-code URLs
 - [NEO-574 career check step](patterns_career_check_step_neo574.md) — handles, prefill, 6b staging; NEO-591 def…
 - [Wizard progress bar and Decided count](patterns_wizard_progress_bar_and_decided_count.md) — NEO-467: no Step x of y; subtitle via pro…
 - [Post-name Next held then gone](patterns_post_name_next_held_then_gone.md) — NEO-574 career step: wait for usable Next…
@@ -190,4 +199,5 @@
 - [Player alias box](patterns_player_alias_read_back_and_remember_box.md) — NEO-671 remember box, Aliases read-back; Possible matches via hand-made sport + Josh/Joshua
 - [sr-only is visible to PW](patterns_sr_only_counts_as_visible_and_caret_proof.md) — 1x1 box passes toBeVisible; caret proof = Backspace, no End
 - [Alias-linked Player row](patterns_alias_linked_player_row_neo680.md) — NEO-680 Aliases fixture, note, title; link on open; helpers settle rows by exact name
+- [Label text is the target](patterns_label_text_is_the_target_and_its_plant.md) — click title text, assert role; plant = label onClick preventDefault; plant --fresh
 - [Drawer toast lost to a build](patterns_drawer_toast_lost_to_a_build_hold.md) — save releases a build: toast ~80 ms; prove by read-back; titles door waits

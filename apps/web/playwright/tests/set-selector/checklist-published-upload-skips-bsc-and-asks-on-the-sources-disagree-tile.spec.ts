@@ -115,6 +115,7 @@ import {
   CHECKLISTS,
   checklistRows,
   confirmChecklistMatchCards,
+  expectPublisherChecklistLinks,
   matchCardsDialog,
   previewRowCount,
   publishersChecklistButton,
@@ -215,6 +216,9 @@ test(
     await publishersChecklistButton(page).click();
     const dialog = publishersChecklistDialog(page);
     await expect(dialog).toBeVisible();
+    // NEO-597: the dialog links to both publishers' own checklist pages, read and never followed.
+    // The axe check on this dialog below covers them.
+    await expectPublisherChecklistLinks(dialog);
     // Escape cancels and hands focus back to the button that opened it.
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();

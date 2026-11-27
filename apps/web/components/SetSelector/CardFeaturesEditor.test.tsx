@@ -300,3 +300,73 @@ describe("CardFeaturesEditor — clearing a per-card feature (NEO-217)", () => {
     expect(mockSetCardFeature).not.toHaveBeenCalled();
   });
 });
+
+describe("CardFeaturesEditor — boolean feature error state (NEO-682)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetCardFeature.mockResolvedValue(undefined);
+    mockUpdateCard.mockRejectedValue(new Error("Could not save"));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function renderWithError() {
+    renderEditor({ cardIsRookie: false });
+    const checkbox = screen.getByRole("checkbox", {
+      name: "Value for Rookie Card",
+    }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.click(checkbox);
+    });
+    const alert = await screen.findByRole("alert");
+    return { checkbox, alert };
+  }
+
+  it("shows the error in a role=alert outside the checkbox's label", async () => {
+    const { checkbox, alert } = await renderWithError();
+    expect(alert.textContent).toBe("Could not save");
+    expect(checkbox.closest("label")).not.toBeNull();
+    expect(checkbox.closest("label")!.contains(alert)).toBe(false);
+  });
+
+  it("points the checkbox's aria-describedby at the alert without adding it to the name", async () => {
+    const { checkbox, alert } = await renderWithError();
+    expect(alert.id).not.toBe("");
+    expect(checkbox.getAttribute("aria-describedby")).toBe(alert.id);
+    expect(
+      screen.getByRole("checkbox", { name: "Value for Rookie Card" }),
+    ).toBe(checkbox);
+    expect(screen.queryByRole("checkbox", { name: /Could not save/ })).toBeNull();
+  });
+
+  it("does not toggle when the error text is clicked", async () => {
+    const { alert } = await renderWithError();
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      fireEvent.click(alert);
+    });
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggles when the label text is clicked", async () => {
+    renderEditor({ cardIsRookie: false });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Rookie Card"));
+    });
+    await waitFor(() => {
+      expect(mockUpdateCard).toHaveBeenCalledWith({
+        id: CARD_CHECKLIST_ID,
+        isRookie: true,
+      });
+    });
+  });
+
+  it("wraps the checkbox and error in a group named for the feature", async () => {
+    const { checkbox, alert } = await renderWithError();
+    const group = screen.getByRole("group", { name: "Feature Rookie Card" });
+    expect(group.contains(checkbox)).toBe(true);
+    expect(group.contains(alert)).toBe(true);
+  });
+});
