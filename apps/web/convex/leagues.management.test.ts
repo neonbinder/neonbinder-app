@@ -18,7 +18,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
@@ -913,12 +913,63 @@ describe("leagues.saveLeagueFields", () => {
       const t = convexTest(schema, modules);
       const { id } = await seedEditable(t);
 
-      for (const bad of [0, -5, 1.5, Number.NaN]) {
+      for (const bad of [0, -5, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 2]) {
         await expect(
           t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: bad }),
         ).rejects.toThrow(/MLB id is not a positive whole number/);
       }
       expect(await externalIdsOf(t, id)).toEqual({ wikidataId: "Q1163715" });
+    });
+
+    test("sets the Wikidata id and the MLB id together in one call", async () => {
+      const t = convexTest(schema, modules);
+      const { id } = await seedEditable(t);
+
+      await t
+        .withIdentity(ADMIN)
+        .mutation(api.leagues.saveLeagueFields, { id, wikidataId: "Q42", mlbamId: 103 });
+
+      expect(await externalIdsOf(t, id)).toEqual({ wikidataId: "Q42", mlbamId: 103 });
+    });
+
+    test("an invalid Wikidata id with a valid MLB id throws and writes neither", async () => {
+      const t = convexTest(schema, modules);
+      const { id } = await seedEditable(t);
+
+      await expect(
+        t
+          .withIdentity(ADMIN)
+          .mutation(api.leagues.saveLeagueFields, { id, wikidataId: "not-a-qid", mlbamId: 103 }),
+      ).rejects.toThrow();
+
+      expect(await externalIdsOf(t, id)).toEqual({ wikidataId: "Q1163715" });
+    });
+
+    test("logs mlbamId in the saved fields when sent, and not when omitted", async () => {
+      const t = convexTest(schema, modules);
+      const { id } = await seedEditable(t);
+      const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const savedFields = () =>
+        spy.mock.calls
+          .map(([line]) => {
+            try {
+              return JSON.parse(String(line));
+            } catch {
+              return null;
+            }
+          })
+          .filter((entry) => entry?.msg === "league_fields_saved")
+          .map((entry) => entry.fields as string[]);
+      try {
+        await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: 103 });
+        await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, name: "Coast League" });
+
+        const [sent, omitted] = savedFields();
+        expect(sent).toContain("mlbamId");
+        expect(omitted).not.toContain("mlbamId");
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     test("refuses a signed-in non-admin and writes nothing", async () => {
