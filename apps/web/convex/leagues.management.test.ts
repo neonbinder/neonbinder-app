@@ -18,7 +18,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
@@ -821,6 +821,166 @@ describe("leagues.saveLeagueFields", () => {
     expect(row!.level).toBe("independent");
     expect(row!.yearsActive).toEqual({ from: 1903, to: 1957 });
     expect(row!.externalIds?.wikidataId).toBe("Q42");
+  });
+
+  describe("mlbamId (NEO-689)", () => {
+    const externalIdsOf = async (t: T, id: Id<"leagues">) =>
+      (await t.run(async (ctx) => ctx.db.get(id)))!.externalIds;
+
+    test("sets the MLB id and leaves the level and the Wikidata id alone", async () => {
+      const t = convexTest(schema, modules);
+      const { id } = await seedEditable(t);
+
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: 103 });
+
+      expect(await externalIdsOf(t, id)).toEqual({ wikidataId: "Q1163715", mlbamId: 103 });
+      expect((await t.run(async (ctx) => ctx.db.get(id)))!.level).toBe("minor");
+    });
+
+    test("null clears the MLB id and keeps the Wikidata id", async () => {
+      const t = convexTest(schema, modules);
+      const { id } = await seedEditable(t);
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: 103 });
+
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: null });
+
+      expect(await externalIdsOf(t, id)).toEqual({ wikidataId: "Q1163715" });
+    });
+
+    test("clearing the only id drops the whole container", async () => {
+      const t = convexTest(schema, modules);
+      const sportId = await seedSport(t);
+      const id = await insertLeague(t, { name: "Texas League", sportId, level: "minor" });
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: 104 });
+
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: null });
+
+      expect(await externalIdsOf(t, id)).toBeUndefined();
+    });
+
+    test("omitting it leaves a stored MLB id alone, and setting or clearing the Wikidata id keeps it", async () => {
+      const t = convexTest(schema, modules);
+      const { id } = await seedEditable(t);
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: 103 });
+
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, name: "Coast League" });
+      expect(await externalIdsOf(t, id)).toEqual({ wikidataId: "Q1163715", mlbamId: 103 });
+
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, wikidataId: "Q42" });
+      expect(await externalIdsOf(t, id)).toEqual({ wikidataId: "Q42", mlbamId: 103 });
+
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, wikidataId: null });
+      expect(await externalIdsOf(t, id)).toEqual({ mlbamId: 103 });
+    });
+
+    test("saving the id a league already holds is not a duplicate of itself", async () => {
+      const t = convexTest(schema, modules);
+      const { id } = await seedEditable(t);
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: 103 });
+
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: 103 });
+
+      expect((await externalIdsOf(t, id))?.mlbamId).toBe(103);
+    });
+
+    test("refuses an id another league in the same sport holds, and writes nothing", async () => {
+      const t = convexTest(schema, modules);
+      const { sportId, id } = await seedEditable(t);
+      const other = await insertLeague(t, { name: "Texas League", sportId, level: "minor" });
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id: other, mlbamId: 103 });
+
+      await expect(
+        t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: 103 }),
+      ).rejects.toThrow(`MLB_ID_TAKEN:${other}`);
+
+      expect(await externalIdsOf(t, id)).toEqual({ wikidataId: "Q1163715" });
+    });
+
+    test("the same id in another sport is allowed", async () => {
+      const t = convexTest(schema, modules);
+      const { id } = await seedEditable(t);
+      const otherSport = await seedSport(t, { value: "Hockey" });
+      const hockey = await insertLeague(t, { name: "Coast Hockey League", sportId: otherSport });
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id: hockey, mlbamId: 103 });
+
+      await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: 103 });
+
+      expect((await externalIdsOf(t, id))?.mlbamId).toBe(103);
+      expect((await externalIdsOf(t, hockey))?.mlbamId).toBe(103);
+    });
+
+    test("refuses an id that is not a positive whole number, without echoing it", async () => {
+      const t = convexTest(schema, modules);
+      const { id } = await seedEditable(t);
+
+      for (const bad of [0, -5, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 2]) {
+        await expect(
+          t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: bad }),
+        ).rejects.toThrow(/MLB id is not a positive whole number/);
+      }
+      expect(await externalIdsOf(t, id)).toEqual({ wikidataId: "Q1163715" });
+    });
+
+    test("sets the Wikidata id and the MLB id together in one call", async () => {
+      const t = convexTest(schema, modules);
+      const { id } = await seedEditable(t);
+
+      await t
+        .withIdentity(ADMIN)
+        .mutation(api.leagues.saveLeagueFields, { id, wikidataId: "Q42", mlbamId: 103 });
+
+      expect(await externalIdsOf(t, id)).toEqual({ wikidataId: "Q42", mlbamId: 103 });
+    });
+
+    test("an invalid Wikidata id with a valid MLB id throws and writes neither", async () => {
+      const t = convexTest(schema, modules);
+      const { id } = await seedEditable(t);
+
+      await expect(
+        t
+          .withIdentity(ADMIN)
+          .mutation(api.leagues.saveLeagueFields, { id, wikidataId: "not-a-qid", mlbamId: 103 }),
+      ).rejects.toThrow();
+
+      expect(await externalIdsOf(t, id)).toEqual({ wikidataId: "Q1163715" });
+    });
+
+    test("logs mlbamId in the saved fields when sent, and not when omitted", async () => {
+      const t = convexTest(schema, modules);
+      const { id } = await seedEditable(t);
+      const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const savedFields = () =>
+        spy.mock.calls
+          .map(([line]) => {
+            try {
+              return JSON.parse(String(line));
+            } catch {
+              return null;
+            }
+          })
+          .filter((entry) => entry?.msg === "league_fields_saved")
+          .map((entry) => entry.fields as string[]);
+      try {
+        await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, mlbamId: 103 });
+        await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, name: "Coast League" });
+
+        const [sent, omitted] = savedFields();
+        expect(sent).toContain("mlbamId");
+        expect(omitted).not.toContain("mlbamId");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    test("refuses a signed-in non-admin and writes nothing", async () => {
+      const t = convexTest(schema, modules);
+      const { id } = await seedEditable(t);
+
+      await expect(
+        t.withIdentity(MEMBER).mutation(api.leagues.saveLeagueFields, { id, mlbamId: 103 }),
+      ).rejects.toThrow(/admin access required/i);
+      expect(await externalIdsOf(t, id)).toEqual({ wikidataId: "Q1163715" });
+    });
   });
 
   test("normalises the alias list: trims, drops empties, dedupes case-insensitively", async () => {
