@@ -17,6 +17,7 @@
 import { ConvexError, v } from "convex/values";
 import { sportOfSelectorOption } from "./lib/selectorLeagues";
 import { minorLeagueClassesValidator } from "./lib/leagueClass";
+import { isMlbamId } from "./lib/mlbamId";
 import {
   action,
   internalMutation,
@@ -1230,6 +1231,13 @@ export const saveLeagueFields = mutation({
     aliases: v.optional(v.array(v.string())),
     /** `null` clears `externalIds.wikidataId`; a string must be a `Q<digits>` id. */
     wikidataId: v.optional(v.union(v.string(), v.null())),
+    /**
+     * NEO-689: `null` clears `externalIds.mlbamId`; a number must be a positive
+     * whole number and no other league in the sport may hold it. Linkage only:
+     * the level is untouched, so an operator can link a league whose level NB
+     * disagrees with MLB on.
+     */
+    mlbamId: v.optional(v.union(v.number(), v.null())),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -1330,11 +1338,11 @@ export const saveLeagueFields = mutation({
       patch.yearsActive = args.yearsActive ?? undefined;
     }
 
-    if (args.wikidataId !== undefined) {
+    if (args.wikidataId !== undefined || args.mlbamId !== undefined) {
       const rest: { wikidataId?: string; mlbamId?: number } = { ...(existing.externalIds ?? {}) };
       if (args.wikidataId === null) {
         delete rest.wikidataId;
-      } else {
+      } else if (args.wikidataId !== undefined) {
         const qid = args.wikidataId.trim();
         // Read BEFORE the guard: `isWikidataQid` is a type guard, so inside
         // the refusal branch `qid` has narrowed to `never`.
@@ -1355,6 +1363,31 @@ export const saveLeagueFields = mutation({
         }
         rest.wikidataId = qid;
       }
+
+      if (args.mlbamId === null) {
+        delete rest.mlbamId;
+      } else if (args.mlbamId !== undefined) {
+        // The bulk loader's guard (`boundedMlbamId` in bulkLoad.ts): the same
+        // predicate, and the refusal never echoes the value.
+        if (!isMlbamId(args.mlbamId)) {
+          throw new ConvexError("The MLB id is not a positive whole number.");
+        }
+        // Two rows in a sport with one MLB id is a tie the loader then holds
+        // (`byId.length > 1` in loadLeagues), so the second link is refused.
+        // The id belongs to the other league and not to the message, same as
+        // NAME_TAKEN above.
+        const siblings = await ctx.db
+          .query("leagues")
+          .withIndex("by_sport_id", (q) => q.eq("sportId", existing.sportId))
+          .collect();
+        for (const sibling of siblings) {
+          if (sibling._id === args.id) continue;
+          if (sibling.externalIds?.mlbamId === args.mlbamId) {
+            throw new ConvexError(`MLB_ID_TAKEN:${sibling._id}`);
+          }
+        }
+        rest.mlbamId = args.mlbamId;
+      }
       patch.externalIds = Object.keys(rest).length > 0 ? rest : undefined;
     }
 
@@ -1372,7 +1405,7 @@ export const saveLeagueFields = mutation({
     // arguments the operator actually sent, so an omitted field — which
     // `saveLeagueFields` leaves alone — never appears as a change.
     const fields = (
-      ["name", "abbreviation", "level", "yearsActive", "aliases", "wikidataId"] as const
+      ["name", "abbreviation", "level", "yearsActive", "aliases", "wikidataId", "mlbamId"] as const
     ).filter((field) => args[field] !== undefined);
     console.log(
       JSON.stringify({
